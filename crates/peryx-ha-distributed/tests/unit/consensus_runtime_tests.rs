@@ -534,8 +534,14 @@ async fn test_ignite_keeps_an_audit_pending_when_projection_is_read_only() {
         one_voter("east", "http://east.internal:4460/"),
     );
     let audit_path = dir.path().join("east.redb");
-    let store = MetaStore::open(&audit_path).unwrap();
-    let started = plan.ignite(store.clone()).await.unwrap();
+    drop(MetaStore::open(&audit_path).unwrap());
+    // The run that records the audit projects through a read-only store as well, so the audit is left
+    // pending because nothing could write it rather than because the shutdown outran the projector.
+    // A projector pass runs once per leadership, and whether it lands before or after the submit is a
+    // race between two threads: with a writable store here, the later ordering projects the audit and
+    // the assertions below then read a store the test believes untouched.
+    let recorded = MetaStore::open_existing_read_only(&audit_path).unwrap();
+    let started = plan.ignite(recorded.clone()).await.unwrap();
     let group = OwnershipGroup::new((*started).clone(), DatacenterId("east".to_owned()));
     let _ = group.claim_home("proj").await.unwrap();
     group
@@ -544,7 +550,11 @@ async fn test_ignite_keeps_an_audit_pending_when_projection_is_read_only() {
         .unwrap();
     drop(group);
     stop_started_raft(started).await;
-    drop(store);
+    assert!(
+        recorded.transfer_audits("proj").unwrap().is_empty(),
+        "the audit has to reach the restart unprojected for the restart to be the thing under test"
+    );
+    drop(recorded);
 
     let read_only = MetaStore::open_existing_read_only(&audit_path).unwrap();
     let restarted = plan.ignite(read_only.clone()).await.unwrap();
@@ -568,9 +578,11 @@ async fn test_ignite_keeps_an_audit_pending_when_projection_is_read_only() {
             .collect::<Vec<_>>(),
         vec!["t-1".to_owned()]
     );
-    assert!(read_only.transfer_audits("proj").unwrap().is_empty());
     drop(group);
+    // Stopping joins the consensus thread, so the projector has finished whatever it was going to do.
+    // Reading the store before that join asks the question while the answer is still being written.
     stop_started_raft(restarted).await;
+    assert!(read_only.transfer_audits("proj").unwrap().is_empty());
 }
 
 #[tokio::test]

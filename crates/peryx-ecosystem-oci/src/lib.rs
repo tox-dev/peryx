@@ -1,3 +1,7 @@
+// Proving `Send` for the `buffered` chain `mirror` builds over `one_ref` and `walk_manifest`
+// unrolls past the default 128 on the nightly solver. 158 is the measured floor, so this holds a
+// margin without sitting so far above it that the next regression goes unreported.
+#![recursion_limit = "192"]
 //! The OCI/Docker registry driver: the distribution-spec `/v2/` API served over peryx's
 //! content-addressed blob store and metadata store.
 //!

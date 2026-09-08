@@ -1,4 +1,6 @@
-#![recursion_limit = "152"]
+// Proving `Send` for the boxed handler chain behind `yank_request` unrolls past the default 128 on
+// the nightly solver, and past the 152 the older solver needed. 177 is the measured floor.
+#![recursion_limit = "192"]
 
 #[cfg(feature = "serving")]
 use std::sync::Arc;

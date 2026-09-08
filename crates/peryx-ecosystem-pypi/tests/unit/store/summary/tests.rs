@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use peryx_driver::serving::{IndexSummaryDriver as _, IndexSummaryError};
 use peryx_storage::meta::MetaError;
+use rstest::rstest;
 
 use super::MetaStore;
 use crate::store::{Guard, PromotedRelease, PypiStore as _, UploadMutation};
@@ -10,6 +11,8 @@ use crate::store::{Guard, PromotedRelease, PypiStore as _, UploadMutation};
 const COUNT_KEY: &str = "pypi\u{0}k\u{0}hosted";
 /// The order range of the `hosted` index; a row's remaining segments only position it.
 const ORDER_KEY: &str = "pypi\u{0}w\u{0}hosted\u{0}damaged";
+/// One hosted project's untrashed and total upload counts, read by every upload write.
+const LIVE_UPLOADS_KEY: &str = "pypi\u{0}l\u{0}hosted/flask";
 
 fn store() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -573,4 +576,26 @@ fn test_caching_then_purging_a_project_counts_it_and_gives_it_back() {
 
     assert_eq!(cached["pypi"].resource_count, 1);
     assert_eq!(purged["pypi"].resource_count, 0);
+}
+
+/// The live-uploads row is peryx's own, so a damaged one is a store fault rather than input: the write
+/// that would move it stops instead of guessing a count, the way every other maintained row behaves.
+#[rstest]
+#[case::no_total(b"1".as_slice(), "is missing field \"total\"")]
+#[case::unparsable_serving(b"x\n1".as_slice(), "has invalid integer field \"serving\"")]
+#[case::unparsable_total(b"1\nx".as_slice(), "has invalid integer field \"total\"")]
+fn test_a_damaged_live_uploads_row_stops_the_upload_that_would_move_it(#[case] damaged: &[u8], #[case] expected: &str) {
+    let (_dir, meta) = store();
+    meta.put_driver_value(LIVE_UPLOADS_KEY, damaged).unwrap();
+
+    let error = meta
+        .put_upload(
+            "hosted",
+            "flask",
+            "flask-1.0.whl",
+            record("flask-1.0.whl", "1.0", "2026-01-01T00:00:00Z", 10).as_bytes(),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains(expected), "{error}");
 }
