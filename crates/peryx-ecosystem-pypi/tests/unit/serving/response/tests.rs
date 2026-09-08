@@ -80,3 +80,22 @@ fn test_cache_error_status_maps_store_and_policy_errors() {
 fn meta_error() -> MetaError {
     MetaError::Decode(serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
 }
+
+/// A policy denial is reported in the vocabulary the client speaks. The neutral engine names a
+/// resource, an artifact and a group; a PyPI reader knows those as a project, a filename and a
+/// version, and knows its allow lists by project. A name left untranslated reaches the client as
+/// engine jargon it has no way to act on.
+#[test]
+fn test_a_denial_is_reported_in_pypi_vocabulary() {
+    let rules = ["resource-allow-list", "resource-block-list", "max-artifact-size", "unknown-rule"]
+        .map(super::pypi_rule);
+    let fields = ["resource", "artifact", "group", "unmapped"].map(super::pypi_field);
+
+    assert_eq!(
+        (rules, fields),
+        (
+            ["project-allow-list", "project-block-list", "max-file-size", "unknown-rule"],
+            ["project", "filename", "version", "unmapped"]
+        )
+    );
+}

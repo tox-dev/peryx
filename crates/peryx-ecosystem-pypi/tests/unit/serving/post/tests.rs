@@ -112,3 +112,11 @@ fn test_upload_store_error_response_reports_a_store_fault_as_internal_error() {
     let response = upload_store_error_response(&audit(&headers, &attribution), CacheError::Meta(meta_error()));
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+/// A finalized operation's replayable result is kept for a day, which is the retry window a client
+/// realistically spans. Written as a product of hours and seconds and read nowhere else, an operator
+/// changed inside it would move that window while every test that replays within it kept passing.
+#[test]
+fn test_a_finalized_operation_is_replayable_for_a_day() {
+    assert_eq!(super::OPERATION_RETENTION_SECS, 86_400);
+}

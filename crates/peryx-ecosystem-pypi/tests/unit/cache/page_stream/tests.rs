@@ -141,3 +141,10 @@ async fn test_revalidation_keeps_the_stale_page_when_upstream_is_unparseable() {
     assert!(String::from_utf8(body).unwrap().contains("1.0"));
     drop(flight_gate(&state, "pypi/flask").try_lock_owned().unwrap());
 }
+
+/// The preflight reads 64 KiB before deciding how to serve a JSON page. Written as a product and read
+/// nowhere else, an operator changed inside it would resize that read without any test noticing.
+#[test]
+fn test_the_json_preflight_reads_sixty_four_kibibytes() {
+    assert_eq!(super::JSON_META_PREFLIGHT_BYTES, 65_536);
+}
