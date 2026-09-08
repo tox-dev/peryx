@@ -1446,3 +1446,16 @@ fn transformer_reads_a_file_element_indented_away_from_its_brace() {
         "indentation around an element is not part of it"
     );
 }
+
+/// A bracket inside a version string is part of the string, not the end of the array. Only the quote
+/// arm tracks that, so without it the scanner would read the string's own bracket as the array's
+/// close and stop mid-page.
+#[test]
+fn transformer_keeps_a_bracket_inside_a_version_string() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0]","2.0"],"files":[]}"#;
+
+    let (out, _) = transform(page, plain_context(), 3);
+
+    assert!(out.contains(r#""1.0]""#), "the version keeps its bracket: {out}");
+    assert!(out.contains(r#""2.0""#), "the version after it still arrives: {out}");
+}
