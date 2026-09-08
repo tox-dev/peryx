@@ -3,6 +3,7 @@
 //! Counting projects and uploads by walking their rows, and finding the newest few by decoding every
 //! record, made a status request scale with everything an index had ever published. The allocator is
 //! global, so this binary runs one test.
+#![cfg(feature = "serving")]
 
 use std::alloc::System;
 use std::collections::BTreeMap;

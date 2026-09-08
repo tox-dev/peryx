@@ -366,16 +366,40 @@ async fn test_endpoint_reports_a_store_read_failure() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
+/// A source that never answers, so how far one poll reaches decides nothing.
+///
+/// `tokio::time::timeout` polls what it wraps once before reporting the deadline, so a budget of zero
+/// is borderline rather than spent: a source quick enough to answer inside that poll is collected, and
+/// the gather then ends by completing rather than by timing out. Over a socket that is a race the
+/// round trip almost always loses; here it cannot be run at all.
+struct SilentSource {
+    node: String,
+}
+
+#[async_trait::async_trait]
+impl ReceiptSource for SilentSource {
+    fn node(&self) -> &str {
+        &self.node
+    }
+
+    async fn fetch_receipt(
+        &self,
+        _request: ReceiptRequest<'_>,
+    ) -> Result<Option<crate::peer_receipt::PeerReceipt>, TransportError> {
+        std::future::pending().await
+    }
+}
+
 /// The budget decides the outcome when it runs out, whoever the sources are and however fast they
 /// would have answered. A gather handed no budget at all reports that it timed out and records nothing
 /// beyond the receipt the writer already held, which is the shape a budget crossed by a slow reply
 /// leaves behind.
 #[tokio::test]
 async fn test_a_spent_budget_ends_the_gather_before_any_source_answers() {
-    let (_dir, blobs, digest) = store_with(BYTES).await;
-    let server = TestServer::start(receipt_router(TOKEN, "east-1", blobs).unwrap()).await;
-    let sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> =
-        vec![Arc::new(source(&server.url, "east-1")) as Arc<dyn ReceiptSource + Send + Sync>];
+    let (_dir, _blobs, digest) = store_with(BYTES).await;
+    let sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> = vec![Arc::new(SilentSource {
+        node: "east-1".to_owned(),
+    }) as Arc<dyn ReceiptSource + Send + Sync>];
     let members = ["writer", "east-1", "east-2"].map(str::to_owned).into();
     let mut ack = FilesystemAck::new(digest.clone(), members, DurabilityPolicy::Everywhere);
     ack.record(ReceiptAck {
