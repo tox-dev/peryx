@@ -16,6 +16,10 @@ fail-fast = true
 [test-groups]
 containers = { max-threads = 1 }
 e2e-servers = { max-threads = 4 }
+# The bench server tests each take a localhost port and start a process on it. They pick the port by
+# binding it, reading what the kernel assigned and releasing it again, so two of them running at once
+# can be handed the same port. One at a time removes that.
+bench-servers = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = "test(/(^|::)test_.*_container_/)"
@@ -24,3 +28,7 @@ test-group = "containers"
 [[profile.default.overrides]]
 filter = "binary_id(peryx-pypi-system-tests::e2e)"
 test-group = "e2e-servers"
+
+[[profile.default.overrides]]
+filter = "test(/^bench::tests::.*_server_/)"
+test-group = "bench-servers"

@@ -187,7 +187,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check that mutation scope stays on production code and that the shard plan follows it.
@@ -396,6 +396,42 @@ _browser-contract: _mise-trusted
       [.packageRules[] | select(.description == "Update browser packages with their binaries")]
       | length == 1 and .[0].enabled == false
     ' renovate.json > /dev/null
+
+# Check that every recipe invoking `mise` runs the trust step first.
+#
+# mise takes trust on its own for `install`, `run`, `exec` and `watch` and for nothing else, so a
+# recipe leading with a read fails outright on an untrusted worktree, and one leading with an install
+# works by side effect until the paranoid setting removes it. Three pull requests each wired one
+# caller by hand and left the rest, so this asserts the property rather than today's six names: a
+# recipe whose body invokes `mise` has to reach `_mise-trusted` somewhere in its dependencies.
+#
+# The two recipes implementing that mechanism are exempt: `_mise-trusted` grants the trust, and this
+# one reads the dependency graph through `just --dump` and never calls mise at all. Both mention the
+# word in their own text, which a scan over recipe bodies cannot tell from a command.
+_mise-trust-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    offenders=$("{{ just_executable() }}" --dump --dump-format json \
+      | jq -r --arg trust _mise-trusted --arg contract _mise-trust-contract '
+      .recipes as $recipes
+      | ($recipes | map_values([.dependencies[].recipe])) as $deps
+      | def reached($name): [$name] + ([$deps[$name][]? | reached(.)] | flatten);
+        $recipes
+        | to_entries[]
+        | select(.key != $trust and .key != $contract)
+        | select(
+            (.value.body // [])
+            | map(map(select(type == "string")) | join(""))
+            | join("\n")
+            | test("(^|[^A-Za-z0-9_.-])mise[ \t]+[a-z]"; "m")
+          )
+        | select(reached(.key) | index($trust) | not)
+        | .key
+    ')
+    if [[ -n "$offenders" ]]; then
+      printf 'these recipes invoke mise without reaching _mise-trusted:\n%s\n' "$offenders" >&2
+      exit 1
+    fi
 
 # Check dependency policy.
 lint-deps: _project-temp
@@ -690,7 +726,7 @@ mutation-shard-count mutants target:
     printf '%d\n' "$(( (mutants + target - 1) / target ))"
 
 # Install browser-test dependencies for the shared and owner suites.
-frontend-deps: _project-temp
+frontend-deps: _project-temp _mise-trusted
     MISE_ENV=browser mise install --locked http:playwright-headless-shell
     npm --prefix crates/peryx-web/tests/frontend ci
     npm --prefix crates/peryx-ecosystem-pypi/tests/frontend ci
@@ -762,7 +798,7 @@ versions: _project-temp
     npm --version
 
 # Refresh locked mise tool versions and checksums.
-mise-lock:
+mise-lock: _mise-trusted
     mise lock --bump
     MISE_ENV=browser mise lock --bump --platform linux-x64,macos-arm64,macos-x64,windows-x64
 
@@ -783,7 +819,7 @@ browser-update:
     just browser-lock
 
 # Rebuild the browser lock from package release metadata.
-browser-lock:
+browser-lock: _mise-trusted
     #!/usr/bin/env bash
     set -euo pipefail
     PUPPETEER_SKIP_DOWNLOAD=1 npm --prefix site ci
@@ -934,7 +970,7 @@ crate-dependency-diagram output="site/diagrams/crate-dependencies.mmd": _project
     } > "{{ output }}"
 
 # Pre-render every Mermaid diagram for light and dark themes.
-render-diagrams output="site/static/diagrams": _project-temp
+render-diagrams output="site/static/diagrams": _project-temp _mise-trusted
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ output }}" in
