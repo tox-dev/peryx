@@ -1542,3 +1542,28 @@ fn test_bindings_carry_the_active_flag_both_ways() {
         (false, true, false)
     );
 }
+
+/// Dropping the active runtime is how a failed startup and an ordinary shutdown both release what was
+/// bound. The bindings outlive the struct that owned them, so leaving them active would leave every
+/// deferred binding answering for a runtime that is gone.
+#[test]
+fn test_dropping_the_active_runtime_deactivates_its_bindings() {
+    let (lifecycle, _shutdown) = Lifecycle::new();
+    let bindings = RuntimeBindings::new(true);
+    bindings.activate();
+    let active = ActiveDistributed {
+        lifecycle,
+        listener: OwnedResource::Absent,
+        consensus: OwnedResource::Absent,
+        runtime: OwnedResource::Absent,
+        bindings: bindings.clone(),
+    };
+
+    let before = bindings.active.load(std::sync::atomic::Ordering::Acquire);
+    drop(active);
+
+    assert_eq!(
+        (before, bindings.active.load(std::sync::atomic::Ordering::Acquire)),
+        (true, false)
+    );
+}
