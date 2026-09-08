@@ -225,6 +225,16 @@ async fn test_a_second_source_aimed_at_one_server_gets_no_receipt() {
     assert!(!error.is_retryable());
 }
 
+/// These tests ask the gather about receipt identity rather than about latency, so the budget has to
+/// outlast any scheduling delay a busy machine adds to a loopback round trip. The sibling suite runs
+/// the same gather on a paused clock, where seconds cost nothing; this one drives real servers and
+/// spends them for real, but only when something has already gone wrong, because the gather returns as
+/// soon as its sources are exhausted or the write is durable. A budget close to the round trip makes
+/// the outcome a race: a reply that lands late reads as `TimedOut` and the receipts come up short.
+const BUDGET: Duration = Duration::from_secs(5);
+/// Paces the retries the gather makes inside that budget.
+const POLL: Duration = Duration::from_millis(50);
+
 async fn quorum_over(servers: &[&TestServer], bound: &[&str], digest: &Digest) -> (GatherOutcome, usize) {
     let sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> = bound
         .iter()
@@ -238,14 +248,7 @@ async fn quorum_over(servers: &[&TestServer], bound: &[&str], digest: &Digest) -
         digest: digest.clone(),
     });
 
-    let outcome = gather_receipts(
-        &sources,
-        request(digest, BYTES.len() as u64),
-        &mut ack,
-        Duration::from_millis(50),
-        Duration::from_millis(5),
-    )
-    .await;
+    let outcome = gather_receipts(&sources, request(digest, BYTES.len() as u64), &mut ack, BUDGET, POLL).await;
     (outcome, ack.independent_receipts())
 }
 
@@ -361,4 +364,37 @@ async fn test_endpoint_reports_a_store_read_failure() {
 
     std::fs::set_permissions(&blobs_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+/// The budget decides the outcome when it runs out, whoever the sources are and however fast they
+/// would have answered. A gather handed no budget at all reports that it timed out and records nothing
+/// beyond the receipt the writer already held, which is the shape a budget crossed by a slow reply
+/// leaves behind.
+#[tokio::test]
+async fn test_a_spent_budget_ends_the_gather_before_any_source_answers() {
+    let (_dir, blobs, digest) = store_with(BYTES).await;
+    let server = TestServer::start(receipt_router(TOKEN, "east-1", blobs).unwrap()).await;
+    let sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> =
+        vec![Arc::new(source(&server.url, "east-1")) as Arc<dyn ReceiptSource + Send + Sync>];
+    let members = ["writer", "east-1", "east-2"].map(str::to_owned).into();
+    let mut ack = FilesystemAck::new(digest.clone(), members, DurabilityPolicy::Everywhere);
+    ack.record(ReceiptAck {
+        node: "writer".to_owned(),
+        digest: digest.clone(),
+    });
+
+    let outcome = gather_receipts(
+        &sources,
+        request(&digest, BYTES.len() as u64),
+        &mut ack,
+        Duration::ZERO,
+        POLL,
+    )
+    .await;
+
+    assert_eq!(
+        (outcome, ack.independent_receipts()),
+        (ended(GatherEnd::TimedOut, &[]), 1),
+        "a spent budget ends the gather with only what the writer brought to it"
+    );
 }
