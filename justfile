@@ -60,6 +60,33 @@ _codspeed-target-contract:
       | grep -qxF 'codegen-units = 1'
 
 # Check coverage target isolation.
+# Check that the line gate reports a body no monomorphization ran and forgives one another ran.
+_coverage-lines-contract: _project-temp
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export="{{ project_tmp }}/coverage-lines-contract.json"
+    # `a.rs` holds two monomorphizations of one generic, each running the line the other does not, so
+    # between them they run both and neither line is a gap. Scoring the group by its best single
+    # member instead, which is what LLVM's own total does, reports one of them missed. `b.rs` holds a
+    # body nothing ran, which stays a gap either way.
+    printf '%s' \
+      '{"data":[{"files":[{"filename":"a.rs"},{"filename":"b.rs"}],"functions":[' \
+      '{"filenames":["a.rs"],"regions":[[10,1,10,9,5,0,0,0],[11,1,11,9,0,0,0,0]]},' \
+      '{"filenames":["a.rs"],"regions":[[10,1,10,9,0,0,0,0],[11,1,11,9,7,0,0,0]]},' \
+      '{"filenames":["b.rs"],"regions":[[20,1,20,9,0,0,0,0]]}]}]}' >"$export"
+    # The check exits non-zero when it reports anything, so its output is captured rather than piped:
+    # under `pipefail` a pipeline carrying it is non-zero however the reader fares.
+    report=$(uv run --script coverage_lines.py "$export" && echo "reported nothing" || true)
+    # `set -e` is specified to ignore a command preceded by `!`, so a negation asserts nothing here
+    # and each one is written as the failure it stands for.
+    grep -qF 'b.rs: 20' <<<"$report"
+    for forbidden in 'a.rs' 'reported nothing'; do
+      if grep -qF "$forbidden" <<<"$report"; then
+        echo "the line check reported ${forbidden@Q}: $report" >&2
+        exit 1
+      fi
+    done
+
 _coverage-target-contract:
     CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract" just --dry-run coverage-frontend 2>&1 \
       | grep -F 'export CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract/frontend"'
@@ -187,7 +214,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _embedded-docs-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _mutation-telemetry-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-lines-contract _coverage-target-contract _embedded-docs-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _mutation-telemetry-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check that mutation scope stays on production code and that the shard plan follows it.
@@ -1261,16 +1288,31 @@ package-sdist output="dist": _project-temp
 
 # Measure native Rust coverage.
 coverage-native output=".tox/coverage/native.lcov": test-deps _docker-ready
-    mkdir -p "$(dirname "{{ output }}")"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output="{{ output }}"
+    mkdir -p "$(dirname "$output")" "{{ project_tmp }}"
     cargo llvm-cov clean --workspace
     cargo llvm-cov --workspace --all-features --bench '*' --no-report
     PERYX_BIN="{{ native_coverage_binary }}" \
       PATH="{{ tools_root }}/bin:$PATH" cargo llvm-cov nextest --workspace \
       --all-features --profile ci --lib --bins --tests --examples \
       -E 'not(test(e2e_live))' --no-report
-    cargo llvm-cov report --no-default-ignore-filename-regex \
-      --ignore-filename-regex '/(\.cargo/(registry|git)|\.rustup/toolchains|rustc/[0-9a-f]+)/' \
-      --fail-uncovered-lines 0 --show-missing-lines --lcov --output-path "{{ output }}"
+    ignore='/(\.cargo/(registry|git)|\.rustup/toolchains|rustc/[0-9a-f]+)/'
+    cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
+      --lcov --output-path "$output"
+    # `--fail-uncovered-lines` counts a line no function reached, and it is the gate: every line it
+    # has named was a real gap. What it does not see is a function body nothing ran whose lines a
+    # covered caller spans, so it is paired with the check below rather than with
+    # `--fail-under-lines`. LLVM's own total is not usable as that pair: it scores an instantiation
+    # group by taking the mapped and covered counts from whichever monomorphization is highest at
+    # each, independently, so a line one monomorphization runs and another does not is counted
+    # missed while executing. That described 66 of the 88 lines the total reported here.
+    cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
+      --fail-uncovered-lines 0 --show-missing-lines
+    cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
+      --json --output-path "{{ project_tmp }}/coverage.json"
+    uv run --script coverage_lines.py "{{ project_tmp }}/coverage.json"
 
 # Measure native and Wasm frontend coverage.
 coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output=".tox/coverage/frontend-wasm.lcov" merged_output=".tox/coverage/frontend.lcov": _project-temp
