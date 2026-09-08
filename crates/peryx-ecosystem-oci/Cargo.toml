@@ -58,6 +58,7 @@ time.workspace = true
 clap = { workspace = true, optional = true }
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 peryx-events = { workspace = true, features = ["test-util"] }
 peryx-http.workspace = true
 peryx-storage = { workspace = true, features = ["fault-injection"] }

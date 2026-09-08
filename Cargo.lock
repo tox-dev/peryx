@@ -4899,6 +4899,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "url",
  "utoipa",
  "uuid",

@@ -586,7 +586,7 @@ fn test_a_protected_read_lists_its_credentials_as_alternatives() {
 fn test_a_documented_parameter_says_where_it_goes_and_what_it_holds(
     #[case] template: &str,
     #[case] method: &str,
-    #[case] name: &str,
+    #[case] parameter: &str,
     #[case] location: &str,
     #[case] description: &str,
 ) {
@@ -596,8 +596,8 @@ fn test_a_documented_parameter_says_where_it_goes_and_what_it_holds(
         .as_array()
         .unwrap()
         .iter()
-        .find(|parameter| parameter["name"] == name)
-        .unwrap_or_else(|| panic!("{name} is not documented on {method} {template}: {parameters}"))
+        .find(|candidate| candidate["name"] == parameter)
+        .expect("the parameter is documented on the operation")
         .clone();
 
     assert_eq!(found["in"], location.to_lowercase(), "{found}");

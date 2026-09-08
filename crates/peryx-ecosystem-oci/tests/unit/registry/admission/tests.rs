@@ -1,7 +1,12 @@
+use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
+
 use super::*;
 use axum::http::StatusCode;
 use peryx_core::{NodeRole, TopologyConfig, TopologyMember, TopologyMode};
 use peryx_storage::meta::{IntentPhase, IntentUsage};
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::prelude::*;
 
 const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000001";
 const OTHER: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000002";
@@ -194,4 +199,79 @@ fn test_a_rostered_deployment_records_the_local_datacenter() {
     };
 
     assert_eq!(ingress_dc(&topology), "east");
+}
+
+/// Collects the message of every event emitted while it is installed.
+#[derive(Clone, Default)]
+struct Messages(Arc<Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Messages {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut message = String::new();
+        event.record(&mut MessageVisitor(&mut message));
+        self.0.lock().unwrap().push(message);
+    }
+}
+
+struct MessageVisitor<'a>(&'a mut String);
+
+impl tracing::field::Visit for MessageVisitor<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            let _ = write!(self.0, "{value:?}");
+        }
+    }
+}
+
+/// Admit one push under `limits` and hand back everything that was logged while it ran.
+fn messages_while_admitting(limits: IntentLimits) -> Vec<String> {
+    let (_dir, meta) = store();
+    let collected = Messages::default();
+    let seen = Arc::clone(&collected.0);
+    let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(collected.boxed()));
+
+    admit(&meta, limits, &request(DIGEST), 100).unwrap();
+
+    drop(guard);
+    seen.lock().unwrap().clone()
+}
+
+/// The retained-backlog ceiling is 64 GiB per authority. It is written as a product of powers of two,
+/// which is one operator away from numbers that still look deliberate: turning any `*` into `+` yields
+/// 3 KiB, 1 MiB or 64 MiB, each of which would shed almost every push.
+#[test]
+fn test_the_staging_byte_ceiling_is_sixty_four_gibibytes() {
+    assert_eq!(STAGING_LIMITS.max_bytes, 68_719_476_736);
+}
+
+/// Crossing the soft threshold warns. Both sides of that check still stage the push and return the
+/// same key, so the warning is the whole of the observable difference, and it is the only signal an
+/// operator gets that an authority is filling up before it starts shedding.
+#[test]
+fn test_a_push_that_crosses_the_soft_threshold_warns() {
+    let messages = messages_while_admitting(IntentLimits {
+        max_records: 2,
+        backpressure_percent: 50,
+        ..LIMITS
+    });
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("admission backpressured")),
+        "{messages:?}"
+    );
+}
+
+/// A push with room to spare says nothing, which is what makes the warning above mean something.
+#[test]
+fn test_a_push_below_the_soft_threshold_stays_quiet() {
+    let messages = messages_while_admitting(LIMITS);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("admission backpressured")),
+        "{messages:?}"
+    );
 }
