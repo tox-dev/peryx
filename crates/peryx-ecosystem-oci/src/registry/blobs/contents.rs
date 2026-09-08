@@ -157,3 +157,7 @@ fn layer_error_response(err: &ArchiveError) -> Response {
     };
     (status, err.to_string()).into_response()
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/registry/blobs/contents/tests.rs"]
+mod tests;

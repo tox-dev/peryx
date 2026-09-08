@@ -2,7 +2,7 @@ use peryx_storage::meta::{MetaStore, QuotaLimit, QuotaLimits, QuotaReservationSt
 
 use super::{
     ManifestCheckpoint, ManifestCommit, ManifestOperation, ReserveOutcome, commit_blob_membership, finalize,
-    publish_manifest, quota_reservation, release_blob_membership, reserve,
+    manifest_already_published, publish_manifest, quota_reservation, release_blob_membership, reserve,
 };
 use crate::name::Reference;
 use crate::registry::ServeError;
@@ -341,4 +341,36 @@ fn checkpoint_commit<'a>(manifest: &'a Manifest, reference: &'a Reference) -> Ma
             now: 100,
         }),
     }
+}
+
+/// A tag pointing at the manifest counts as already published, so a repush of the same content under
+/// the same tag is free rather than charged again. The live tag alone settles it: a manifest whose tag
+/// has never been trashed is the ordinary case, and requiring a trashed record too would charge every
+/// one of them.
+#[test]
+fn test_a_manifest_under_its_live_tag_reads_as_already_published() {
+    let (_dir, meta) = store();
+    let manifest = Manifest {
+        media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+        bytes: b"{}".to_vec(),
+    };
+    let reference = Reference::Tag("stable".to_owned());
+    publish_manifest(
+        &meta,
+        ManifestCommit {
+            index: "store",
+            repo: "app",
+            canonical: "sha256:a",
+            manifest: &manifest,
+            reference: &reference,
+            referrer: None,
+            reservation: None,
+            journal: false,
+            webhook: None,
+            operation: None,
+        },
+    )
+    .unwrap();
+
+    assert!(manifest_already_published(&meta, "store", "app", "sha256:a", &reference).unwrap());
 }
