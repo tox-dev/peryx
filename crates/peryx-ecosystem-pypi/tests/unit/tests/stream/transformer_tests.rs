@@ -1474,3 +1474,24 @@ fn transformer_keeps_a_brace_inside_a_captured_object(#[case] member: &str) {
     assert!(out.contains(r#""name":"demo""#), "the page continues past the object: {out}");
     assert!(out.contains(r#""versions""#), "the members after it still arrive: {out}");
 }
+
+/// A versions array lists strings, so an object inside one is a page peryx refuses. Knowing where that
+/// array ends is what makes the refusal about the object rather than about the document running out:
+/// without following the nesting, the scanner takes the object's own brace for the array's close, and
+/// the page is reported truncated instead of ill-typed.
+#[test]
+fn transformer_refuses_an_object_inside_the_versions_array() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":[{"a":"b"}],"files":[]}"#;
+    let mut transformer = PageTransformer::new(plain_context());
+    let mut out = Vec::new();
+
+    let refusal = page
+        .as_bytes()
+        .chunks(3)
+        .find_map(|piece| transformer.push_into(piece, &mut out).err());
+
+    assert!(
+        matches!(refusal, Some(TransformError::Parse(_))),
+        "the versions array ends at its own bracket, so the object is what is refused: {refusal:?}"
+    );
+}
