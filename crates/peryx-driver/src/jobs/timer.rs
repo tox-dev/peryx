@@ -21,7 +21,11 @@ use crate::state::AppState;
 
 pub trait ScheduledJobFactory: Send + Sync {
     fn kind(&self) -> &'static str;
-    fn settings(&self) -> toml::Table;
+
+    /// The settings the job was compiled with, which a job taking none reports as an empty table.
+    fn settings(&self) -> toml::Table {
+        toml::Table::new()
+    }
 
     /// # Errors
     /// Returns a user-facing configuration error when runtime state cannot satisfy the compiled job.

@@ -59,6 +59,8 @@ fn test_scheduled_job_kind_recognition_is_owner_defined(#[case] kind: &str, #[ca
 #[rstest]
 #[case::dc_copy("dc_copy", "", "dc_copy", [("concurrency", 8)].as_slice())]
 #[case::dc_copy_custom("dc_copy", "concurrency = 2", "dc_copy", &[("concurrency", 2)])]
+// The per-pass limit is a ceiling a pass is allowed to reach, so the value at it compiles.
+#[case::dc_copy_at_the_limit("dc_copy", "concurrency = 64", "dc_copy", &[("concurrency", 64)])]
 #[case::placement("placement_reconcile", "", "placement_reconcile", &[])]
 #[case::reclamation("reclamation", "", "reclamation", &[])]
 fn test_compile_scheduled_job_preserves_public_identity(
