@@ -843,3 +843,7 @@ fn supports_metadata_sibling(filename: &str) -> bool {
             .get(filename.len().saturating_sub(7)..)
             .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/stream/transformer_bounds.rs"]
+mod bound_tests;
