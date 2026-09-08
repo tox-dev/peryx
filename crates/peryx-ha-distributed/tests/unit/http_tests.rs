@@ -772,10 +772,12 @@ async fn test_http_primary_stops_a_chunked_body_that_crosses_the_limit() {
 
     let result = primary.changes(0, 10).await;
 
-    assert!(
-        matches!(result, Err(HttpPrimaryError::ResponseTooLarge { limit: 64, actual }) if actual > 64),
-        "the read stops only once the accumulated bytes cross the cap"
-    );
+    // The count the reader reports is the running total, so it names the chunk that crossed the cap
+    // rather than any number above it: two thirty-two byte chunks fit, and the third makes ninety-six.
+    assert!(matches!(
+        result,
+        Err(HttpPrimaryError::ResponseTooLarge { limit: 64, actual: 96 })
+    ));
 }
 
 #[tokio::test]
