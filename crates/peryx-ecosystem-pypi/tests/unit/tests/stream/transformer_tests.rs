@@ -1495,3 +1495,26 @@ fn transformer_refuses_an_object_inside_the_versions_array() {
         "the versions array ends at its own bracket, so the object is what is refused: {refusal:?}"
     );
 }
+
+/// A brace does not close an array. A stray `}` inside `versions` leaves the array open, so the page
+/// runs out before it ends and is refused as truncated. Ending the array there instead would report a
+/// parse error and call a document that was really cut short a well-formed one that said the wrong
+/// thing.
+#[test]
+fn transformer_does_not_end_the_versions_array_at_a_brace() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":[}],"files":[]}"#;
+    let mut transformer = PageTransformer::new(plain_context());
+    let mut out = Vec::new();
+    for piece in page.as_bytes().chunks(3) {
+        transformer
+            .push_into(piece, &mut out)
+            .expect("a brace inside the array is captured rather than acted on");
+    }
+
+    let refusal = transformer.finish().err();
+
+    assert!(
+        matches!(refusal, Some(TransformError::Truncated)),
+        "the array never closed, so the page ran out: {refusal:?}"
+    );
+}
