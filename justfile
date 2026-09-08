@@ -187,7 +187,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _mutation-telemetry-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check that mutation scope stays on production code and that the shard plan follows it.
@@ -207,6 +207,24 @@ _mutation-scope-contract:
 _mutation-profile-contract:
     just --dry-run mutation 0/1 true 2 skip 500 round-robin 2>&1 \
       | grep -F 'CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 PATH='
+
+# Check that a shard's telemetry can name the resource it ran out of.
+_mutation-telemetry-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    recipe="$(just --dry-run mutation-observed 0/1 true 1 skip 500 round-robin 2>&1)"
+    # A shard that loses its runner uploads nothing and leaves no log, so each property below is what
+    # a shard that survives can still report about the run-up.
+    check() {
+      if ! grep -Fq -- "$2" <<<"$recipe"; then
+        printf 'mutation telemetry must %s; see contributing/ci.md for why\n' "$1" >&2
+        exit 1
+      fi
+    }
+    check 'read progress from the outcomes cargo-mutants writes' '.tox/mutants/mutants.out/outcomes.json'
+    check 'report free space on the filesystem holding the workspace' 'disk.available=%s'
+    check 'report the memory the machine has left' 'memory.available=%s'
+    check 'append every sample to the uploaded output directory' 'tee -a "$trace"'
 
 # Check that the hosted build commands survive their shell wrapper.
 _readthedocs-contract:
@@ -648,18 +666,29 @@ mutation-observed shard="0/1" in_place="false" jobs="2" baseline="run" timeout="
       printf 'mutation resource telemetry requires Linux cgroup v2\n' >&2
       exit 2
     fi
+    # cargo-mutants creates mutants.out inside the output directory, and the shard uploads that
+    # directory, so a trace written beside it reaches the artifact. A job log does not: every log
+    # from a run whose shards executed already answers BlobNotFound.
+    mkdir -p .tox/mutants
+    trace=.tox/mutants/resource.log
     sample() {
       local metric pressure progress
-      if [[ -r .tox/mutants/outcomes.json ]]; then
+      if [[ -r .tox/mutants/mutants.out/outcomes.json ]]; then
         progress="$(jq -c '{
           completed: (.outcomes | length),
           last: (.outcomes[-1].scenario.Mutant.name //
             (if (.outcomes | length) > 0 then (.outcomes[-1].scenario | tostring) else null end))
-        }' .tox/mutants/outcomes.json 2>/dev/null || printf '{"completed":null,"last":null}')"
+        }' .tox/mutants/mutants.out/outcomes.json 2>/dev/null || printf '{"completed":null,"last":null}')"
       else
         progress='{"completed":0,"last":null}'
       fi
       printf 'mutation-resource timestamp=%s progress=%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$progress"
+      # The cgroup counts this job's own process tree. What starves a hosted runner is what the
+      # machine has left, and its 14 GB disk is the smallest of the three resources it publishes.
+      if [[ -r /proc/meminfo ]]; then
+        printf ' memory.available=%s' "$(awk '$1 == "MemAvailable:" { print $2 * 1024 }' /proc/meminfo)"
+      fi
+      df -P -B1 . | awk 'NR == 2 { printf " disk.total=%s disk.available=%s", $2, $4 }'
       for metric in memory.current memory.peak pids.current; do
         if [[ -r "$cgroup_root/$metric" ]]; then
           printf ' %s=%s' "$metric" "$(<"$cgroup_root/$metric")"
@@ -677,14 +706,15 @@ mutation-observed shard="0/1" in_place="false" jobs="2" baseline="run" timeout="
       done
       printf '\n'
     }
-    sample
-    while sleep 60; do sample; done &
+    record() { sample | tee -a "$trace"; }
+    record
+    while sleep 60; do record; done &
     monitor_pid=$!
     trap 'kill "$monitor_pid" 2>/dev/null || :; wait "$monitor_pid" 2>/dev/null || :' EXIT
     just mutation "{{ shard }}" "{{ in_place }}" "{{ jobs }}" "{{ baseline }}" "{{ timeout }}" "{{ sharding }}"
     mutation_status=$?
-    sample
-    printf 'mutation-exit status=%d\n' "$mutation_status"
+    record
+    printf 'mutation-exit status=%d\n' "$mutation_status" | tee -a "$trace"
     exit "$mutation_status"
 
 # Run the mutation baseline suite.

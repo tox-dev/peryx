@@ -62,6 +62,15 @@ Excluding paths shortens the matrix rather than the shards. The nightly derives 
 mutates, at `mutation-shard-count "$(just mutation-count)" 128`, so the run goes from 148 shards to 140 with each still
 targeting 128 mutants. A shard takes as long as it did.
 
+Most shards end with `The hosted runner lost communication with the server`, and a runner that disappears uploads no
+artifact and leaves no log, so `just mutation-observed` samples the shard every 60 seconds into
+`.tox/mutants/resource.log`, which rides the artifact upload. Each line carries how many mutants finished and which one
+finished last, the cgroup's memory and pid counters, the kernel's pressure files, the memory the machine has left, and
+free space on the filesystem holding the workspace. GitHub publishes this runner class as 4 vCPU, 16 GB RAM and 14 GB
+SSD, and a shard holds a restored Cargo cache, a full `--all-features` debug target tree, and 128 successive suite runs
+writing into `.tox/tmp`, so a trace from a shard that survives is what says which of the three runs out.
+`_mutation-telemetry-contract` fails if a sample stops reporting any of them.
+
 The coverage jobs reject uncovered source lines. `ci-gate` gives branch protection one check name and fails unless every
 required job succeeds.
 
