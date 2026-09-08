@@ -3,7 +3,9 @@ use leptos::prelude::*;
 use crate::data::{LoaderEndpoint, LoaderError};
 use crate::model::{UiCounters, UiEcosystemSummary, UiMetricFamily, UiSnapshot, UiStats};
 
-use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, usage_or_error};
+use super::{
+    ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, reactive_value, retain, usage_or_error,
+};
 
 #[test]
 fn ecosystem_stats_render_declared_and_missing_families() {
@@ -109,4 +111,15 @@ fn byte_sizes_choose_largest_unit() {
     ] {
         assert_eq!(human_size(bytes), expected);
     }
+}
+
+/// Every page reads its signals through this, so a reader that answered with the type's default
+/// instead of the signal's value would quietly blank the whole UI rather than fail anywhere visible.
+#[test]
+fn reactive_value_reads_the_signal_rather_than_its_default() {
+    let owner = Owner::new();
+    owner.set();
+    let (count, _) = signal(7_usize);
+
+    assert_eq!(reactive_value(&count), 7);
 }

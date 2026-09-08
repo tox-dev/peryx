@@ -2,7 +2,7 @@ use leptos::prelude::*;
 
 use crate::model::{UiCounters, UiHosted, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiSummaryStatus, UiUpstream};
 
-use super::AdminStatusBody;
+use super::{AdminStatusBody, UploadCell, kind_count};
 
 fn index(name: &str, kind: &str) -> UiIndex {
     UiIndex {
@@ -149,4 +149,32 @@ fn admin_status_body_renders_auth_and_storage_fallbacks() {
     ] {
         assert!(html.contains(expected), "missing {expected:?} in {html}");
     }
+}
+
+/// The summary counts one kind at a time, so it has to match the kind it was asked for rather than
+/// every other one.
+#[test]
+fn kind_count_counts_only_the_named_kind() {
+    let indexes = [index("one", "cached"), index("two", "hosted"), index("three", "cached")];
+
+    assert_eq!(kind_count(&indexes, "cached"), 2);
+    assert_eq!(kind_count(&indexes, "hosted"), 1);
+}
+
+/// A cached index has nothing to upload to, so its cell says so instead of showing an upload badge.
+#[test]
+fn upload_cell_reports_no_upload_for_a_cached_index() {
+    let html = view! { <UploadCell index=index("cache", "cached") /> }.to_html();
+
+    assert!(html.contains("none"), "{html}");
+    assert!(!html.contains("badge upload-"), "{html}");
+}
+
+/// A hosted index can take uploads, so its cell carries the badge rather than the cached placeholder.
+#[test]
+fn upload_cell_reports_the_badge_for_a_hosted_index() {
+    let html = view! { <UploadCell index=index("hosted", "hosted") /> }.to_html();
+
+    assert!(html.contains("badge upload-disabled"), "{html}");
+    assert!(!html.contains(">none<"), "{html}");
 }

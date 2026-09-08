@@ -11,7 +11,8 @@ use peryx_search::{ContentSource, IndexerCtx, SearchDocument, SearchDocumentProv
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
-use super::Search;
+use super::{Search, SearchResults};
+use crate::model::{UiSearchPage, UiSearchResult};
 
 struct Documents;
 
@@ -215,4 +216,61 @@ fn state(documents: bool, private: bool) -> (tempfile::TempDir, Arc<AppState>) {
             .add_indexer(Arc::new(Documents));
     }
     (directory, Arc::new(app))
+}
+
+fn results_page(page: usize) -> UiSearchPage {
+    UiSearchPage {
+        query: "peryx".to_owned(),
+        source_type: "all".to_owned(),
+        availability: "all".to_owned(),
+        page,
+        page_size: 5,
+        total: 12,
+        results: vec![UiSearchResult {
+            display_label: "peryxpkg".to_owned(),
+            resource_key: "peryxpkg".to_owned(),
+            route: "root/pypi".to_owned(),
+            index: "pypi".to_owned(),
+            ecosystem: "pypi".to_owned(),
+            type_label: "project".to_owned(),
+            source_type: "project".to_owned(),
+            available: true,
+            summary: None,
+        }],
+    }
+}
+
+fn pagination_html(page: usize) -> String {
+    view! {
+        <SearchResults
+            query="peryx".to_owned()
+            source_type="all".to_owned()
+            availability="all".to_owned()
+            page_data=results_page(page)
+        />
+    }
+    .to_html()
+}
+
+/// There is no page before the first, so its control is inert rather than a link back to page zero.
+#[test]
+fn search_results_leave_previous_inert_on_the_first_page() {
+    let html = pagination_html(1);
+
+    assert!(html.contains("Previous"), "{html}");
+    assert!(
+        !html.contains(">Previous</a>"),
+        "the first page must not link back to page zero: {html}"
+    );
+}
+
+/// The second page has somewhere to go back to, so the same control becomes a link.
+#[test]
+fn search_results_link_previous_from_the_second_page() {
+    let html = pagination_html(2);
+
+    assert!(
+        html.contains(r#"<a href="/search?q=peryx&amp;page_size=5" class="page-link">Previous</a>"#),
+        "{html}"
+    );
 }
