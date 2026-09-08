@@ -1459,3 +1459,18 @@ fn transformer_keeps_a_bracket_inside_a_version_string() {
     assert!(out.contains(r#""1.0]""#), "the version keeps its bracket: {out}");
     assert!(out.contains(r#""2.0""#), "the version after it still arrives: {out}");
 }
+
+/// A brace inside a string value belongs to the string, not to the object around it. Each captured
+/// object tracks that for itself, so without the quote arm the scanner would take the string's own
+/// brace for the object's close and hand a truncated object to the parser.
+#[rstest]
+#[case::meta(r#""meta":{"api-version":"1.1","note":"a}b"}"#)]
+#[case::project_status(r#""project-status":{"status":"quarantined","reason":"closed}open"}"#)]
+fn transformer_keeps_a_brace_inside_a_captured_object(#[case] member: &str) {
+    let page = format!(r#"{{{member},"name":"demo","versions":["1.0"],"files":[]}}"#);
+
+    let (out, _) = transform(&page, plain_context(), 3);
+
+    assert!(out.contains(r#""name":"demo""#), "the page continues past the object: {out}");
+    assert!(out.contains(r#""versions""#), "the members after it still arrive: {out}");
+}
