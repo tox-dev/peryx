@@ -151,12 +151,12 @@ async fn peryx_server_writes_oci_configuration() {
     "ended its output before its startup event"
 )]
 #[case(
-    Some("#!/bin/sh\nprintf 'peryx listening\\n'\nexit 7\n"),
+    Some("#!/bin/sh\nprintf 'addr=127.0.0.1:9 peryx listening\\n'\nexit 7\n"),
     false,
     "exited before OCI pulls were ready"
 )]
 #[case(
-    Some("#!/bin/sh\nprintf 'peryx listening\\n'\nexec python3 -c 'import signal; signal.pause()'\n"),
+    Some("#!/bin/sh\nprintf 'addr=127.0.0.1:9 peryx listening\\n'\nexec python3 -c 'import signal; signal.pause()'\n"),
     false,
     "could not pull through"
 )]
@@ -637,7 +637,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 server = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
-print("peryx listening", flush=True)
+print(f"addr=127.0.0.1:{server.server_address[1]} peryx listening", flush=True)
 server.handle_request()
 PY
 "#;

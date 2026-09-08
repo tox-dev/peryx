@@ -225,6 +225,10 @@ pub(super) struct BenchServer {
     setup: Option<Setup>,
     teardown: Option<Teardown>,
     ready_log: &'static str,
+    /// Reads the port out of the line matching `ready_log`, for a server told to bind port zero.
+    /// A server that reports what it bound needs no port chosen for it, which is the only way to
+    /// hand one over without a window in which somebody else can take it.
+    ready_port: Option<fn(&str) -> Option<u16>>,
 }
 
 impl Deref for BenchServer {
@@ -242,9 +246,16 @@ impl BenchServer {
         context: &BenchmarkContext,
         state: &Path,
     ) -> anyhow::Result<Active> {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        // A server with nothing to start needs no port, and one that reports the port it bound is
+        // told to take any. Only a server that must be told its port ahead of time gets one chosen
+        // here, and that reservation is held until the moment the child runs.
+        let reservation = match (&self.command, self.ready_port) {
+            (None, _) | (Some(_), Some(_)) => None,
+            (Some(_), None) => Some(std::net::TcpListener::bind(("127.0.0.1", 0))?),
+        };
+        let mut port = reservation
+            .as_ref()
+            .map_or(Ok(0), |listener| listener.local_addr().map(|a| a.port()))?;
         let url = (self.base_url)(environment, port);
         let Some(command) = &self.command else {
             return Ok(Active {
@@ -264,6 +275,9 @@ impl BenchServer {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(unix)]
         command.process_group(0);
+        // Released here rather than at selection, so the port stays taken across the config write
+        // and the command build instead of only being hoped for.
+        drop(reservation);
         let mut process = command
             .spawn()
             .with_context(|| format!("{} did not start", self.name))?;
@@ -285,7 +299,14 @@ impl BenchServer {
         };
         let deadline = tokio::time::Instant::now() + environment.startup_timeout;
         match wait_for_startup(receiver, deadline).await {
-            Ok(Some(())) => {}
+            Ok(Some(line)) => {
+                if let Some(read_port) = self.ready_port {
+                    port = read_port(&line)
+                        .with_context(|| format!("{} did not report the port it bound: {line}", self.name))?;
+                    active.port = port;
+                    active.url = (self.base_url)(environment, port);
+                }
+            }
             Ok(None) => bail!("{} ended its output before its startup event", self.name),
             Err(_) => {
                 let tail = std::fs::read_to_string(&log).unwrap_or_default();
@@ -324,7 +345,7 @@ impl BenchServer {
 }
 
 struct StartupCapture {
-    receiver: tokio::sync::mpsc::Receiver<()>,
+    receiver: tokio::sync::mpsc::Receiver<String>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -348,7 +369,7 @@ fn capture_startup(
 fn capture_stream(
     stream: impl std::io::Read + Send + 'static,
     log: Arc<Mutex<std::fs::File>>,
-    sender: tokio::sync::mpsc::Sender<()>,
+    sender: tokio::sync::mpsc::Sender<String>,
     marker: &'static str,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -357,16 +378,16 @@ fn capture_stream(
                 let _ = writeln!(log, "{line}");
             }
             if line.contains(marker) {
-                let _ = sender.try_send(());
+                let _ = sender.try_send(line.clone());
             }
         }
     })
 }
 
 async fn wait_for_startup(
-    mut receiver: tokio::sync::mpsc::Receiver<()>,
+    mut receiver: tokio::sync::mpsc::Receiver<String>,
     deadline: tokio::time::Instant,
-) -> anyhow::Result<Option<()>> {
+) -> anyhow::Result<Option<String>> {
     tokio::time::timeout_at(deadline, receiver.recv())
         .await
         .context("startup event timed out")
@@ -397,7 +418,9 @@ async fn wait_for_container_event(
     for thread in threads {
         let _ = thread.join();
     }
-    result.context("the OCI mirror did not emit its startup event")
+    result
+        .map(|_| ())
+        .context("the OCI mirror did not emit its startup event")
 }
 
 async fn readiness_pull(
@@ -582,13 +605,13 @@ fn peryx() -> BenchServer {
             command.arg("serve").arg("--config").arg(state.join("peryx.toml"));
             command
         })),
-        setup: Some(Arc::new(|environment, port, state| {
+        setup: Some(Arc::new(|environment, _port, state| {
             let auth = hub_credentials(environment).map_or_else(String::new, |(user, token)| {
                 format!("username = {}\npassword = {}\n", toml_str(&user), toml_str(&token))
             });
             let config = format!(
                 "host = \"127.0.0.1\"\n\
-                 port = {port}\n\
+                 port = 0\n\
                  data_dir = {data}\n\n\
                  [[index]]\n\
                  name = \"dockerhub\"\n\
@@ -606,7 +629,27 @@ fn peryx() -> BenchServer {
         })),
         teardown: None,
         ready_log: "peryx listening",
+        ready_port: Some(peryx_ready_port),
     }
+}
+
+/// The port peryx reports in the `addr` field of its startup line. It is told to bind zero, so this
+/// line is the only place the real port appears and nothing else ever holds it.
+///
+/// peryx logs in either of two formats, and the bench harness sets neither, so the field arrives as
+/// `addr=127.0.0.1:8080` under the default and as `"addr":"127.0.0.1:8080"` under JSON logging. Both
+/// put the socket address straight after the field name, so the separators are skipped rather than
+/// matched.
+fn peryx_ready_port(line: &str) -> Option<u16> {
+    line.split("addr")
+        .nth(1)?
+        .trim_start_matches([':', '=', '"', ' '])
+        .split(['"', ' ', ','])
+        .next()?
+        .rsplit(':')
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn direct() -> BenchServer {
@@ -625,6 +668,7 @@ fn direct() -> BenchServer {
         setup: None,
         teardown: None,
         ready_log: "",
+        ready_port: None,
     }
 }
 
@@ -660,6 +704,7 @@ fn distribution() -> BenchServer {
         setup: None,
         teardown: Some(Arc::new(remove_container)),
         ready_log: "listening on",
+        ready_port: None,
     }
 }
 
@@ -709,6 +754,7 @@ fn zot() -> BenchServer {
         })),
         teardown: None,
         ready_log: "listening on",
+        ready_port: None,
     }
 }
 
