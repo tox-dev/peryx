@@ -542,3 +542,55 @@ async fn test_transform_whole_withholds_quarantined_files_before_status() {
         ) == (crate::ProjectStatus::Quarantined, true))
     ));
 }
+
+/// A page transformed from a cached record stays servable for exactly the freshness that record was
+/// granted, counted from when it was fetched. The stored entry is fresh a second before that and stale
+/// on it, which is what fixes the expiry at the sum of the two rather than at any other combination of
+/// them.
+#[tokio::test]
+async fn test_a_transformed_page_expires_a_freshness_after_it_was_fetched() {
+    const FETCHED_AT: i64 = 1_000;
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, "https://example.invalid/simple/", |client| {
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Cached { client, offline: true },
+            policy: peryx_policy::Policy::default(),
+            acl: IndexAcl::default(),
+        }]
+    });
+    // A record granting no freshness of its own takes the index's, so that is the span under test.
+    let granted = state.serving.ttl_secs;
+    assert!(granted >= 2, "a span of at least two seconds has an inside and an edge");
+    let page = files_before_status_page("https://example.invalid/files/flask.whl", Digest::of(b"wheel").as_str(), None);
+    let mut record = fresh_record(page.as_bytes());
+    record.fetched_at_unix = FETCHED_AT;
+    record.fresh_secs = None;
+    state.serving.meta.put_index("pypi/flask", &record).unwrap();
+
+    cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
+
+    let key = state
+        .serving
+        .representation_key("pypi", "flask", crate::cache::SIMPLE_JSON);
+    assert!(
+        state
+            .serving
+            .cache
+            .hot_fresh_versioned(&key, FETCHED_AT + granted - 1)
+            .is_some(),
+        "servable until the freshness it was granted runs out"
+    );
+    assert!(
+        state
+            .serving
+            .cache
+            .hot_fresh_versioned(&key, FETCHED_AT + granted)
+            .is_none(),
+        "and stale once it does"
+    );
+}
