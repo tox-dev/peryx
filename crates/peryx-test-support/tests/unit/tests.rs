@@ -595,6 +595,76 @@ fn process_ready_reports_an_external_reap() {
     });
 }
 
+/// The startup signal is waited for twice: once for whatever the process says first, and again for the
+/// signal itself when the first event was not it. A process reaped between the two leaves the second
+/// wait with a child it can no longer collect, which is the error the harness must report rather than
+/// a readiness verdict it cannot have reached.
+#[cfg(unix)]
+#[test]
+fn process_ready_reports_a_reap_between_the_two_startup_waits() {
+    with_fixture(|fixture| {
+        fs::write(fixture.serve_mode(), "two-event-hang").expect("emit a second non-startup event");
+        let mut node = fixture
+            .harness()
+            .spawn_until_event("reaped-mid-startup", "", "fixture process started")
+            .expect("observe process start");
+        reap_process(node.pid(), Some(nix::sys::signal::Signal::SIGKILL));
+
+        let ready = node.await_ready();
+
+        // The reap ends both waits the same way, so the log says which one ran: the second wait is
+        // reached only once the first has taken a non-startup event.
+        assert!(node.log().contains("fixture booting"), "{}", node.log());
+        assert!(matches!(
+            ready,
+            Err(HarnessError::Io(error)) if error.raw_os_error() == Some(nix::libc::ECHILD)
+        ));
+    });
+}
+
+/// The second wait times out on its own terms, and it has to say so in its own words: the first wait
+/// gives up on hearing nothing at all, this one on hearing everything except the startup signal. A
+/// reader told the wrong one looks for the wrong fault.
+///
+/// The process here also exits through its shutdown request rather than being killed, which is what
+/// lets the coverage of the two events above it be recorded at all.
+#[test]
+fn process_ready_reports_a_missing_startup_signal_after_a_first_event() {
+    with_fixture(|fixture| {
+        fs::write(fixture.serve_mode(), "two-event-hang").expect("emit two non-startup events");
+
+        let error = fixture
+            .harness()
+            .with_ready_timeout(FAILURE_TIMEOUT)
+            .spawn_with_config("two-event", "")
+            .expect_err("a process that never emits the startup signal is not ready");
+
+        assert!(matches!(
+            error,
+            HarnessError::NotReady { log, .. } if log.contains("startup signal missing")
+        ));
+    });
+}
+
+/// A process that announces itself and leaves takes its status endpoint with it while the parent keeps
+/// the port bound, so the readiness probe cannot complete. That is a failure of the probe rather than
+/// an answer from it, and the harness reports the node unready instead of treating an unanswered
+/// request as a verdict.
+#[test]
+fn process_ready_reports_a_status_probe_that_never_completes() {
+    with_fixture(|fixture| {
+        fs::write(fixture.serve_mode(), "startup-then-exit").expect("leave after the startup signal");
+
+        assert!(matches!(
+            fixture
+                .harness()
+                .with_ready_timeout(FAILURE_TIMEOUT)
+                .spawn_with_config("announced-then-gone", ""),
+            Err(HarnessError::NotReady { .. })
+        ));
+    });
+}
+
 #[test]
 fn process_ready_reports_a_stopped_node() {
     with_fixture(|fixture| {

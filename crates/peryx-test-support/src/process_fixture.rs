@@ -61,11 +61,16 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
     }
     let port = argument(args, "--port").parse::<u16>().expect("public port");
     let serve_mode = fs::read_to_string(sibling(executable, "serve-mode")).expect("read serve mode");
-    if serve_mode == "hang" {
+    if matches!(serve_mode.as_str(), "hang" | "two-event-hang") {
         println!(r#"{{"message":"fixture process started"}}"#);
+        // A second event that is not the startup signal, so a harness waiting for the signal is one
+        // event past the one it started on when the process goes away under it.
+        if serve_mode == "two-event-hang" {
+            println!(r#"{{"message":"fixture booting"}}"#);
+        }
         std::io::stdout().flush().expect("flush process start event");
     }
-    if matches!(serve_mode.as_str(), "hang" | "silent-hang") {
+    if matches!(serve_mode.as_str(), "hang" | "silent-hang" | "two-event-hang") {
         let listener = public_listener
             .unwrap_or_else(|| fixture_listener_from_descriptor(std::env::var_os(PUBLIC_LISTENER_FD_ENV), port));
         let (mut stream, _) = listener.accept().expect("accept shutdown request");
@@ -101,6 +106,11 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
     println!(r#"{{"message":"peryx listening"}}"#);
     println!(r#"{{"message":"fixture event"}}"#);
     std::io::stdout().flush().expect("flush startup signal");
+    // Announced and gone: the parent holds the listening socket, so the readiness probe that follows
+    // reaches a bound port with nothing behind it rather than a refused connection.
+    if serve_mode == "startup-then-exit" {
+        return Ok(());
+    }
     if serve_mode == "signal-only" {
         fs::write(sibling(executable, "state"), "status-broken").expect("reject readiness request");
         println!(r#"{{"message":"fixture signal-only"}}"#);
