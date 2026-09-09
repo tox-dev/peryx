@@ -433,38 +433,48 @@ fn test_protected_reads_do_not_require_the_write_scheme() {
 fn test_every_operation_is_fully_described() {
     let spec = serde_json::to_value(openapi()).unwrap();
 
-    let mut undescribed = Vec::new();
+    let mut described = Vec::new();
     for (path, item) in spec["paths"].as_object().unwrap() {
         for (method, operation) in item.as_object().unwrap() {
-            let mut missing = Vec::new();
-            if operation["tags"].as_array().is_none_or(Vec::is_empty) {
-                missing.push("tags".to_owned());
-            }
-            if operation["summary"].as_str().is_none_or(str::is_empty) {
-                missing.push("summary".to_owned());
-            }
             let responses = operation["responses"].as_object().unwrap();
-            if responses.is_empty() {
-                missing.push("responses".to_owned());
-            }
-            for (status, response) in responses {
-                if response["description"].as_str().is_none_or(str::is_empty) {
-                    missing.push(format!("{status} description"));
-                }
-                missing.extend(undescribed_content(&response["content"], status));
-            }
-            if let Some(body) = operation.get("requestBody") {
-                if body["content"].as_object().is_none_or(serde_json::Map::is_empty) {
-                    missing.push("requestBody content".to_owned());
-                }
-                missing.extend(undescribed_content(&body["content"], "requestBody"));
-            }
-            if !missing.is_empty() {
-                undescribed.push((path.clone(), method.clone(), missing));
-            }
+            let body = operation.get("requestBody");
+            let checks = [
+                ("tags", operation["tags"].as_array().is_none_or(Vec::is_empty)),
+                ("summary", operation["summary"].as_str().is_none_or(str::is_empty)),
+                ("responses", responses.is_empty()),
+                (
+                    "requestBody content",
+                    body.is_some_and(|body| body["content"].as_object().is_none_or(serde_json::Map::is_empty)),
+                ),
+            ];
+            let missing: Vec<String> = checks
+                .into_iter()
+                .map(|(label, missing)| (label.to_owned(), missing))
+                .chain(responses.iter().map(|(status, response)| {
+                    (
+                        format!("{status} description"),
+                        response["description"].as_str().is_none_or(str::is_empty),
+                    )
+                }))
+                .filter_map(|(label, missing)| missing.then_some(label))
+                .chain(
+                    responses
+                        .iter()
+                        .flat_map(|(status, response)| undescribed_content(&response["content"], status)),
+                )
+                .chain(
+                    body.into_iter()
+                        .flat_map(|body| undescribed_content(&body["content"], "requestBody")),
+                )
+                .collect();
+            described.push((path.clone(), method.clone(), missing));
         }
     }
 
+    let undescribed: Vec<_> = described
+        .into_iter()
+        .filter(|(.., missing)| !missing.is_empty())
+        .collect();
     assert_eq!(undescribed, Vec::new());
 }
 
@@ -473,10 +483,13 @@ fn undescribed_content(content: &serde_json::Value, owner: &str) -> Vec<String> 
         .as_object()
         .into_iter()
         .flatten()
-        .filter(|(media_type, media)| {
-            media_type.contains("json") && media["example"].is_null() && media["schema"].is_null()
+        .map(|(media_type, media)| {
+            (
+                format!("{owner} {media_type} example"),
+                media_type.contains("json") && media["example"].is_null() && media["schema"].is_null(),
+            )
         })
-        .map(|(media_type, _)| format!("{owner} {media_type} example"))
+        .filter_map(|(label, missing)| missing.then_some(label))
         .collect()
 }
 
