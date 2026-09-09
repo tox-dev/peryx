@@ -908,3 +908,32 @@ async fn test_deleting_one_file_of_a_multi_file_project_keeps_the_project_listed
         "a project that still serves a file stays listed: {list}"
     );
 }
+
+#[tokio::test]
+async fn test_a_token_scoped_to_another_project_cannot_delete_this_one() {
+    let h = authority_harness().await;
+    // The path carries no trailing slash, so which project the token is being spent on has to come from
+    // the segment rather than from an empty one the split leaves behind.
+    upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await;
+
+    let status = request(&h.state, "DELETE", "/hosted/peryxpkg/1.0", Some(&narrow_auth())).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (served, ..) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(served, StatusCode::OK, "the refused delete left the project served");
+}
+
+#[tokio::test]
+async fn test_a_delete_carrying_no_reason_records_none() {
+    let h = authority_harness().await;
+    upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await;
+
+    let status = request(&h.state, "DELETE", "/hosted/peryxpkg/1.0/?ignored=1", Some(&upload_auth())).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let entries = h.state.serving.meta.list_upload_entries("hosted", "peryxpkg").unwrap();
+    let (_, bytes) = entries.first().expect("the soft-deleted record is kept");
+    let record: crate::upload::Uploaded = serde_json::from_slice(bytes).unwrap();
+    let trash = record.trashed.expect("the record carries trash metadata");
+    assert_eq!(trash.reason, None, "only a reason parameter supplies the reason");
+}
