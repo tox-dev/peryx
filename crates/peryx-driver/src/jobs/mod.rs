@@ -60,6 +60,30 @@ pub struct JobReport {
     pub quota_remaining: u64,
 }
 
+impl JobReport {
+    /// A run that changed every item it examined.
+    #[must_use]
+    pub const fn changed(count: u64) -> Self {
+        Self {
+            processed: count,
+            changed: count,
+            quota_released: 0,
+            quota_remaining: 0,
+        }
+    }
+
+    /// A run that examined items and changed none of them.
+    #[must_use]
+    pub const fn examined(count: u64) -> Self {
+        Self {
+            processed: count,
+            changed: 0,
+            quota_released: 0,
+            quota_remaining: 0,
+        }
+    }
+}
+
 /// The result of a job that stopped without failing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobRunOutcome {
@@ -282,11 +306,7 @@ impl NodeJob for IdleReclaimJob {
             tracing::info!(ecosystem = %self.ecosystem, reclaimed, "idle resources reclaimed");
         }
         let reclaimed = u64::try_from(reclaimed).expect("reclaimed count fits in u64");
-        Ok(JobRunOutcome::succeeded(JobReport {
-            processed: reclaimed,
-            changed: reclaimed,
-            ..JobReport::default()
-        }))
+        Ok(JobRunOutcome::succeeded(JobReport::changed(reclaimed)))
     }
 }
 
@@ -321,11 +341,7 @@ impl NodeJob for IntentFinalizeJob {
         if finalized > 0 {
             tracing::info!(ecosystem = %self.ecosystem, finalized, "admitted writes finalized at home");
         }
-        Ok(JobRunOutcome::succeeded(JobReport {
-            processed: finalized,
-            changed: finalized,
-            ..JobReport::default()
-        }))
+        Ok(JobRunOutcome::succeeded(JobReport::changed(finalized)))
     }
 }
 
@@ -406,11 +422,7 @@ impl NodeJob for JobHistoryCleanup {
         let mut removed = 0_u64;
         loop {
             if ctx.is_cancelled() {
-                return Ok(JobRunOutcome::cancelled(JobReport {
-                    processed: removed,
-                    changed: removed,
-                    ..JobReport::default()
-                }));
+                return Ok(JobRunOutcome::cancelled(JobReport::changed(removed)));
             }
             let batch = ctx
                 .state()
@@ -419,11 +431,7 @@ impl NodeJob for JobHistoryCleanup {
                 .map_err(|error| JobFailure::new("storage", error.to_string()))?;
             removed += u64::try_from(batch).expect("bounded batch fits in u64");
             if batch == 0 {
-                return Ok(JobRunOutcome::succeeded(JobReport {
-                    processed: removed,
-                    changed: removed,
-                    ..JobReport::default()
-                }));
+                return Ok(JobRunOutcome::succeeded(JobReport::changed(removed)));
             }
         }
     }
@@ -503,11 +511,7 @@ impl NodeJob for WriteLedgerReap {
         let mut reaped = 0_u64;
         loop {
             if ctx.is_cancelled() {
-                return Ok(JobRunOutcome::cancelled(JobReport {
-                    processed: reaped,
-                    changed: reaped,
-                    ..JobReport::default()
-                }));
+                return Ok(JobRunOutcome::cancelled(JobReport::changed(reaped)));
             }
             let now = (ctx.state().clock)();
             let expired = reap_storage_result(ctx.state().meta.expire_stale_intents(
@@ -609,15 +613,8 @@ impl NodeJob for SearchRebuildJob {
             })
             .map_err(|error| JobFailure::new("search_rebuild", error.to_string()))?;
         Ok(match outcome {
-            RebuildOutcome::Published { documents } => JobRunOutcome::succeeded(JobReport {
-                processed: documents,
-                changed: documents,
-                ..JobReport::default()
-            }),
-            RebuildOutcome::Aborted { documents } => JobRunOutcome::cancelled(JobReport {
-                processed: documents,
-                ..JobReport::default()
-            }),
+            RebuildOutcome::Published { documents } => JobRunOutcome::succeeded(JobReport::changed(documents)),
+            RebuildOutcome::Aborted { documents } => JobRunOutcome::cancelled(JobReport::examined(documents)),
         })
     }
 }

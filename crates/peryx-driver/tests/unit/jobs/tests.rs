@@ -1333,6 +1333,32 @@ fn test_job_failure_parts_preserve_code_and_message() {
     );
 }
 
+#[test]
+fn test_a_report_of_changed_items_counts_them_as_examined_too() {
+    assert_eq!(
+        JobReport::changed(3),
+        JobReport {
+            processed: 3,
+            changed: 3,
+            quota_released: 0,
+            quota_remaining: 0,
+        }
+    );
+}
+
+#[test]
+fn test_a_report_of_examined_items_changes_none() {
+    assert_eq!(
+        JobReport::examined(3),
+        JobReport {
+            processed: 3,
+            changed: 0,
+            quota_released: 0,
+            quota_remaining: 0,
+        }
+    );
+}
+
 #[tokio::test]
 async fn test_job_history_cleanup_removes_every_excess_terminal_attempt() {
     let (_dir, state) = serving();
@@ -1361,6 +1387,31 @@ async fn test_job_history_cleanup_removes_every_excess_terminal_attempt() {
         })
     );
     assert_eq!(job_runs(&state.meta).len(), 16);
+}
+
+/// The store prunes at most 128 runs per batch, so a backlog past that takes more than one pass. The
+/// sweep keeps going until a pass removes nothing, rather than reporting the first batch as the
+/// whole job and leaving the excess for the next tick.
+#[tokio::test]
+async fn test_job_history_cleanup_drains_a_backlog_wider_than_one_batch() {
+    let (_dir, state) = serving();
+    for _ in 0..145 {
+        let id = start_corruptible_attempt(&state.meta);
+        state
+            .meta
+            .finish_job_run(&id, JobOutcome::succeeded(100, 0, 0))
+            .unwrap();
+    }
+
+    let report = JobHistoryCleanup { retain: 16 }
+        .run(&context(state.clone(), CancellationToken::new()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (report, job_runs(&state.meta).len()),
+        (JobRunOutcome::succeeded(JobReport::changed(129)), 16)
+    );
 }
 
 #[tokio::test]
@@ -2569,6 +2620,61 @@ async fn test_write_ledger_reap_stops_when_cancelled() {
         .unwrap();
 
     assert_eq!(report, JobRunOutcome::cancelled(JobReport::default()));
+}
+
+/// The three ledgers drain at different rates, so a sweep that stopped once any one of them came up
+/// empty would leave the others holding settled rows until a later tick. One row per ledger per pass
+/// makes the difference visible: the expiry ledger empties first, then the intents, and the outcomes
+/// last.
+#[tokio::test]
+async fn test_write_ledger_reap_keeps_going_until_every_ledger_is_drained() {
+    let (_dir, state) = serving();
+    let past = -3000;
+    stage_refused_intent(
+        &state,
+        "stranded",
+        1_000 - super::INGRESS_STAGING_DEADLINE_SECS,
+        super::MAX_INTENT_REFUSALS,
+    );
+    stage_refused_intent(&state, "done", past, 0);
+    state
+        .meta
+        .advance_intent("done", peryx_storage::meta::IntentPhase::Admitted, past)
+        .unwrap();
+    let operations = ["op-a", "op-b", "op-c"];
+    for operation in operations {
+        state.meta.claim_operation(operation, Some(0), past).unwrap();
+        state
+            .meta
+            .finalize_operation(
+                operation,
+                peryx_storage::meta::OperationResult::Published,
+                b"body",
+                past,
+            )
+            .unwrap();
+    }
+
+    let report = super::WriteLedgerReap { batch: 1 }
+        .run(&context(state.clone(), CancellationToken::new()))
+        .await
+        .unwrap();
+
+    let outcomes = operations.map(|operation| state.meta.operation_outcome(operation).unwrap());
+    assert_eq!(
+        (
+            report,
+            state.meta.staged_intent("stranded").unwrap().unwrap().phase,
+            state.meta.staged_intent("done").unwrap(),
+            outcomes,
+        ),
+        (
+            JobRunOutcome::succeeded(JobReport::changed(5)),
+            peryx_storage::meta::IntentPhase::Expired,
+            None,
+            [None, None, None],
+        )
+    );
 }
 
 #[tokio::test]
