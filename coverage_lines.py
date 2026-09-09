@@ -1,14 +1,18 @@
-"""Report the source lines no monomorphization of their function executed.
+"""Report the source lines no monomorphization of their function executed, in any configuration.
 
-`cargo llvm-cov --fail-under-lines` compares against LLVM's own line total, which is not the number
-of lines nothing ran. LLVM sums a file's lines per function, and where a generic has several
-monomorphizations it scores their instantiation group by taking the mapped count and the covered
-count from whichever member is highest at each, independently. A line one monomorphization runs and
-another does not is therefore counted missed while executing. On this workspace that described 66 of
-88 reported lines, and closing them would mean changing which concrete type a test happens to pick.
+`cargo llvm-cov --fail-under-lines` compares against LLVM's own line total, which is not the count of
+lines nothing ran. LLVM sums a file's lines per function, and where a generic has several
+monomorphizations it scores their instantiation group by taking the mapped count and the covered count
+from whichever member is highest at each, on its own. A line one monomorphization runs and another
+does not then counts as missed while executing. On this workspace the total reported 88 lines against
+this check's 22.
 
-This takes the union across a group instead. A line stays missed only when no member of its
-instantiation group ran it, which keeps the gate on unexecuted code and takes the merge artefact out.
+`gaps` reads the native export and writes the lines no member of an instantiation group ran. `check`
+reads that list and forgives a line where some configuration did run a function beginning on it, which
+is how a body reached only from the browser reads: the four dashboard pages render their loader's
+error only under `hydrate`, where the fetch behind it can fail, and `coverage-frontend` measures that
+target. Forgiving by function start rather than by line hit is deliberate. A line hit says something
+on the line ran, which a dead arm sharing a line with its covered guard would satisfy.
 """
 
 from __future__ import annotations
@@ -69,13 +73,30 @@ def missed(export: dict) -> dict[str, list[int]]:
     return {name: sorted(lines) for name, lines in gaps.items() if lines}
 
 
-def main(path: str) -> int:
-    gaps = missed(json.loads(Path(path).read_text(encoding="utf-8")))
+def executed_function_starts(lcov: str) -> dict[str, set[int]]:
+    """File -> lines where a function that ran begins, read from an lcov tracefile."""
+    starts: defaultdict[str, set[int]] = defaultdict(set)
+    name = ""
+    at: dict[str, int] = {}
+    for raw in lcov.splitlines():
+        if raw.startswith("SF:"):
+            name, at = raw[3:], {}
+        elif raw.startswith("FN:"):
+            line, symbol = raw[3:].split(",", 1)
+            at.setdefault(symbol, int(line))
+        elif raw.startswith("FNDA:"):
+            count, symbol = raw[5:].split(",", 1)
+            if int(count) and symbol in at:
+                starts[name].add(at[symbol])
+    return starts
+
+
+def report(gaps: dict[str, list[int]], headline: str) -> int:
     total = sum(len(lines) for lines in gaps.values())
     if not total:
         print("every mapped line ran in some monomorphization of its function")
         return 0
-    print(f"{total} lines in {len(gaps)} files ran in no monomorphization of their function:")
+    print(f"{total} lines in {len(gaps)} files {headline}:")
     for name in sorted(gaps)[:_MAX_FILES]:
         listed = gaps[name][:_MAX_LISTED]
         more = "" if len(listed) == len(gaps[name]) else f" and {len(gaps[name]) - len(listed)} more"
@@ -85,5 +106,35 @@ def main(path: str) -> int:
     return 1
 
 
+def gaps_command(export_path: str, out_path: str) -> int:
+    gaps = missed(json.loads(Path(export_path).read_text(encoding="utf-8")))
+    Path(out_path).write_text(json.dumps(gaps, indent=2, sort_keys=True), encoding="utf-8")
+    report(gaps, "ran in no monomorphization of their function here")
+    return 0
+
+
+def check_command(gaps_path: str, lcov_paths: list[str]) -> int:
+    gaps = json.loads(Path(gaps_path).read_text(encoding="utf-8"))
+    elsewhere: defaultdict[str, set[int]] = defaultdict(set)
+    for path in lcov_paths:
+        for name, lines in executed_function_starts(Path(path).read_text(encoding="utf-8")).items():
+            elsewhere[name] |= lines
+    remaining = {
+        name: [line for line in lines if line not in elsewhere[name]]
+        for name, lines in gaps.items()
+        if [line for line in lines if line not in elsewhere[name]]
+    }
+    return report(remaining, "ran in no configuration")
+
+
+def main(argv: list[str]) -> int:
+    if argv[1:2] == ["gaps"] and len(argv) == 4:
+        return gaps_command(argv[2], argv[3])
+    if argv[1:2] == ["check"] and len(argv) >= 3:
+        return check_command(argv[2], argv[3:])
+    print(f"usage: {argv[0]} gaps <export.json> <out.json> | {argv[0]} check <out.json> [tracefile...]")
+    return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1]))
+    raise SystemExit(main(sys.argv))

@@ -136,8 +136,34 @@ jobs:
         if: always()
         with:
           name: coverage-native
-          path: .tox/coverage/native.lcov
+          path: |
+            .tox/coverage/native.lcov
+            .tox/coverage/native-gaps.json
           if-no-files-found: error
+
+  # A body reached only from the browser runs in the target `frontend` measures, so the two halves are
+  # unioned here rather than each gating alone. Both artifacts are small, so this waits on them both
+  # and adds a minute rather than serialising the two long jobs.
+  coverage-lines:
+    needs: [coverage, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup
+        with:
+          tools: just
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-native
+          path: .tox/coverage
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-frontend
+          path: .tox/coverage
+      - run: just coverage-lines
 
   frontend:
     needs: changes
@@ -197,7 +223,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [automation, changes, contracts, coverage, docs, frontend, platform, source]
+    needs: [automation, changes, contracts, coverage, coverage-lines, docs, frontend, platform, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -207,6 +233,7 @@ jobs:
           needs.docs.result != 'success' || needs.source.result != 'success' ||
           !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) ||
           !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) ||
+          !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) ||
           !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) ||
           !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
         run: exit 1

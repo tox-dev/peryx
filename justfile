@@ -60,30 +60,38 @@ _codspeed-target-contract:
       | grep -qxF 'codegen-units = 1'
 
 # Check coverage target isolation.
-# Check that the line gate reports a body no monomorphization ran and forgives one another ran.
+# Check that the line gate reports a body nothing ran, forgives one another monomorphization ran,
+# and forgives one the browser target ran.
 _coverage-lines-contract: _project-temp
     #!/usr/bin/env bash
     set -euo pipefail
-    export="{{ project_tmp }}/coverage-lines-contract.json"
+    work="{{ project_tmp }}/coverage-lines-contract"
+    mkdir -p "$work"
     # `a.rs` holds two monomorphizations of one generic, each running the line the other does not, so
     # between them they run both and neither line is a gap. Scoring the group by its best single
     # member instead, which is what LLVM's own total does, reports one of them missed. `b.rs` holds a
-    # body nothing ran, which stays a gap either way.
+    # body nothing ran here, and `c.rs` one that only the browser target runs.
     printf '%s' \
-      '{"data":[{"files":[{"filename":"a.rs"},{"filename":"b.rs"}],"functions":[' \
+      '{"data":[{"files":[{"filename":"a.rs"},{"filename":"b.rs"},{"filename":"c.rs"}],"functions":[' \
       '{"filenames":["a.rs"],"regions":[[10,1,10,9,5,0,0,0],[11,1,11,9,0,0,0,0]]},' \
       '{"filenames":["a.rs"],"regions":[[10,1,10,9,0,0,0,0],[11,1,11,9,7,0,0,0]]},' \
-      '{"filenames":["b.rs"],"regions":[[20,1,20,9,0,0,0,0]]}]}]}' >"$export"
+      '{"filenames":["b.rs"],"regions":[[20,1,20,9,0,0,0,0]]},' \
+      '{"filenames":["c.rs"],"regions":[[30,1,30,9,0,0,0,0]]}]}]}' >"$work/export.json"
+    # The browser tracefile runs the body starting on line 30 and nothing in `b.rs`.
+    printf '%s\n' 'SF:c.rs' 'FN:30,_c30' 'FNDA:4,_c30' 'end_of_record' \
+      'SF:b.rs' 'FN:20,_b20' 'FNDA:0,_b20' 'end_of_record' >"$work/browser.lcov"
+    python3 coverage_lines.py gaps "$work/export.json" "$work/gaps.json"
     # The check runs under the interpreter the runner image carries, the way the recipes here already
     # reach for `jq`, so it needs no tool this job does not declare.
     #
     # The check exits non-zero when it reports anything, so its output is captured rather than piped:
     # under `pipefail` a pipeline carrying it is non-zero however the reader fares.
-    report=$(python3 coverage_lines.py "$export" && echo "reported nothing" || true)
+    report=$(python3 coverage_lines.py check "$work/gaps.json" "$work/browser.lcov" \
+      && echo "reported nothing" || true)
     # `set -e` is specified to ignore a command preceded by `!`, so a negation asserts nothing here
     # and each one is written as the failure it stands for.
     grep -qF 'b.rs: 20' <<<"$report"
-    for forbidden in 'a.rs' 'reported nothing'; do
+    for forbidden in 'a.rs' 'c.rs' 'reported nothing'; do
       if grep -qF "$forbidden" <<<"$report"; then
         echo "the line check reported ${forbidden@Q}: $report" >&2
         exit 1
@@ -1304,7 +1312,7 @@ package-sdist output="dist": _project-temp
     maturin sdist --out "{{ output }}"
 
 # Measure native Rust coverage.
-coverage-native output=".tox/coverage/native.lcov": test-deps _docker-ready
+coverage-native output=".tox/coverage/native.lcov" gaps=".tox/coverage/native-gaps.json": test-deps _docker-ready
     #!/usr/bin/env bash
     set -euo pipefail
     output="{{ output }}"
@@ -1320,16 +1328,23 @@ coverage-native output=".tox/coverage/native.lcov": test-deps _docker-ready
       --lcov --output-path "$output"
     # `--fail-uncovered-lines` counts a line no function reached, and every line it has named was a
     # real gap. What it does not see is a function body nothing ran whose lines a covered caller
-    # spans, so the check below is paired with it. LLVM's own line total is not usable as that pair:
+    # spans, so `coverage-lines` is paired with it. LLVM's own line total is not usable as that pair:
     # it scores an instantiation group by taking the mapped and covered counts from whichever
     # monomorphization is highest at each, on its own, so a line one monomorphization runs and
     # another does not counts as missed while executing. That described 66 of the 88 lines the total
     # reported here.
+    #
+    # The gaps are written rather than failed on: a body reached only from the browser runs in the
+    # target `coverage-frontend` measures, so the two are unioned in `coverage-lines`.
     cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
       --fail-uncovered-lines 0 --show-missing-lines
     cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
       --json --output-path "{{ project_tmp }}/coverage.json"
-    python3 coverage_lines.py "{{ project_tmp }}/coverage.json"
+    python3 coverage_lines.py gaps "{{ project_tmp }}/coverage.json" "{{ gaps }}"
+
+# Fail on a line no configuration ran, unioning the native gaps with what the browser target covered.
+coverage-lines gaps=".tox/coverage/native-gaps.json" frontend_native=".tox/coverage/frontend-native.lcov" frontend_wasm=".tox/coverage/frontend-wasm.lcov":
+    python3 coverage_lines.py check "{{ gaps }}" "{{ frontend_native }}" "{{ frontend_wasm }}"
 
 # Measure native and Wasm frontend coverage.
 coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output=".tox/coverage/frontend-wasm.lcov" merged_output=".tox/coverage/frontend.lcov": _project-temp
@@ -1409,10 +1424,13 @@ coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output
 
 # Measure native and frontend coverage.
 coverage output=".tox/coverage": _project-temp
-    just coverage-native "{{ output }}/native.lcov"
+    just coverage-native "{{ output }}/native.lcov" "{{ output }}/native-gaps.json"
     just frontend-deps
     just coverage-frontend "{{ output }}/frontend-native.lcov" \
       "{{ output }}/frontend-wasm.lcov" "{{ output }}/frontend.lcov"
+    # Last, because it reads what both halves wrote.
+    just coverage-lines "{{ output }}/native-gaps.json" \
+      "{{ output }}/frontend-native.lcov" "{{ output }}/frontend-wasm.lcov"
 
 # Remove local Rust coverage build artifacts and locks.
 coverage-clean:
