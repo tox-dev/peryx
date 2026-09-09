@@ -310,6 +310,22 @@ fn test_zero_limit_is_unbounded() {
     assert!(limiter.check_client(RouteClass::Listing, IpAddr::V4(Ipv4Addr::LOCALHOST)));
 }
 
+/// The hot path asks this before touching forwarded headers at all, so a limiter that trusted
+/// nobody yet answered "some proxy" would parse headers it then ignores, and one that answered
+/// "none" over a configured proxy would bucket every proxied client by the proxy's address.
+#[test]
+fn test_a_limiter_reports_whether_any_proxy_is_trusted() {
+    let proxied = RateLimiter::new(RateLimitConfig {
+        trusted_proxies: vec!["10.0.0.0/8".parse().unwrap()],
+        ..RateLimitConfig::enabled_defaults()
+    });
+
+    assert_eq!(
+        (RateLimiter::default().trusts_any_proxy(), proxied.trusts_any_proxy()),
+        (false, true)
+    );
+}
+
 #[test]
 fn test_proxy_trust_canonicalizes_addresses() {
     let limiter = RateLimiter::new(RateLimitConfig {
