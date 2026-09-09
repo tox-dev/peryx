@@ -585,10 +585,10 @@ async fn test_a_member_of_exactly_the_budget_is_read() {
     let metadata = vec![b'm'; usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap()];
     let outcome = ranged_outcome(ranged_wheel_holding(&metadata, zip::CompressionMethod::Stored)).await;
 
-    let RemoteMetadata::Found(read) = outcome else {
-        panic!("a member at the budget is within it");
-    };
-    assert_eq!(read.len(), metadata.len());
+    assert!(
+        matches!(&outcome, RemoteMetadata::Found(read) if *read == metadata),
+        "a member at the budget is within it"
+    );
 }
 
 #[tokio::test]
@@ -658,8 +658,5 @@ async fn test_a_wheel_member_is_read_back_whole_over_ranges() {
         .await
         .unwrap();
 
-    let RemoteMetadata::Found(metadata) = outcome else {
-        panic!("the member is present, so the ranged read finds it");
-    };
-    assert_eq!(String::from_utf8(metadata).unwrap(), RANGED_METADATA);
+    assert!(matches!(&outcome, RemoteMetadata::Found(metadata) if metadata == RANGED_METADATA.as_bytes()));
 }

@@ -174,11 +174,10 @@ fn test_a_page_with_nothing_local_is_absent_rather_than_fallible() {
 
 #[test]
 fn test_a_page_holding_only_versions_still_falls_back_to_them() {
+    let outcome = missing_upstream_outcome(&context_holding(vec!["1.0".to_owned()]));
+
     assert!(
-        matches!(
-            missing_upstream_outcome(&context_holding(vec!["1.0".to_owned()])),
-            PageOutcome::Fallback
-        ),
-        "a version peryx holds is something to serve, so the page is not absent"
+        matches!(outcome, PageOutcome::Fallback),
+        "a version peryx holds is something to serve"
     );
 }

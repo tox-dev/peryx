@@ -152,9 +152,9 @@ fn test_catalog_text_takes_the_budget_the_other_sections_left() {
 
     let text = super::search_text("demo", "demo", &detail, None);
 
+    let length = text.len();
     assert!(
         text.contains("4999.0.0"),
-        "the last version fits in the budget the other sections did not use: {} bytes",
-        text.len()
+        "the last version fits in the budget the other sections did not use: {length} bytes"
     );
 }
