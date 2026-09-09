@@ -336,9 +336,9 @@ pub async fn export_body(
             &meta,
             &query,
             &mut |summary| {
-                let sender = started_tx
-                    .take()
-                    .ok_or_else(|| "the retention driver opened more than one snapshot".to_owned())?;
+                // `plan` turns a second snapshot into `RetentionPlanError::Store` before the driver's
+                // call reaches here, so the sender is still in hand on the only call that arrives.
+                let sender = started_tx.take().expect("plan opens at most one snapshot");
                 sender.send(Ok(summary)).map_err(|_| "export request gone".to_owned())
             },
             &mut |bytes| tx.blocking_send(Ok(bytes)).map_err(drop),
