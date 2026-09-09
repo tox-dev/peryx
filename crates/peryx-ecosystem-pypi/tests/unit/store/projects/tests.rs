@@ -1,7 +1,8 @@
 use super::{
-    CatalogGeneration, MetaStore, ProjectCachePurgeCounts, abort_catalog_generation, begin_catalog_generation,
-    catalog_generation_prefix, catalog_projects_in_snapshot, catalog_state, freshness_key, list_catalog_projects,
-    publish_catalog_generation, put_catalog_projects, recover_catalog_generations, refresh_catalog_generation,
+    CatalogGeneration, LIVE_UPLOADS_PREFIX, MetaStore, ProjectCachePurgeCounts, abort_catalog_generation,
+    begin_catalog_generation, catalog_generation_prefix, catalog_projects_in_snapshot, catalog_state, freshness_key,
+    list_catalog_projects, publish_catalog_generation, put_catalog_projects, recover_catalog_generations,
+    refresh_catalog_generation,
 };
 use crate::store::PypiStore as _;
 
@@ -386,4 +387,75 @@ fn test_a_retired_project_leaves_the_root_list_the_catalog_still_names() {
     meta.retire_cached_project("pypi/acme", "pypi", "acme").unwrap();
 
     assert_eq!(meta.list_projects("pypi").unwrap(), Vec::<String>::new());
+}
+
+/// The listing filters the catalog through a retirement scan and a live-uploads scan before it names
+/// anything, so a scan that fails part way must not answer at all. A listing assembled from a scan
+/// that stopped early is longer than the truth, and every name it gains is a project whose detail page
+/// answers `404`.
+///
+/// A store handle does not survive its own injected failure, so each step reopens the retained pages
+/// rather than reusing one handle. 192 reopen-and-list rounds, all in-memory, under a second.
+#[test]
+fn test_a_listing_whose_filter_scan_fails_never_names_a_retired_project() {
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    let (id, expected) = begin_catalog_generation(&meta, "pypi").unwrap();
+    put_catalog_projects(
+        &meta,
+        "pypi",
+        id,
+        &[
+            ("acme".to_owned(), "Acme".to_owned()),
+            ("flask".to_owned(), "Flask".to_owned()),
+            ("ghost".to_owned(), "Ghost".to_owned()),
+        ],
+    )
+    .unwrap();
+    publish_catalog_generation(&meta, "pypi", expected, generation(id, None, None)).unwrap();
+    meta.put_cached_page(crate::store::CachedPageWrite {
+        key: "pypi/acme",
+        record: &crate::store::CachedIndex {
+            source: None,
+            last_modified: None,
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 1,
+            content_type: None,
+            fresh_secs: None,
+            body: Vec::new(),
+        },
+        index: "pypi",
+        normalized: "acme",
+        display: "Acme",
+        source: "pypi",
+        upstream: None,
+        project_status: None,
+        project_status_reason: None,
+        files: &[],
+        attestations: &[],
+    })
+    .unwrap();
+    meta.retire_cached_project("pypi/acme", "pypi", "acme").unwrap();
+    // A project whose uploads are all trashed serves nothing, so the second filter scan has a row to
+    // walk as well and an injected failure can land in either of them.
+    meta.put_driver_value(&format!("{LIVE_UPLOADS_PREFIX}pypi/ghost"), b"0\n1")
+        .unwrap();
+    let clean = meta.list_projects("pypi").unwrap();
+    assert_eq!(clean, vec!["Flask"]);
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..192 {
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let listed = meta.list_projects("pypi");
+        fault.disable();
+        match listed {
+            Ok(names) => assert_eq!(names, clean, "injecting after {fail_after} reads listed differently"),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the filter scans");
 }

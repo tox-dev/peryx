@@ -392,3 +392,73 @@ fn test_a_source_row_naming_no_publication_is_skipped_rather_than_failing_the_sc
         "the orphan-blob collector never sees a key it would read as a digest"
     );
 }
+
+fn seed_file_sources(meta: &MetaStore) {
+    for digest in ["deadbeef", "feedface"] {
+        meta.put_driver_value(
+            &format!("{FILE_PREFIX}{digest}"),
+            b"https://legacy.example/pkg.whl\npypi",
+        )
+        .unwrap();
+    }
+    meta.put_file_url("alpha", "flask", "cafebabe", "https://alpha.example/flask.whl", "alpha")
+        .unwrap();
+}
+
+/// The legacy rows the sweep drops and the owned rows it must leave alone.
+fn source_rows(meta: &MetaStore) -> (usize, usize) {
+    let (mut legacy, mut owned) = (0, 0);
+    meta.scan_driver_prefix(FILE_PREFIX, |key, _| {
+        if key[FILE_PREFIX.len()..].contains('/') {
+            owned += 1;
+        } else {
+            legacy += 1;
+        }
+        Ok::<(), peryx_storage::meta::MetaError>(())
+    })
+    .unwrap();
+    (legacy, owned)
+}
+
+/// The sweep reads every source row before it removes any, so a scan that fails part way must leave a
+/// store that is all-or-nothing. A half-swept store is the shape to rule out: the rows the scan reached
+/// are gone and the rows it never saw remain, which the next sweep reports as fewer legacy rows and an
+/// operator reads as progress rather than as a sweep that failed. A commit that lands and then reports
+/// a failed sync is not that shape, so both ends of the range are accepted and the middle is not.
+///
+/// A store handle does not survive its own injected failure, so each step rebuilds the pages from a
+/// fresh seed and reopens them rather than reusing one handle. 96 seed-sweep-count rounds, all
+/// in-memory, in half a second.
+#[test]
+fn test_a_sweep_whose_scan_fails_drops_no_source_row_on_its_own() {
+    let mut failed = 0_u32;
+    for fail_after in 0..96 {
+        let (pages, fault) = peryx_test_support::fault::backend();
+        let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        seed_file_sources(&meta);
+        drop(meta);
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let dropped = crate::store::drop_legacy_file_sources(&meta);
+        fault.disable();
+        drop(meta);
+
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        let rows = source_rows(&meta);
+        if let Ok(count) = dropped {
+            assert_eq!(
+                (count, rows),
+                (2, (0, 1)),
+                "injecting after {fail_after} reads swept part way"
+            );
+        } else {
+            failed += 1;
+            assert!(
+                matches!(rows, (0 | 2, 1)),
+                "injecting after {fail_after} reads left {rows:?} rows"
+            );
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the scan");
+}
