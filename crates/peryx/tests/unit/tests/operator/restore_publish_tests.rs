@@ -5,7 +5,10 @@ use rstest::rstest;
 
 #[cfg(unix)]
 use super::cleanup_restore_failure;
-use super::{ensure_blob_copy_matches, publish, rollback_publish, sibling_path, staging_path, sync_parent, sync_tree};
+use super::{
+    ensure_blob_copy_matches, ensure_copy_matches, publish, rollback_publish, sibling_path, staging_path, sync_parent,
+    sync_tree,
+};
 use crate::operator::ManifestFile;
 
 #[test]
@@ -64,6 +67,28 @@ fn test_blob_copy_rejects_changes_after_verification(#[case] sha256: &str, #[cas
     let error = ensure_blob_copy_matches(&actual, &digest, 1).unwrap_err();
 
     assert!(error.to_string().contains("changed after verification"), "{error}");
+}
+
+/// The metadata and config members are hashed once by verification and again as they are copied;
+/// a member that changed in between is refused rather than published, and the refusal names which.
+#[rstest]
+#[case::digest("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 1)]
+#[case::size("0000000000000000000000000000000000000000000000000000000000000000", 2)]
+fn test_member_copy_rejects_changes_after_verification(#[case] sha256: &str, #[case] size_bytes: u64) {
+    let expected = ManifestFile {
+        path: "metadata/peryx.redb".to_owned(),
+        sha256: "0".repeat(64),
+        size_bytes: 1,
+    };
+    let actual = ManifestFile {
+        path: expected.path.clone(),
+        sha256: sha256.to_owned(),
+        size_bytes,
+    };
+
+    let error = ensure_copy_matches(&actual, &expected, "metadata").unwrap_err();
+
+    assert_eq!(error.to_string(), "backup metadata changed after verification");
 }
 
 #[test]

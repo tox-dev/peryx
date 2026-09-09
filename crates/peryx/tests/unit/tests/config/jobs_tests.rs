@@ -281,6 +281,26 @@ fn test_distributed_schedule_requires_a_primary() {
     );
 }
 
+/// The local member is the roster entry carrying this node's identity, not merely any entry: a roster
+/// that lists other nodes but not this one leaves the job without a local member, and the schedule
+/// says so before the topology check gets to complain about the identity.
+#[test]
+fn test_distributed_schedule_requires_this_node_in_the_roster() {
+    let config = toml_config(
+        "writer_identity = \"writer\"\n\
+         [availability]\nmode = \"dc\"\ngroup = \"group\"\n\
+         [availability.replication]\nrole = \"primary\"\nsource = \"a\"\ntoken = \"b\"\n\
+         [[availability.member]]\nnode = \"other-writer\"\ndc = \"east\"\naddress = \"https://writer:4460\"\nrole = \"writer\"\n\
+         [[availability.member]]\nnode = \"replica\"\ndc = \"west\"\naddress = \"https://replica:4460\"\nrole = \"replica\"\n\
+         [[jobs.schedule]]\njob = \"reclamation\"\ninterval_secs = 60\n",
+    );
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "jobs schedule [0]: distributed jobs require a local member roster"
+    );
+}
+
 #[test]
 fn test_distributed_schedule_requires_a_local_member_roster() {
     let config = distributed_config("dc", "[[jobs.schedule]]\njob = \"reclamation\"\ninterval_secs = 60\n");
