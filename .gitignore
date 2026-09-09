@@ -14,3 +14,7 @@ node_modules/
 playwright-report/
 test-results/
 __pycache__/
+
+# cargo-mutants writes its run artefacts here.
+mutants.out/
+mutants.out.old/

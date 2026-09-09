@@ -727,12 +727,11 @@ impl OwnershipAuthority for OwnershipGroup {
                         });
                     }
                 }
-                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(_))) if self.peer_token.is_some() => {}
-                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(forward))) => {
-                    return Err(OwnershipError::NotLeader {
-                        leader: forward.leader_node.map(|node| node.endpoint),
-                    });
-                }
+                // Falling through hands the decision to `submit_command`, which meets the same
+                // `ForwardToLeader` one write later and already knows what a missing replication token
+                // means: nobody to forward to, so report the leader the raft named. Answering it here as
+                // well would be a second copy of that rule, and the two copies return the same error.
+                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(_))) => {}
                 Err(error) => return Err(OwnershipError::Unavailable(error.to_string())),
             }
         }

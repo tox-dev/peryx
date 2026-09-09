@@ -772,10 +772,12 @@ async fn test_http_primary_stops_a_chunked_body_that_crosses_the_limit() {
 
     let result = primary.changes(0, 10).await;
 
-    assert!(
-        matches!(result, Err(HttpPrimaryError::ResponseTooLarge { limit: 64, actual }) if actual > 64),
-        "the read stops only once the accumulated bytes cross the cap"
-    );
+    // The count the reader reports is the running total, so it names the chunk that crossed the cap
+    // rather than any number above it: two thirty-two byte chunks fit, and the third makes ninety-six.
+    assert!(matches!(
+        result,
+        Err(HttpPrimaryError::ResponseTooLarge { limit: 64, actual: 96 })
+    ));
 }
 
 #[tokio::test]
@@ -817,4 +819,20 @@ fn range_request(digest: &Digest, range: &str) -> Request<Body> {
         .header(header::RANGE, range)
         .body(Body::empty())
         .unwrap()
+}
+
+/// The token comparison folds every byte difference into one answer, and it has to keep the properties
+/// that make it usable for a secret. Length is part of the comparison, a single differing byte is
+/// enough to reject, and two differences that would cancel under exclusive-or must not cancel here.
+#[test]
+fn test_constant_time_eq_rejects_by_length_and_by_any_difference() {
+    assert_eq!(
+        (
+            super::constant_time_eq(b"secret", b"secret"),
+            super::constant_time_eq(b"a", b"ab"),
+            super::constant_time_eq(b"a", b"b"),
+            super::constant_time_eq(b"aa", b"bb"),
+        ),
+        (true, false, false, false)
+    );
 }
