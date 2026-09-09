@@ -424,3 +424,164 @@ fn test_protected_reads_do_not_require_the_write_scheme() {
         serde_json::json!([{"indexAccessToken": []}, {"bearerGrant": []}])
     );
 }
+
+/// Every operation names a tag and a summary, answers with at least one described response, and every
+/// JSON body it describes carries an example or a schema. Checked document-wide rather than per route,
+/// so a builder that quietly returns an empty operation, example, or request body fails here regardless
+/// of which route it serves. Binary bodies are exempt: an octet stream has no example worth printing.
+#[test]
+fn test_every_operation_is_fully_described() {
+    let spec = serde_json::to_value(openapi()).unwrap();
+
+    let mut described = Vec::new();
+    for (path, item) in spec["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            let responses = operation["responses"].as_object().unwrap();
+            let body = operation.get("requestBody");
+            let checks = [
+                ("tags", operation["tags"].as_array().is_none_or(Vec::is_empty)),
+                ("summary", operation["summary"].as_str().is_none_or(str::is_empty)),
+                ("responses", responses.is_empty()),
+                (
+                    "requestBody content",
+                    body.is_some_and(|body| body["content"].as_object().is_none_or(serde_json::Map::is_empty)),
+                ),
+            ];
+            let missing: Vec<String> = checks
+                .into_iter()
+                .map(|(label, missing)| (label.to_owned(), missing))
+                .chain(responses.iter().map(|(status, response)| {
+                    (
+                        format!("{status} description"),
+                        response["description"].as_str().is_none_or(str::is_empty),
+                    )
+                }))
+                .filter_map(|(label, missing)| missing.then_some(label))
+                .chain(
+                    responses
+                        .iter()
+                        .flat_map(|(status, response)| undescribed_content(&response["content"], status)),
+                )
+                .chain(
+                    body.into_iter()
+                        .flat_map(|body| undescribed_content(&body["content"], "requestBody")),
+                )
+                .collect();
+            described.push((path.clone(), method.clone(), missing));
+        }
+    }
+
+    let undescribed: Vec<_> = described
+        .into_iter()
+        .filter(|(.., missing)| !missing.is_empty())
+        .collect();
+    assert_eq!(undescribed, Vec::new());
+}
+
+fn undescribed_content(content: &serde_json::Value, owner: &str) -> Vec<String> {
+    content
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(media_type, media)| {
+            (
+                format!("{owner} {media_type} example"),
+                media_type.contains("json") && media["example"].is_null() && media["schema"].is_null(),
+            )
+        })
+        .filter_map(|(label, missing)| missing.then_some(label))
+        .collect()
+}
+
+/// The trash document uses the handler's wire names: the record examples carry exactly the fields it
+/// writes, and the inspect query names the parameters it reads, so a reader building against the
+/// document does not send `name` for `resource` or `reference` for `artifact`.
+#[test]
+fn test_trash_document_uses_the_wire_names() {
+    let spec = serde_json::to_value(openapi()).unwrap();
+    let example =
+        |path: &str| spec["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["example"].clone();
+    let expected = BTreeSet::from([
+        "actor",
+        "artifact",
+        "deadline_unix",
+        "deleted_at_unix",
+        "digest",
+        "ecosystem",
+        "reason",
+        "repository",
+        "resource",
+        "restorable",
+        "state",
+    ]);
+
+    for record in [
+        example("/+trash")["trash"][0].clone(),
+        example("/+trash/record")["record"].clone(),
+    ] {
+        let keys: BTreeSet<&str> = record.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, expected);
+    }
+    let query: BTreeSet<&str> = spec["paths"]["/+trash/record"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        query,
+        BTreeSet::from(["artifact", "digest", "ecosystem", "repository", "resource"])
+    );
+}
+
+/// The nested objects the analytics, quota and retention examples share are real records, not
+/// placeholders: every analytics view shows the same resolved window, every quota meter carries all
+/// four counters, and a retention candidate names what the plan decided about it.
+#[test]
+fn test_shared_example_records_carry_their_fields() {
+    let spec = serde_json::to_value(openapi()).unwrap();
+    let example = |path: &str, method: &str| {
+        spec["paths"][path][method]["responses"]["200"]["content"]["application/json"]["example"].clone()
+    };
+    let keys = |value: &serde_json::Value| -> BTreeSet<String> { value.as_object().unwrap().keys().cloned().collect() };
+    let interval = BTreeSet::from(
+        [
+            "from_day",
+            "to_day",
+            "from_unix",
+            "to_unix",
+            "retained_from_day",
+            "window_clamped_to_retention",
+        ]
+        .map(str::to_owned),
+    );
+    let meter = BTreeSet::from(["committed", "reserved", "limit", "remaining"].map(str::to_owned));
+
+    for view in ["top-resources", "unused", "groups", "sources", "timeline"] {
+        assert_eq!(
+            keys(&example(&format!("/+analytics/{view}"), "get")["interval"]),
+            interval,
+            "{view}"
+        );
+    }
+    let quota = example("/+quota/repository", "get");
+    for counter in ["artifact_bytes", "accounted_bytes", "resources"] {
+        assert_eq!(keys(&quota[counter]), meter, "{counter}");
+    }
+    let candidate = BTreeSet::from(
+        [
+            "resource",
+            "group",
+            "artifact",
+            "digest",
+            "class",
+            "visibility",
+            "bytes",
+            "outcome",
+            "rule",
+            "retained_groups",
+        ]
+        .map(str::to_owned),
+    );
+    assert_eq!(keys(&example("/+retention/plan", "post")["candidates"][0]), candidate);
+}

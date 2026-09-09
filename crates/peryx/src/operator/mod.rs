@@ -35,7 +35,8 @@ pub use verify::{backup_verify, backup_verify_with_plugins};
 pub use writer::{claim_writer, claim_writer_with_plugins, promote_writer, promote_writer_with_plugins};
 
 const BACKUP_FORMAT: u32 = 2;
-const BUFFER_BYTES: usize = 1024 * 1024;
+/// 1 MiB, the copy buffer for archive members and blobs.
+const BUFFER_BYTES: usize = 1_048_576;
 const BLOB_INDEX_HEADER: &str = "sha256\tsize_bytes\tpath";
 /// Prefix every backup staging sibling carries, so an attempt killed before it could clean up leaves a
 /// name an operator recognizes and can delete. A retry reserves a fresh randomized name, so one left

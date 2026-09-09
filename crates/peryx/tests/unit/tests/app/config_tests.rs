@@ -41,6 +41,22 @@ fn test_config_check_reports_the_listener_scheme(#[case] tls: Option<TlsConfig>,
     );
 }
 
+#[rstest]
+#[case::none(0, "0 configured indexes")]
+#[case::one(1, "1 configured index")]
+#[case::several(2, "2 configured indexes")]
+fn test_config_check_counts_indexes_with_the_right_number(#[case] count: usize, #[case] expected: &str) {
+    let mut config = Config::default();
+    config.indexes.truncate(count);
+    assert_eq!(config.indexes.len(), count);
+    let mut output = Vec::new();
+
+    config_check(&config, &mut output).unwrap();
+
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains(&format!("  indexes: {expected}\n")), "{output}");
+}
+
 #[test]
 fn test_config_check_reports_a_bare_ipv6_listener() {
     let config = Config {

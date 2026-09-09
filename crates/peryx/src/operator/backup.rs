@@ -308,9 +308,32 @@ impl BackupTarget {
         Ok(())
     }
 
+    /// A backup member: a file that must not already exist (`CREATE` with `EXCL`), is opened for
+    /// writing, is never reached through a symlink, and is never inherited by a child process.
+    ///
+    /// Written as `union` rather than `|` because this is a fixed set, not a computation. Spelling
+    /// it as a bit operation invites `^`, which happens to produce the same value only while every
+    /// flag is a disjoint bit; a flag that later overlaps an existing one would make the two
+    /// diverge silently. `union` names the operation the set actually wants.
+    #[cfg(unix)]
+    const MEMBER_FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::RDWR
+        .union(rustix::fs::OFlags::CREATE)
+        .union(rustix::fs::OFlags::EXCL)
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::CLOEXEC);
+
+    /// A directory on the way to a member: every component must itself be a directory, reached
+    /// without following a symlink, and not inherited by a child. Same reasoning as
+    /// [`Self::MEMBER_FLAGS`] for `union`.
+    #[cfg(unix)]
+    const COMPONENT_FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::RDONLY
+        .union(rustix::fs::OFlags::DIRECTORY)
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::CLOEXEC);
+
     #[cfg(unix)]
     fn create_file(&self, path: &Path, access: Access) -> anyhow::Result<File> {
-        use rustix::fs::{Mode, OFlags};
+        use rustix::fs::Mode;
 
         let parent = self.open_parent(path)?;
         let name = path
@@ -321,13 +344,8 @@ impl BackupTarget {
             Access::Shared => Mode::from_raw_mode(0o666),
         };
         Ok(File::from(
-            rustix::fs::openat(
-                &parent,
-                name,
-                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                mode,
-            )
-            .context(format!("create backup member {}", path.display()))?,
+            rustix::fs::openat(&parent, name, Self::MEMBER_FLAGS, mode)
+                .context(format!("create backup member {}", path.display()))?,
         ))
     }
 
@@ -348,7 +366,7 @@ impl BackupTarget {
 
     #[cfg(unix)]
     fn open_parent(&self, path: &Path) -> anyhow::Result<File> {
-        use rustix::fs::{Mode, OFlags};
+        use rustix::fs::Mode;
 
         let mut parent = self.dir.try_clone()?;
         let path = path.parent().context("backup members always carry a file name")?;
@@ -358,13 +376,8 @@ impl BackupTarget {
                 Err(error) => return Err(error).context(format!("create backup directory {}", path.display())),
             }
             parent = File::from(
-                rustix::fs::openat(
-                    &parent,
-                    name,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .context(format!("open backup directory {}", path.display()))?,
+                rustix::fs::openat(&parent, name, Self::COMPONENT_FLAGS, Mode::empty())
+                    .context(format!("open backup directory {}", path.display()))?,
             );
         }
         Ok(parent)
@@ -380,15 +393,11 @@ fn staging_parent(path: &Path) -> anyhow::Result<&Path> {
 
 #[cfg(unix)]
 fn open_dir(path: &Path) -> anyhow::Result<File> {
-    use rustix::fs::{Mode, OFlags};
+    use rustix::fs::Mode;
 
     Ok(File::from(
-        rustix::fs::open(
-            path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .context(format!("open backup directory {}", path.display()))?,
+        rustix::fs::open(path, BackupTarget::COMPONENT_FLAGS, Mode::empty())
+            .context(format!("open backup directory {}", path.display()))?,
     ))
 }
 

@@ -245,6 +245,22 @@ fn test_rate_limits_from_toml_overlay_defaults() {
     assert_eq!(c.rate_limit.authentication, RouteLimit::new(3, 60));
 }
 
+/// `[index.prefetch]` is opaque to the core: whatever the table holds reaches the resolved index
+/// unchanged, for `peryx prefetch` to interpret.
+#[test]
+fn test_prefetch_options_reach_the_resolved_index() {
+    let c = toml_config(
+        "[[index]]\nname = \"public\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://upstream.example/api/\"\n\
+         [index.prefetch]\nstrategy = \"selected\"\nselectors = [\"alpha\", \"beta\"]\n",
+    );
+
+    let expected: toml::Table = toml::from_str("strategy = \"selected\"\nselectors = [\"alpha\", \"beta\"]\n").unwrap();
+    assert!(matches!(
+        &c.indexes[0].kind,
+        IndexKind::Cached { prefetch, .. } if prefetch.options == expected
+    ));
+}
+
 #[test]
 fn test_mirror_upstream_concurrency_defaults() {
     let c = toml_config(
@@ -402,11 +418,35 @@ fn test_trusted_hosts_reject_non_hosts(#[case] host: &str) {
     );
 }
 
-#[test]
-fn test_routing_options_require_upstream_sources() {
+/// Each routing option is refused on its own, since any one of them describes upstreams that are
+/// not there.
+#[rstest]
+#[case::fallback("fallback = false")]
+#[case::protected("protected = [\"internal-item\"]")]
+#[case::pins("[index.pins]\nalpha = \"public\"")]
+fn test_routing_options_require_upstream_sources(#[case] option: &str) {
     assert_eq!(
-        toml_error("[[index]]\nname = \"public\"\nfallback = false\n").to_string(),
+        toml_error(&format!("[[index]]\nname = \"public\"\n{option}\n")).to_string(),
         "index public: `fallback`, `protected`, and `pins` require `[[index.upstream]]`"
+    );
+}
+
+/// Each refresh control conflicts with `credential_exec` on its own, because the helper decides its
+/// own expiry and failure handling.
+#[rstest]
+#[case::refresh_secs("credential_refresh_secs = 30")]
+#[case::on_unauthorized("credential_refresh_on_unauthorized = true")]
+#[case::failure("credential_failure = \"anonymous\"")]
+fn test_exec_credential_rejects_each_refresh_control(#[case] control: &str) {
+    let text = format!(
+        "[[index]]\nname = \"corp\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://corp/api/\"\n{control}\n\
+         [index.upstream.credential_exec]\nargv = [{:?}]\n",
+        exec_path()
+    );
+
+    assert_eq!(
+        toml_error(&text).to_string(),
+        "index corp: `credential_exec` controls its own expiry and failure behavior"
     );
 }
 
@@ -746,6 +786,16 @@ fn test_index_webhook_accepts_literal_secret() {
 #[case::ambiguous_secret_source(
     "[[index]]\nname = \"hosted\"\nhosted = true\n\
      [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"s\"\nsecret_env = \"S\"\n",
+    "exactly one of `secret` or `secret_env`"
+)]
+#[case::empty_secret(
+    "[[index]]\nname = \"hosted\"\nhosted = true\n\
+     [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret = \"\"\n",
+    "exactly one of `secret` or `secret_env`"
+)]
+#[case::empty_secret_env(
+    "[[index]]\nname = \"hosted\"\nhosted = true\n\
+     [[index.webhook]]\nname = \"ci\"\nurl = \"https://ci.example/hook\"\nsecret_env = \"\"\n",
     "exactly one of `secret` or `secret_env`"
 )]
 #[case::empty_name(

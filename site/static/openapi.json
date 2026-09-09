@@ -4621,14 +4621,14 @@
                   "trash": [
                     {
                       "actor": "usr_550e8400e29b41d4a716446655440000",
+                      "artifact": "example-1.0.bin",
                       "deadline_unix": 1802592000,
                       "deleted_at_unix": 1800000000,
                       "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                       "ecosystem": "example",
-                      "name": "example",
                       "reason": "compromised build",
-                      "reference": "example-1.0.bin",
                       "repository": "hosted",
+                      "resource": "example",
                       "restorable": true,
                       "state": "restorable"
                     }
@@ -4717,10 +4717,10 @@
             }
           },
           {
-            "description": "The ecosystem artifact name",
+            "description": "The ecosystem resource name",
             "example": "example",
             "in": "query",
-            "name": "name",
+            "name": "resource",
             "required": true,
             "schema": {
               "type": "string"
@@ -4730,7 +4730,7 @@
             "description": "The ecosystem artifact reference, if any",
             "example": "example-1.0.bin",
             "in": "query",
-            "name": "reference",
+            "name": "artifact",
             "required": false,
             "schema": {
               "type": "string"
@@ -4754,14 +4754,14 @@
                 "example": {
                   "record": {
                     "actor": "usr_550e8400e29b41d4a716446655440000",
+                    "artifact": "example-1.0.bin",
                     "deadline_unix": 1802592000,
                     "deleted_at_unix": 1800000000,
                     "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                     "ecosystem": "example",
-                    "name": "example",
                     "reason": "compromised build",
-                    "reference": "example-1.0.bin",
                     "repository": "hosted",
+                    "resource": "example",
                     "restorable": true,
                     "state": "restorable"
                   }
@@ -4889,7 +4889,16 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {}
+              "application/json": {
+                "example": {
+                  "info": {
+                    "title": "peryx",
+                    "version": "0.0.1"
+                  },
+                  "openapi": "3.1.0",
+                  "paths": {}
+                }
+              }
             },
             "description": "OpenAPI 3.1 schema"
           }

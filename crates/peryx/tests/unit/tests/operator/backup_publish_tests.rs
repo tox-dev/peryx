@@ -121,3 +121,76 @@ fn read_only_dir() -> tempfile::TempDir {
     );
     root
 }
+
+/// A backup member's descriptor must not survive into a child process. Nothing else observes that
+/// flag: `EXCL` already refuses an existing path, symlink or not, so the sibling tests that plant a
+/// symlink pass whether or not `NOFOLLOW` is set, and `CLOEXEC` is the only part of the flag set
+/// with a consequence they cannot see.
+#[cfg(unix)]
+#[test]
+fn test_a_created_backup_member_is_closed_on_exec() {
+    let root = tempfile::tempdir().unwrap();
+    let target = BackupTarget::reserve(&root.path().join("backup")).unwrap();
+
+    let member = target
+        .create_file(Path::new("metadata/member"), crate::operator::Access::Private)
+        .unwrap();
+
+    assert_eq!(rustix::io::fcntl_getfd(&member).unwrap(), rustix::io::FdFlags::CLOEXEC);
+}
+
+/// Every component of a member's path has to be a directory. Without that, a regular file standing
+/// where a directory belongs is opened as the parent, and the failure surfaces later and further
+/// away than the component that caused it.
+#[cfg(unix)]
+#[test]
+fn test_open_parent_refuses_a_component_that_is_not_a_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let target = BackupTarget::reserve(&root.path().join("backup")).unwrap();
+    std::fs::write(target.staging.path().join("blocked"), b"not a directory").unwrap();
+
+    let error = target.open_parent(Path::new("blocked/member")).unwrap_err();
+
+    assert!(error.to_string().starts_with("open backup directory"), "{error}");
+}
+
+/// A backup directory is opened as a directory. Without that, a regular file standing where one
+/// belongs is opened as if it were the tree's root, and every path built on it goes somewhere else.
+#[cfg(unix)]
+#[test]
+fn test_open_dir_refuses_a_path_that_is_not_a_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("regular");
+    std::fs::write(&path, b"not a directory").unwrap();
+
+    let error = super::open_dir(&path).unwrap_err();
+
+    assert!(error.to_string().starts_with("open backup directory"), "{error}");
+}
+
+/// A backup directory is never reached through a symlink, so a link planted where the target
+/// belongs cannot redirect the whole backup somewhere the operator did not name.
+#[cfg(unix)]
+#[test]
+fn test_open_dir_refuses_a_symlink_to_a_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+
+    let error = super::open_dir(&link).unwrap_err();
+
+    assert!(error.to_string().starts_with("open backup directory"), "{error}");
+}
+
+/// The directory descriptor the backup holds open must not survive into a child process.
+#[cfg(unix)]
+#[test]
+fn test_open_dir_returns_a_descriptor_closed_on_exec() {
+    let root = tempfile::tempdir().unwrap();
+
+    let dir = super::open_dir(root.path()).unwrap();
+
+    assert_eq!(rustix::io::fcntl_getfd(&dir).unwrap(), rustix::io::FdFlags::CLOEXEC);
+}

@@ -2154,8 +2154,13 @@ fn openapi_endpoint() -> OperationBuilder {
         .summary(Some("OpenAPI schema"))
         .response(
             "200",
-            ResponseBuilder::new()
-                .description("OpenAPI 3.1 schema")
-                .content("application/json", ContentBuilder::new().build()),
+            api_json_response(
+                "OpenAPI 3.1 schema",
+                json!({
+                    "openapi": "3.1.0",
+                    "info": {"title": "peryx", "version": env!("CARGO_PKG_VERSION")},
+                    "paths": {}
+                }),
+            ),
         )
 }
