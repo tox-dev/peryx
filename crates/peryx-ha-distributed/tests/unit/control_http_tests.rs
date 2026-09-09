@@ -963,3 +963,10 @@ fn response_mappers_cover_each_status_class() {
     assert_eq!(forbidden().status(), StatusCode::FORBIDDEN);
     assert_eq!(unavailable().status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// The control body limit is what a peer is allowed to send in one command, so it belongs to the
+/// protocol rather than to whatever the handler happens to accept today.
+#[test]
+fn test_the_control_body_limit_is_sixty_four_kibibytes() {
+    assert_eq!(super::MAX_CONTROL_BODY_BYTES, 64 * 1024);
+}

@@ -187,7 +187,8 @@ impl TransferPlan {
     pub fn cancel(&mut self) -> Result<(), TransferError> {
         match self.state {
             State::Committing | State::Committed(_) => Err(TransferError::AlreadyCommitted),
-            State::Cancelled => Ok(()),
+            // Cancelling an already-cancelled plan lands here too, where the state it is set to is the
+            // state it already holds.
             _ => {
                 self.state = State::Cancelled;
                 Ok(())

@@ -189,10 +189,6 @@ impl ScheduledJobFactory for PlacementReconcileFactory {
         PLACEMENT_RECONCILE
     }
 
-    fn settings(&self) -> toml::Table {
-        toml::Table::new()
-    }
-
     fn create(&self, app: &AppState) -> Result<Arc<dyn NodeJob>, String> {
         let Some(reconciler) = app.serving.placement_reconciler().cloned() else {
             return Err("placement reconciliation is unavailable".to_owned());
@@ -206,10 +202,6 @@ struct ReclamationFactory(ReclamationParameters);
 impl ScheduledJobFactory for ReclamationFactory {
     fn kind(&self) -> &'static str {
         RECLAMATION
-    }
-
-    fn settings(&self) -> toml::Table {
-        toml::Table::new()
     }
 
     fn create(&self, app: &AppState) -> Result<Arc<dyn NodeJob>, String> {

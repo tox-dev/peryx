@@ -1509,3 +1509,65 @@ async fn deferred_singleton_leases_fail_closed_until_bound_and_active() {
         peryx_ha::SingletonRelease::Released
     );
 }
+
+/// An owned slot hands back what it owns and nothing when it owns nothing. Every stage of assembly
+/// reads its resources through these two, so a slot that answered `None` while holding something would
+/// take a listener or a runtime out of reach without dropping it.
+#[test]
+fn test_an_owned_slot_lends_what_it_holds() {
+    let mut owned = OwnedResource::Owned(1_u32);
+    let empty: OwnedResource<u32> = OwnedResource::Absent;
+
+    *owned.as_mut().expect("an owned slot lends a mutable borrow") = 5;
+
+    assert_eq!(
+        (owned.as_ref(), empty.as_ref(), OwnedResource::<u32>::Complete.as_ref()),
+        (Some(&5), None, None)
+    );
+}
+
+/// The active flag is what every deferred binding reads before it will answer, so activation and
+/// deactivation are the switch the whole assembly turns on.
+#[test]
+fn test_bindings_carry_the_active_flag_both_ways() {
+    let bindings = RuntimeBindings::new(true);
+
+    let before = bindings.active.load(std::sync::atomic::Ordering::Acquire);
+    bindings.activate();
+    let activated = bindings.active.load(std::sync::atomic::Ordering::Acquire);
+    bindings.deactivate();
+
+    assert_eq!(
+        (
+            before,
+            activated,
+            bindings.active.load(std::sync::atomic::Ordering::Acquire)
+        ),
+        (false, true, false)
+    );
+}
+
+/// Dropping the active runtime is how a failed startup and an ordinary shutdown both release what was
+/// bound. The bindings outlive the struct that owned them, so leaving them active would leave every
+/// deferred binding answering for a runtime that is gone.
+#[test]
+fn test_dropping_the_active_runtime_deactivates_its_bindings() {
+    let (lifecycle, _shutdown) = Lifecycle::new();
+    let bindings = RuntimeBindings::new(true);
+    bindings.activate();
+    let active = ActiveDistributed {
+        lifecycle,
+        listener: OwnedResource::Absent,
+        consensus: OwnedResource::Absent,
+        runtime: OwnedResource::Absent,
+        bindings: bindings.clone(),
+    };
+
+    let before = bindings.active.load(std::sync::atomic::Ordering::Acquire);
+    drop(active);
+
+    assert_eq!(
+        (before, bindings.active.load(std::sync::atomic::Ordering::Acquire)),
+        (true, false)
+    );
+}
