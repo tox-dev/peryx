@@ -74,9 +74,12 @@ _coverage-lines-contract: _project-temp
       '{"filenames":["a.rs"],"regions":[[10,1,10,9,5,0,0,0],[11,1,11,9,0,0,0,0]]},' \
       '{"filenames":["a.rs"],"regions":[[10,1,10,9,0,0,0,0],[11,1,11,9,7,0,0,0]]},' \
       '{"filenames":["b.rs"],"regions":[[20,1,20,9,0,0,0,0]]}]}]}' >"$export"
+    # The check runs under the interpreter the runner image carries, the way the recipes here already
+    # reach for `jq`, so it needs no tool this job does not declare.
+    #
     # The check exits non-zero when it reports anything, so its output is captured rather than piped:
     # under `pipefail` a pipeline carrying it is non-zero however the reader fares.
-    report=$(uv run --script coverage_lines.py "$export" && echo "reported nothing" || true)
+    report=$(python3 coverage_lines.py "$export" && echo "reported nothing" || true)
     # `set -e` is specified to ignore a command preceded by `!`, so a negation asserts nothing here
     # and each one is written as the failure it stands for.
     grep -qF 'b.rs: 20' <<<"$report"
@@ -94,6 +97,20 @@ _coverage-target-contract:
       | grep -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
     just --dry-run coverage-native 2>&1 \
       | grep -F 'PERYX_BIN="{{ native_coverage_binary }}"'
+    # Two halves gate the run and neither covers the other. `--fail-uncovered-lines` names a line no
+    # function reached; the line check names a function body nothing ran, which the first cannot see
+    # where a covered caller spans it.
+    just --dry-run coverage-native 2>&1 \
+      | grep -F -- '--fail-uncovered-lines 0 --show-missing-lines'
+    just --dry-run coverage-native 2>&1 \
+      | grep -F 'python3 coverage_lines.py'
+    # LLVM's own total is not the second half. It scores an instantiation group by its best single
+    # monomorphization, so it counts a line another monomorphization ran as missed.
+    ! just --dry-run coverage-native 2>&1 | grep -Fq -- '--fail-under-lines'
+    # Both gates report to the terminal. Folding either into the lcov write makes a failure print
+    # nothing at all, which leaves the reader a bare exit code.
+    ! just --dry-run coverage-native 2>&1 \
+      | grep -F -- '--fail-uncovered-lines 0' | grep -Fq -- '--lcov'
 
 # Check that the default test suite receives the built Peryx binary.
 _test-target-contract:
@@ -1301,18 +1318,18 @@ coverage-native output=".tox/coverage/native.lcov": test-deps _docker-ready
     ignore='/(\.cargo/(registry|git)|\.rustup/toolchains|rustc/[0-9a-f]+)/'
     cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
       --lcov --output-path "$output"
-    # `--fail-uncovered-lines` counts a line no function reached, and it is the gate: every line it
-    # has named was a real gap. What it does not see is a function body nothing ran whose lines a
-    # covered caller spans, so it is paired with the check below rather than with
-    # `--fail-under-lines`. LLVM's own total is not usable as that pair: it scores an instantiation
-    # group by taking the mapped and covered counts from whichever monomorphization is highest at
-    # each, independently, so a line one monomorphization runs and another does not is counted
-    # missed while executing. That described 66 of the 88 lines the total reported here.
+    # `--fail-uncovered-lines` counts a line no function reached, and every line it has named was a
+    # real gap. What it does not see is a function body nothing ran whose lines a covered caller
+    # spans, so the check below is paired with it. LLVM's own line total is not usable as that pair:
+    # it scores an instantiation group by taking the mapped and covered counts from whichever
+    # monomorphization is highest at each, on its own, so a line one monomorphization runs and
+    # another does not counts as missed while executing. That described 66 of the 88 lines the total
+    # reported here.
     cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
       --fail-uncovered-lines 0 --show-missing-lines
     cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
       --json --output-path "{{ project_tmp }}/coverage.json"
-    uv run --script coverage_lines.py "{{ project_tmp }}/coverage.json"
+    python3 coverage_lines.py "{{ project_tmp }}/coverage.json"
 
 # Measure native and Wasm frontend coverage.
 coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output=".tox/coverage/frontend-wasm.lcov" merged_output=".tox/coverage/frontend.lcov": _project-temp

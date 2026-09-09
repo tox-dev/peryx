@@ -1,6 +1,3 @@
-# /// script
-# requires-python = ">=3.10"
-# ///
 """Report the source lines no monomorphization of their function executed.
 
 `cargo llvm-cov --fail-under-lines` compares against LLVM's own line total, which is not the number
