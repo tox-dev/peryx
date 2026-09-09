@@ -7,9 +7,32 @@ use crate::config::{self, Config};
 use crate::operator;
 
 use super::support::{
-    BackupFixture, backup_verify, blob_relpath, identified_backup, mutate_manifest, resign_file, valid_backup,
+    BackupFixture, backup_create_with_references, backup_fixture, backup_verify, blob_relpath, identified_backup,
+    mutate_manifest, resign_file, valid_backup,
 };
 use crate::tests::support::{plugins_with_broken_blob_references, store_repositories};
+
+/// Placements belong to the distributed modes. A single-node backup records none and its verification
+/// counts none, whatever placement rows the store happens to hold, so the two agree.
+#[test]
+fn test_verify_ignores_placements_outside_distributed_modes() {
+    let (_source, config, content_digest, _) = backup_fixture();
+    let meta = MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
+    meta.put_artifact_placement(
+        content_digest.as_str(),
+        &peryx_ha::ArtifactPlacement::record(peryx_ha::ArtifactSource::Proxy, true),
+    )
+    .unwrap();
+    drop(meta);
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("backup");
+    backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap();
+    let mut out = Vec::new();
+
+    backup_verify(&backup, &mut out).unwrap();
+
+    assert_eq!(out, b"scope\tecosystems\tcore\nok\n");
+}
 
 fn backup_with_uncovered_stored_ecosystem() -> (tempfile::TempDir, std::path::PathBuf) {
     let root = tempfile::tempdir().unwrap();
@@ -101,12 +124,14 @@ fn test_verify_propagates_blob_reference_driver_errors() {
     );
 }
 
+/// A tampered blob of a different length is two problems, the size and the digest, and the total says
+/// so; a missing one is one, and a `blobs` entry that is not a directory loses both blobs.
 #[rstest]
-#[case::missing_ancestor(BlobFailure::MissingAncestor, "missing")]
-#[case::missing_file(BlobFailure::MissingFile, "missing")]
-#[case::non_directory_ancestor(BlobFailure::NonDirectoryAncestor, "missing")]
-#[case::mismatched(BlobFailure::Mismatched, "sha256 expected")]
-fn test_verify_reports_blob_failures(#[case] failure: BlobFailure, #[case] expected: &str) {
+#[case::missing_ancestor(BlobFailure::MissingAncestor, "missing", 1)]
+#[case::missing_file(BlobFailure::MissingFile, "missing", 1)]
+#[case::non_directory_ancestor(BlobFailure::NonDirectoryAncestor, "missing", 2)]
+#[case::mismatched(BlobFailure::Mismatched, "sha256 expected", 2)]
+fn test_verify_reports_blob_failures(#[case] failure: BlobFailure, #[case] expected: &str, #[case] problems: u64) {
     let fixture = valid_backup();
     let blob = fixture.backup.join(blob_relpath(&fixture.content_digest));
     match failure {
@@ -122,12 +147,14 @@ fn test_verify_reports_blob_failures(#[case] failure: BlobFailure, #[case] expec
 
     let error = backup_verify(&fixture.backup, &mut out).unwrap_err();
 
+    let text = String::from_utf8(out).unwrap();
     assert_eq!(
         (
             error.to_string().contains("backup verification failed"),
-            String::from_utf8(out).unwrap().contains(expected),
+            text.contains(expected),
+            text.lines().last(),
         ),
-        (true, true)
+        (true, true, Some(format!("problems\t{problems}").as_str()))
     );
 }
 
@@ -428,6 +455,8 @@ fn revoke_read_access(descriptor: i32, path: &std::path::Path) {
 #[rstest]
 #[case::sha("sha256", serde_json::json!("invalid"), "sha256 expected")]
 #[case::size("size_bytes", serde_json::json!(0), "size expected 0")]
+/// Either mismatch alone stops the store from being opened, so the report holds the problem line and
+/// the total and nothing from the scans an opened store would have run.
 fn test_verify_reports_metadata_manifest_mismatches(
     #[case] field: &str,
     #[case] value: serde_json::Value,
@@ -441,7 +470,13 @@ fn test_verify_reports_metadata_manifest_mismatches(
 
     backup_verify(&fixture.backup, &mut out).unwrap_err();
 
-    assert!(String::from_utf8(out).unwrap().contains(expected));
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        (lines.len(), lines[0].contains(expected), lines[1]),
+        (2, true, "problems\t1"),
+        "{text}"
+    );
 }
 
 #[rstest]
@@ -463,21 +498,33 @@ fn test_verify_reports_config_manifest_mismatches(
     assert!(String::from_utf8(out).unwrap().contains(expected));
 }
 
+/// A duplicate row is one problem of its own on top of the two the extra row causes in the manifest's
+/// count and byte totals; every other malformed row is the only problem in the report.
 #[rstest]
-#[case::header(BlobIndexMutation::Header, "invalid header")]
-#[case::row(BlobIndexMutation::Row, "invalid row")]
-#[case::digest(BlobIndexMutation::Digest, "invalid digest")]
-#[case::size(BlobIndexMutation::Size, "invalid size")]
-#[case::path(BlobIndexMutation::Path, "invalid path")]
-#[case::duplicate(BlobIndexMutation::Duplicate, "duplicate digest")]
-fn test_verify_reports_blob_index_row_errors(#[case] mutation: BlobIndexMutation, #[case] expected: &str) {
+#[case::header(BlobIndexMutation::Header, "invalid header", 1)]
+#[case::row(BlobIndexMutation::Row, "invalid row", 1)]
+#[case::digest(BlobIndexMutation::Digest, "invalid digest", 1)]
+#[case::size(BlobIndexMutation::Size, "invalid size", 1)]
+#[case::path(BlobIndexMutation::Path, "invalid path", 1)]
+#[case::duplicate(BlobIndexMutation::Duplicate, "duplicate digest", 3)]
+fn test_verify_reports_blob_index_row_errors(
+    #[case] mutation: BlobIndexMutation,
+    #[case] expected: &str,
+    #[case] problems: u64,
+) {
     let fixture = valid_backup();
     rewrite_blob_index(&fixture, mutated_blob_index(&fixture, mutation));
     let mut out = Vec::new();
 
     backup_verify(&fixture.backup, &mut out).unwrap_err();
 
-    assert!(String::from_utf8(out).unwrap().contains(expected));
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(expected), "{text}");
+    assert_eq!(
+        text.lines().last(),
+        Some(format!("problems\t{problems}").as_str()),
+        "{text}"
+    );
 }
 
 #[test]
@@ -508,6 +555,7 @@ fn test_verify_does_not_follow_an_invalid_blob_path() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("invalid path"));
     assert!(text.contains(&format!("problem\tblob\t{}\tmissing", fixture.content_digest.as_str())));
+    assert_eq!(text.lines().last(), Some("problems\t2"), "{text}");
 }
 
 #[test]
@@ -529,10 +577,12 @@ fn test_verify_reports_a_missing_metadata_reference() {
 
     backup_verify(&fixture.backup, &mut out).unwrap_err();
 
-    assert!(String::from_utf8(out).unwrap().contains(&format!(
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(&format!(
         "{}\tmissing referenced digest",
         fixture.metadata_digest.as_str()
     )));
+    assert_eq!(text.lines().last(), Some("problems\t2"), "{text}");
 }
 
 #[rstest]
