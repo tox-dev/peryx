@@ -173,6 +173,22 @@ fn test_ldap_group_mapping_repository_must_exist() {
     "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nbind_dn = \"cn=service\"\n",
     "direct bind accepts only `dn_attribute` bind fields"
 )]
+#[case::direct_username_attribute(
+    "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nusername_attribute = \"uid\"\n",
+    "direct bind accepts only `dn_attribute` bind fields"
+)]
+#[case::direct_bind_password(
+    "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nbind_password = \"secret\"\n",
+    "direct bind accepts only `dn_attribute` bind fields"
+)]
+#[case::direct_bind_password_file(
+    "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nbind_password_file = \"/run/secret\"\n",
+    "direct bind accepts only `dn_attribute` bind fields"
+)]
+#[case::direct_bind_password_env(
+    "url = \"ldap://directory.example\"\nmode = \"direct-bind\"\ndn_attribute = \"uid\"\nbind_password_env = \"LDAP_PW\"\n",
+    "direct bind accepts only `dn_attribute` bind fields"
+)]
 #[case::search_direct_field(
     "url = \"ldap://directory.example\"\nmode = \"service-search\"\ndn_attribute = \"uid\"\nbind_password = \"secret\"\n",
     "service search does not accept `dn_attribute`"
@@ -519,6 +535,21 @@ fn test_oidc_provider_config_applies_claim_and_bound_defaults() {
 #[case::normalized_issuer(
     "web",
     "issuer = \"https://IDP.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must preserve its configured https URL"
+)]
+#[case::issuer_password(
+    "web",
+    "issuer = \"https://:hunter2@idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must preserve its configured https URL"
+)]
+#[case::issuer_query(
+    "web",
+    "issuer = \"https://idp.example/?tenant=a\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must preserve its configured https URL"
+)]
+#[case::issuer_fragment(
+    "web",
+    "issuer = \"https://idp.example/#realm\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
     "`issuer` must preserve its configured https URL"
 )]
 #[case::redirect_scheme(
