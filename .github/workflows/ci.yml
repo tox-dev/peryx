@@ -167,7 +167,14 @@ jobs:
           sudo install -m 644 "$RUNNER_TEMP/llvm.asc" /etc/apt/keyrings/llvm.asc
           repository='https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main'
           echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] $repository" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
+          # Refresh only the list this step just wrote. A plain `apt-get update` reads every list on
+          # the runner image, so a third party serving a corrupt index fails the whole command: on
+          # 2026-09-09 Google's Chrome repository returned a Packages.gz whose hash did not match its
+          # Release file, exit 100, and clang was never installed even though apt.llvm.org was healthy.
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist=sources.list.d/llvm.list \
+            -o Dir::Etc::sourceparts=- \
+            -o APT::Get::List-Cleanup=0
           sudo apt-get install --yes clang-22 lcov
           echo "CLANG=clang-22" >> "$GITHUB_ENV"
       - run: just coverage-frontend
