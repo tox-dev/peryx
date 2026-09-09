@@ -788,8 +788,13 @@ async fn test_plan_rejects_an_invalid_cursor() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+#[rstest]
+#[case::zero(0, StatusCode::BAD_REQUEST)]
+// The bound itself is allowed and one past it is not, so the comparison decides something.
+#[case::at_the_maximum(1000, StatusCode::OK)]
+#[case::past_the_maximum(1001, StatusCode::BAD_REQUEST)]
 #[tokio::test]
-async fn test_plan_rejects_an_out_of_range_limit() {
+async fn test_plan_rejects_an_out_of_range_limit(#[case] limit: usize, #[case] expected: StatusCode) {
     let fixture = Fixture::new(StubDriver {
         decisions: Vec::new(),
         unsupported: false,
@@ -797,11 +802,30 @@ async fn test_plan_rejects_an_out_of_range_limit() {
     })
     .await;
     let mut body = plan_body("hosted");
-    body["limit"] = serde_json::json!(0);
+    body["limit"] = serde_json::json!(limit);
 
     let (status, _) = fixture.plan(body).await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, expected);
+}
+
+/// A body far above the padding but far below the 64 KiB cap. Without it the only accepted bodies
+/// were small enough to fit a cap mis-stated as `64 + 1024`.
+#[tokio::test]
+async fn test_plan_accepts_a_body_well_over_a_kilobyte() {
+    let fixture = Fixture::new(StubDriver {
+        decisions: Vec::new(),
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+    let mut body = plan_body("hosted");
+    body["expire"] = serde_json::json!([{"selector": "resource-prefix", "prefix": "p".repeat(4096)}]);
+    assert!(serde_json::to_vec(&body).unwrap().len() > 4096);
+
+    let (status, _) = fixture.plan(body).await;
+
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
