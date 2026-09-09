@@ -415,6 +415,39 @@ async fn test_a_key_freed_by_a_lost_leader_is_free_for_its_replacement() {
     }
 }
 
+/// A follower forwards its write to the leader over the replication token it was configured with, and
+/// the leader answers a token it does not hold with a `401`. That is not a leadership answer: nothing
+/// reached consensus and nothing is pending, so the claim comes back as a peer that could not be
+/// reached rather than as a rejection the caller could retry into.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_a_forwarded_write_the_leader_refuses_reports_an_unreachable_peer() {
+    let dirs: Vec<TempDir> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let (nodes, servers) = live_group(&dirs).await;
+    let elected = leader_other_than(&nodes[0], None).await;
+    let follower = (1..=3).find(|id| *id != elected).unwrap();
+    let index = usize::try_from(follower).unwrap() - 1;
+    assert_eq!(leader_other_than(&nodes[index], None).await, elected);
+    let group = Arc::new(
+        OwnershipGroup::new(nodes[index].clone(), DatacenterId(format!("dc{follower}")))
+            .with_peer_forwarding("not-the-group-secret")
+            .with_clock(clock()),
+    );
+
+    let refused = group.claim_home("proj").await.unwrap_err();
+
+    assert_eq!(
+        refused.to_string(),
+        "ownership claim did not commit: peer rejected the replication credential"
+    );
+    for node in &nodes {
+        node.raft().shutdown().await.unwrap();
+    }
+    for server in servers {
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
 #[tokio::test]
 async fn test_a_keyed_command_the_authority_rejects_leaves_its_key_open() {
     let dir = tempfile::tempdir().unwrap();
