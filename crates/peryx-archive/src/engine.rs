@@ -152,8 +152,8 @@ fn text_chunk(member: &str, mut chunk: MemberChunk) -> Result<MemberChunk, Archi
         Ok(_) => Ok(chunk),
         Err(err) if err.error_len().is_none() && chunk.next_offset.is_some() && err.valid_up_to() > 0 => {
             chunk.bytes.truncate(err.valid_up_to());
-            let next = chunk.offset + u64::try_from(chunk.bytes.len()).unwrap_or_default();
-            chunk.next_offset = (next < chunk.size).then_some(next);
+            // The trimmed tail lies inside the member, so a further chunk always follows.
+            chunk.next_offset = Some(chunk.offset + u64::try_from(chunk.bytes.len()).unwrap_or_default());
             Ok(chunk)
         }
         Err(_) => Err(ArchiveError::BinaryMember(member.to_owned())),
@@ -200,9 +200,7 @@ fn read_zip_member(
     let member = safe_member_name(member)?;
     let mut archive = zip::ZipArchive::new(reader).map_err(read_error)?;
     let position = zip_member_position(&mut archive, &member)?.ok_or(ArchiveError::MemberNotFound)?;
-    if offset > 0
-        && let Ok(mut entry) = archive.by_index_seek(position)
-    {
+    if let Ok(mut entry) = archive.by_index_seek(position) {
         let size = entry.get_metadata().uncompressed_size;
         if offset > size {
             return Err(ArchiveError::InvalidRange { offset, size });
