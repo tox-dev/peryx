@@ -113,9 +113,8 @@ fn export(
         &query,
         &ScanCancellation::new(),
         &mut |summary| {
-            let header =
-                serde_json::to_string(&serde_json::json!({ "summary": summary })).map_err(|error| error.to_string())?;
-            writeln!(&mut **out.borrow_mut(), "{header}").map_err(|error| error.to_string())
+            write_json_line(&mut **out.borrow_mut(), &serde_json::json!({ "summary": summary }))
+                .map_err(|error| error.to_string())
         },
         &mut |decision| write_json_line(&mut **out.borrow_mut(), decision).map_err(|error| error.to_string()),
     )
@@ -195,11 +194,11 @@ fn name(value: &impl serde::Serialize) -> String {
         .to_owned()
 }
 
-fn write_json_line(out: &mut dyn Write, decision: &RetentionDecision) -> std::io::Result<()> {
+fn write_json_line(out: &mut dyn Write, record: &impl serde::Serialize) -> std::io::Result<()> {
     writeln!(
         out,
         "{}",
-        serde_json::to_string(decision).expect("a decision always serializes")
+        serde_json::to_string(record).expect("a plan record always serializes")
     )
 }
 

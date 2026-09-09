@@ -1,5 +1,6 @@
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
+use rstest::rstest;
 
 use crate::app::cache_with_plugins;
 use crate::app::tests::{bounded_output, config_at, plugins, runtime_args, write_invalid_blob_path};
@@ -193,8 +194,12 @@ fn test_cache_repair_rebuilds_when_confirmed() {
     assert_eq!(output, b"metadata\tcore\trebuilt\tmain\nrepaired\t1\n");
 }
 
-#[test]
-fn test_cache_repair_propagates_plugin_output_failures() {
+/// A preview and a rebuild write the same records through the same handle, so an output that cannot
+/// take them fails the ecosystem's own call either way rather than only the summary line below.
+#[rstest]
+#[case::preview(false)]
+#[case::rebuild(true)]
+fn test_cache_repair_propagates_plugin_output_failures(#[case] apply: bool) {
     let dir = tempfile::tempdir().unwrap();
     let plugins = crate::tests::support::plugins_with_fsck();
     let config = crate::config::Config {
@@ -203,7 +208,7 @@ fn test_cache_repair_propagates_plugin_output_failures() {
     };
     MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
 
-    let error = cache_with_plugins(&config, &plugins, &repair_command(false), &mut bounded_output(0)).unwrap_err();
+    let error = cache_with_plugins(&config, &plugins, &repair_command(apply), &mut bounded_output(0)).unwrap_err();
 
     assert_eq!(
         format!("{error:#}"),

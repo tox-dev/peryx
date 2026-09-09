@@ -1556,6 +1556,32 @@ async fn test_upload_malformed_multipart_is_bad_request() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.starts_with("bad upload: "));
 }
+/// A body that stops inside a part is a different failure from one that stops in the part headers
+/// above: the field reader is already streaming when the stream ends. A recognised field is read for
+/// its value and an unrecognised one is drained, and the truncation reaches both readers.
+#[rstest]
+#[case::read_for_its_value("name")]
+#[case::drained_unread("ignored")]
+#[tokio::test]
+async fn test_upload_truncated_field_body_is_bad_request(#[case] field: &str) {
+    let h = harness().await;
+    let body = format!("--b\r\nContent-Disposition: form-data; name=\"{field}\"\r\n\r\npartial").into_bytes();
+
+    let (status, body) = post_upload_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        "multipart/form-data; boundary=b",
+        body,
+    )
+    .await;
+
+    assert_eq!(
+        (status, body.starts_with("bad upload: ")),
+        (StatusCode::BAD_REQUEST, true),
+        "{body}"
+    );
+}
 #[tokio::test]
 async fn test_upload_declared_digest_mismatch_is_bad_request() {
     let h = harness().await;

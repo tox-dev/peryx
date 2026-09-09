@@ -46,13 +46,14 @@ struct PanickingAddressListener;
 struct ConsensusOrderListener {
     listener: std::net::TcpListener,
     log_path: std::path::PathBuf,
-    stopped: std::sync::mpsc::Sender<bool>,
+    entered: tokio::sync::oneshot::Sender<()>,
+    stopped: tokio::sync::oneshot::Sender<bool>,
 }
 
 struct ConsensusOrderSignal {
     listener: Option<tokio::net::TcpListener>,
     log_path: std::path::PathBuf,
-    stopped: Option<std::sync::mpsc::Sender<bool>>,
+    stopped: Option<tokio::sync::oneshot::Sender<bool>>,
 }
 
 impl Drop for ConsensusOrderSignal {
@@ -73,15 +74,22 @@ impl crate::PreparedAvailabilityListener for ConsensusOrderListener {
         _router: Router,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<crate::AvailabilityListenerFuture, crate::AvailabilityListenerError> {
-        self.listener.set_nonblocking(true).unwrap();
-        let listener = tokio::net::TcpListener::from_std(self.listener).unwrap();
+        let Self {
+            listener,
+            log_path,
+            entered,
+            stopped,
+        } = *self;
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         let stopped = ConsensusOrderSignal {
             listener: Some(listener),
-            log_path: self.log_path,
-            stopped: Some(self.stopped),
+            log_path,
+            stopped: Some(stopped),
         };
         Ok(Box::pin(async move {
             let _stopped = stopped;
+            let _ = entered.send(());
             shutdown.cancelled_owned().await;
             Ok(())
         }))
@@ -1358,7 +1366,8 @@ async fn listener_destructor_precedes_consensus_teardown_after_handle_drop() {
     let (dir, mut state) = state();
     let config = ha_config(&dir);
     install_runtime_services(&mut state, &config);
-    let (stopped, listener_stopped) = std::sync::mpsc::channel();
+    let (stopped, listener_stopped) = tokio::sync::oneshot::channel();
+    let (entered, listener_entered) = tokio::sync::oneshot::channel();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let listener_address = listener.local_addr().unwrap();
     let prepared = prepare_with_listener(
@@ -1367,15 +1376,21 @@ async fn listener_destructor_precedes_consensus_teardown_after_handle_drop() {
         Box::new(ConsensusOrderListener {
             listener,
             log_path: dir.path().join(LOG_STORE_SUBPATH),
+            entered,
             stopped,
         }),
     )
     .await
     .unwrap();
     assert_eq!(prepared.handle.listener_address(), Some(listener_address));
-    drop(prepared.activate().unwrap().handle);
+    let active = prepared.activate().unwrap();
+    // The listener task has to be polled before the handle goes, or the teardown it is there to
+    // observe happens while its future is still waiting for its first poll.
+    listener_entered.await.unwrap();
 
-    assert!(listener_stopped.recv().unwrap());
+    drop(active.handle);
+
+    assert!(listener_stopped.await.unwrap());
 }
 
 #[tokio::test]

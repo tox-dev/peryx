@@ -93,6 +93,36 @@ fn test_retention_dry_run_applies_a_rules_file() {
     );
 }
 
+/// A driver reads the policy generation to stamp its snapshot, before it opens one. A row that does
+/// not decode therefore ends the plan with nothing written, rather than a summary whose frontier is
+/// invented and decisions the caller would take for a complete answer.
+#[test]
+fn test_retention_dry_run_reports_an_undecodable_policy_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_at(&dir);
+    let database = redb::Database::open(config.data_dir.join("peryx.redb")).unwrap();
+    let transaction = database.begin_write().unwrap();
+    transaction
+        .open_table(redb::TableDefinition::<&str, &[u8]>::new("policy_input_generation"))
+        .unwrap()
+        .insert("main", &br#"{"repository":"one","catalog":0,"policy":0}"#[..])
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(database);
+    let mut output = Vec::new();
+
+    let error = retention_with_plugins(
+        &config,
+        &plugins(),
+        &RetentionCommand::DryRun(dry_run_args("main")),
+        &mut output,
+    )
+    .unwrap_err();
+
+    assert_eq!(output, HEADER.as_bytes());
+    assert!(error.to_string().contains("invalid type: string"), "{error:#}");
+}
+
 #[test]
 fn test_retention_export_writes_identity_before_decisions() {
     let dir = tempfile::tempdir().unwrap();
