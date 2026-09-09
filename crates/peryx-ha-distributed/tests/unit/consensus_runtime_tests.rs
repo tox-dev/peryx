@@ -2323,3 +2323,14 @@ async fn test_replacing_a_voter_gives_up_when_the_promoted_peer_stops_answering(
     stop_mounted(&east, east_served).await;
     west_served.abort();
 }
+
+/// A voter's identity is derived from its datacenter name and nothing else, so every node in the group
+/// computes the same id for the same name. Pinning two of them pins the derivation: a peer that hashed
+/// differently would address a voter nobody else knows.
+#[test]
+fn test_a_voter_id_is_the_fnv_hash_of_its_datacenter() {
+    assert_eq!(
+        (voter_id("east"), voter_id("west")),
+        (0x2115_9860_1E3F_CC3C, 0x3DB0_14F6_1A15_542E)
+    );
+}

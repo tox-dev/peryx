@@ -196,3 +196,17 @@ async fn test_a_store_that_cannot_be_read_fails_both_checkpoint_endpoints() {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "{path}");
     }
 }
+
+/// A checkpoint window and a change page bound the same thing: what a node spends on one hop for a
+/// peer that is catching up. The two caps are written to match, so a change to either has to be a
+/// change to both rather than a drift nobody notices.
+#[test]
+fn test_a_checkpoint_window_holds_a_change_page() {
+    assert_eq!(
+        (
+            crate::http::MAX_CHECKPOINT_CHUNK_BYTES,
+            u64::try_from(crate::http::MAX_CHECKPOINT_CHUNK_BYTES).unwrap()
+        ),
+        (4 * 1024 * 1024, crate::change_page::MAX_CHANGE_PAGE_BYTES)
+    );
+}

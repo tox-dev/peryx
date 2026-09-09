@@ -1671,3 +1671,13 @@ async fn sync_cycle(runtime: &mut DistributedRuntime) -> Option<bool> {
     let (replica, _) = runtime.replica.as_mut()?;
     Some(replica.cycle().await.unwrap_or(true))
 }
+
+/// The role travels into the availability report as a label an operator reads, so the two roles have
+/// to keep the names the report is written around.
+#[test]
+fn test_each_availability_role_names_itself() {
+    assert_eq!(
+        (AvailabilityRole::Primary.as_str(), AvailabilityRole::Replica.as_str()),
+        ("primary", "replica")
+    );
+}

@@ -312,3 +312,59 @@ fn test_derive_child_rejects_an_invalid_span_id() {
         assert_eq!(error, TraceError::InvalidSpanId(span.to_owned()), "{span}");
     }
 }
+
+/// The byte limit is a ceiling the payload is allowed to touch. Rejecting a payload that measures
+/// exactly the limit would refuse the largest envelope the sender was told it could send.
+#[test]
+fn test_envelope_decode_accepts_the_byte_limit_exactly() {
+    let bytes = envelope().encode();
+    let limits = DecodeLimits {
+        max_bytes: bytes.len(),
+        ..DecodeLimits::default()
+    };
+
+    assert!(OperationEnvelope::decode(&bytes, limits).is_ok());
+}
+
+/// The depth limit is a ceiling too: a document that nests exactly to it is inside it, and only the
+/// level past it is too deep. Reaching the limit leaves the depth check silent and the document goes
+/// on to be parsed, which is where an array fails to be an envelope.
+#[test]
+fn test_envelope_decode_accepts_the_depth_limit_exactly() {
+    let limits = DecodeLimits {
+        max_depth: 1,
+        ..DecodeLimits::default()
+    };
+
+    let error = OperationEnvelope::decode(b"[]", limits).unwrap_err();
+
+    assert!(matches!(error, EnvelopeError::Malformed(_)));
+}
+
+/// Siblings are not nesting. A document that closes what it opens returns to the depth it came from,
+/// so a run of them stays one deep however long it runs.
+#[test]
+fn test_envelope_decode_counts_siblings_at_one_depth() {
+    let limits = DecodeLimits {
+        max_depth: 1,
+        ..DecodeLimits::default()
+    };
+
+    let error = OperationEnvelope::decode(b"[][][]", limits).unwrap_err();
+
+    assert!(matches!(error, EnvelopeError::Malformed(_)));
+}
+
+/// Braces inside a string are text. Counting them as structure would let a payload's contents decide
+/// whether the payload is too deep.
+#[test]
+fn test_envelope_decode_reads_braces_inside_a_string_as_text() {
+    let limits = DecodeLimits {
+        max_depth: 1,
+        ..DecodeLimits::default()
+    };
+
+    let error = OperationEnvelope::decode(br#"{"a": "{{{{"}"#, limits).unwrap_err();
+
+    assert!(matches!(error, EnvelopeError::Malformed(_)));
+}

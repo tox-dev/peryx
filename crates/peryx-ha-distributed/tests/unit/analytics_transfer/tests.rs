@@ -284,3 +284,35 @@ async fn test_http_source_maps_a_truncated_body() {
     );
     task.await.unwrap();
 }
+
+/// The encoded-size limit is a ceiling the producer is allowed to reach. Refusing a body that measures
+/// exactly the limit would reject the largest page the puller told the producer it could send.
+#[tokio::test]
+async fn test_http_source_accepts_a_body_at_the_encoded_limit() {
+    let router = Router::new().route("/+replication/v1/analytics", get(|| async { "[]" }));
+    let server = TestServer::start(router).await;
+    let exact = HttpAnalyticsSource::new(&server.url, TOKEN, limits(2), Duration::from_secs(5)).unwrap();
+
+    assert_eq!(exact.fetch_after(0).await.unwrap(), Vec::new());
+}
+
+/// A body that arrives in pieces is measured as it accumulates, and the size reported names the piece
+/// that crossed the limit rather than any number above it. Two two-byte chunks fit under a four byte
+/// limit and the third makes six.
+#[tokio::test]
+async fn test_http_source_stops_a_chunked_body_at_the_piece_that_crosses() {
+    let router = Router::new().route(
+        "/+replication/v1/analytics",
+        get(|| async {
+            axum::body::Body::from_stream(futures_util::stream::iter(
+                (0..3).map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"[]"))),
+            ))
+        }),
+    );
+    let server = TestServer::start(router).await;
+    let tiny = HttpAnalyticsSource::new(&server.url, TOKEN, limits(4), Duration::from_secs(5)).unwrap();
+
+    let error = tiny.fetch_after(0).await.unwrap_err();
+
+    assert!(matches!(error, TransportError::FrameTooLarge { limit: 4, actual: 6 }));
+}
