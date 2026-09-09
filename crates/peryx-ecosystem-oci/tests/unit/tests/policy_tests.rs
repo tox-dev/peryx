@@ -643,35 +643,32 @@ fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, ax
     )
 }
 
+/// The limit is the largest blob a repository accepts, so a monolithic body of exactly that many bytes
+/// lands while one byte more is refused.
+#[rstest::rstest]
+#[case::under_limit(b"ok", StatusCode::CREATED, false)]
+#[case::at_limit(b"four", StatusCode::CREATED, false)]
+#[case::over_limit(b"toobig", StatusCode::FORBIDDEN, true)]
 #[tokio::test]
-async fn test_policy_refuses_a_monolithic_blob_over_the_size_limit() {
+async fn test_policy_applies_the_size_limit_to_a_monolithic_blob(
+    #[case] blob: &[u8],
+    #[case] expected: StatusCode,
+    #[case] denied: bool,
+) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = store_size_limited(&dir, 4);
+    let digest = oci_digest(blob);
 
-    let big = b"toobig";
-    let big_digest = oci_digest(big);
     let (status, _, body) = send_body(
         &app,
         Method::POST,
-        &format!("/v2/store/app/blobs/uploads/?digest={big_digest}"),
+        &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
         &[("authorization", &auth(TOKEN))],
-        big.to_vec(),
+        blob.to_vec(),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert!(String::from_utf8_lossy(&body).contains("DENIED"));
 
-    let small = b"ok";
-    let small_digest = oci_digest(small);
-    let (status, _, _) = send_body(
-        &app,
-        Method::POST,
-        &format!("/v2/store/app/blobs/uploads/?digest={small_digest}"),
-        &[("authorization", &auth(TOKEN))],
-        small.to_vec(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!((status, body_has_code(&body, "DENIED")), (expected, denied));
 }
 
 #[rstest::rstest]
