@@ -239,8 +239,12 @@ fn volumes(scratch: &Path) -> Vec<Volume> {
 /// answer would be the read-only system volume instead of the disk the bytes land on.
 fn mount_for<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
     reported_mount(path)
-        .and_then(|mount| disks.list().iter().find(|disk| disk.mount_point() == Path::new(&mount)))
+        .and_then(|mount| exact_mount(disks, Path::new(&mount)))
         .or_else(|| longest_prefix(disks, path))
+}
+
+fn exact_mount<'a>(disks: &'a Disks, mount: &Path) -> Option<&'a sysinfo::Disk> {
+    disks.list().iter().find(|disk| disk.mount_point() == mount)
 }
 
 fn longest_prefix<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
@@ -356,8 +360,15 @@ fn summarize(mut samples: Vec<f64>) -> String {
     format!("{} ±{spread:.0}%", rate(median))
 }
 
-fn memory_copy(workers: usize, bytes: usize) -> f64 {
+/// What one worker moves, and the total that reaches the reported rate. The total rounds `bytes`
+/// down to a multiple of `workers` so every stream carries the same load.
+const fn shares(bytes: usize, workers: usize) -> (usize, usize) {
     let each = bytes / workers;
+    (each, each * workers)
+}
+
+fn memory_copy(workers: usize, bytes: usize) -> f64 {
+    let (each, moved) = shares(bytes, workers);
     let mut buffers: Vec<(Vec<u8>, Vec<u8>)> = (0..workers).map(|_| (vec![7u8; each], vec![0u8; each])).collect();
     // Fault every destination page in before the clock starts. A freshly allocated `Vec` is untouched
     // zero pages, so the first write to each takes a page fault, and timing that measures the virtual
@@ -373,12 +384,12 @@ fn memory_copy(workers: usize, bytes: usize) -> f64 {
     });
     let elapsed = start.elapsed().as_secs_f64();
     std::hint::black_box(&buffers);
-    throughput(each * workers, elapsed)
+    throughput(moved, elapsed)
 }
 
 fn disk_write(scratch: &Path, workers: usize, bytes: usize, chunk_bytes: usize) -> anyhow::Result<f64> {
     let directory = tempfile::tempdir_in(scratch)?;
-    let each = bytes / workers;
+    let (each, moved) = shares(bytes, workers);
     let chunk = vec![7u8; chunk_bytes];
     let mut outcomes = Vec::with_capacity(workers);
     let start = Instant::now();
@@ -397,19 +408,22 @@ fn disk_write(scratch: &Path, workers: usize, bytes: usize, chunk_bytes: usize) 
     for outcome in outcomes {
         outcome?;
     }
-    Ok(throughput(each * workers, elapsed))
+    Ok(throughput(moved, elapsed))
 }
 
 fn write_one(path: &Path, chunk: &[u8], bytes: usize) -> anyhow::Result<()> {
     let mut file = File::create(path).with_context(|| format!("cannot create {}", path.display()))?;
-    let mut written = 0;
-    while written < bytes {
-        let span = chunk.len().min(bytes - written);
+    for span in spans(bytes, chunk.len()) {
         file.write_all(&chunk[..span])?;
-        written += span;
     }
     file.sync_all().context("the write did not reach the device")?;
     Ok(())
+}
+
+/// The writes that cover `bytes`, each at most `chunk` long and the last one short. Driving the
+/// walk off the offsets rather than a running total keeps every write bounded by the buffer.
+fn spans(bytes: usize, chunk: usize) -> impl Iterator<Item = usize> {
+    (0..bytes).step_by(chunk).map(move |written| chunk.min(bytes - written))
 }
 
 fn page_cache_read(scratch: &Path, workers: usize, bytes: usize, chunk_bytes: usize) -> anyhow::Result<f64> {
@@ -474,13 +488,14 @@ async fn loopback_http(clients: usize, payload_bytes: usize) -> anyhow::Result<f
         let (http, url) = (http.clone(), url.clone());
         streams.push(tokio::spawn(async move { drain(&http, &url, payload_bytes).await }));
     }
+    let mut moved = Vec::with_capacity(clients);
     for stream in streams {
-        stream.await??;
+        moved.push(stream.await??);
     }
     let elapsed = start.elapsed().as_secs_f64();
     let _ = stop.send(());
     serving.join().expect("the loopback server thread does not panic")?;
-    Ok(throughput(payload_bytes * clients, elapsed))
+    Ok(throughput(moved.iter().sum(), elapsed))
 }
 
 /// Serve the payload on a private runtime until told to stop, reporting the bound address back.
@@ -511,7 +526,9 @@ async fn serve_loopback(
     }
 }
 
-async fn drain(http: &reqwest::Client, url: &str, payload_bytes: usize) -> anyhow::Result<()> {
+/// Reports the bytes it read, so the rate is computed from what arrived rather than from what the
+/// caller asked for.
+async fn drain(http: &reqwest::Client, url: &str, payload_bytes: usize) -> anyhow::Result<usize> {
     let mut response = http
         .get(url)
         .send()
@@ -525,7 +542,7 @@ async fn drain(http: &reqwest::Client, url: &str, payload_bytes: usize) -> anyho
         total == payload_bytes,
         "loopback served {total} bytes, expected {payload_bytes}"
     );
-    Ok(())
+    Ok(total)
 }
 
 #[expect(clippy::cast_precision_loss, reason = "byte counts here fit f64 exactly")]

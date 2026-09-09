@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
@@ -153,12 +154,17 @@ fn process_tree_sample(system: &System, root: Pid) -> anyhow::Result<(u64, u64)>
         .filter_map(|pid| system.process(*pid))
         .map(|process| f64::from(process.cpu_usage()))
         .sum();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "usage percent over a 200ms tick is small and non-negative"
-    )]
-    Ok((rss, (usage / 100.0 * SAMPLE_INTERVAL.as_secs_f64() * 1000.0) as u64))
+    Ok((rss, cpu_millis(usage)))
+}
+
+/// The milliseconds of CPU a percentage observed over one sample tick stands for.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "usage percent over a 200ms tick is small and non-negative"
+)]
+fn cpu_millis(percent: f64) -> u64 {
+    (percent / 100.0 * SAMPLE_INTERVAL.as_secs_f64() * 1000.0) as u64
 }
 
 fn record(sample: (u64, u64), peak_rss: &AtomicU64, cpu_millis: &AtomicU64) {
@@ -166,22 +172,22 @@ fn record(sample: (u64, u64), peak_rss: &AtomicU64, cpu_millis: &AtomicU64) {
     cpu_millis.fetch_add(sample.1, Ordering::Relaxed);
 }
 
+/// Walking down from the root and taking each parent's children once means a cycle in the process
+/// table cannot spin, and each process is visited once rather than once per descendant.
 fn tree_of(system: &System, root: Pid) -> Vec<Pid> {
-    system
-        .processes()
-        .keys()
-        .filter(|&&pid| {
-            let mut cursor = pid;
-            loop {
-                if cursor == root {
-                    return true;
-                }
-                match system.process(cursor).and_then(sysinfo::Process::parent) {
-                    Some(parent) if parent != cursor => cursor = parent,
-                    _ => return false,
-                }
-            }
-        })
-        .copied()
-        .collect()
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (pid, process) in system.processes() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
+    }
+    let mut tree = vec![root];
+    let mut pending = vec![root];
+    while let Some(pid) = pending.pop() {
+        for child in children.remove(&pid).into_iter().flatten() {
+            tree.push(child);
+            pending.push(child);
+        }
+    }
+    tree
 }

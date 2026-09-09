@@ -3,11 +3,17 @@ use std::path::Path;
 use sysinfo::{Disks, System};
 
 use super::{
-    FileMeasure, ProfileSettings, baselines, baselines_with, capacity, cpu, describe_cores, longest_prefix, mount_for,
-    or_unknown, rate, read_one, repo_root, volumes, write_one, write_profile,
+    FileMeasure, ProfileSettings, baselines, baselines_with, capacity, cpu, describe_cores, disk_write, drain,
+    exact_mount, gibibytes, http_client, longest_prefix, memory_copy, mount_for, or_unknown, page_cache_read, rate,
+    read_one, repeat, repo_root, reported_mount, serve_loopback, shares, spans, summarize, throughput, volumes,
+    write_one, write_profile,
 };
 #[cfg(target_os = "macos")]
-use super::{sysctl, sysctl_with};
+use super::{model, sysctl, sysctl_with};
+
+/// Below this a returned figure cannot be a measurement: even a saturated CI disk moves far more
+/// than a kilobyte a second, so anything slower is a constant standing in for one.
+const SLOWEST_CREDIBLE_RATE: f64 = 1000.0;
 
 const fn smoke_settings() -> ProfileSettings {
     ProfileSettings {
@@ -250,4 +256,120 @@ async fn profile_rejects_invalid_settings() {
             .expect_err("invalid settings fail");
         assert!(error.to_string().contains(message), "{error:#}");
     }
+}
+
+#[test]
+fn shares_round_the_budget_down_to_whole_streams() {
+    assert_eq!(shares(10, 3), (3, 9));
+}
+
+#[test]
+fn spans_cover_the_budget_with_a_short_last_write() {
+    assert_eq!(spans(10, 4).collect::<Vec<_>>(), vec![4, 4, 2]);
+}
+
+#[test]
+fn file_helpers_move_exactly_the_requested_bytes() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("payload");
+    write_one(&path, &[7u8; 4], 10).expect("the write succeeds");
+    assert_eq!(std::fs::metadata(&path).expect("the file exists").len(), 10);
+    assert_eq!(read_one(&path, 4).expect("the read succeeds"), 10);
+}
+
+#[test]
+fn summarize_reports_the_median_and_its_dispersion() {
+    assert_eq!(summarize(vec![3e9, 1e9, 2e9]), "2.0 GB/s ±41%");
+}
+
+#[test]
+fn repeat_discards_the_first_sample() {
+    let mut samples = [1e9, 2e9, 3e9, 4e9].into_iter();
+    let mut measure = || samples.next().expect("a sample per round");
+    assert_eq!(repeat(3, &mut measure), "3.0 GB/s ±27%");
+}
+
+#[test]
+fn throughput_is_bytes_over_seconds() {
+    assert_eq!((throughput(1000, 0.5), throughput(3, 4.0)), (2000.0, 0.75));
+}
+
+#[test]
+fn gibibytes_reports_memory_in_binary_units() {
+    assert_eq!(gibibytes(8 * 1024 * 1024 * 1024), "8 GB");
+}
+
+#[test]
+fn reported_mount_reads_the_mount_point_df_names() {
+    assert_eq!(reported_mount(Path::new("/")).as_deref(), Some("/"));
+}
+
+#[test]
+fn exact_mount_matches_a_whole_mount_point() {
+    let disks = Disks::new_with_refreshed_list();
+    let first = disks.list().first().expect("the host reports at least one disk");
+    assert_eq!(
+        exact_mount(&disks, first.mount_point()).map(sysinfo::Disk::mount_point),
+        Some(first.mount_point())
+    );
+    assert!(exact_mount(&disks, Path::new("/peryx-not-a-mount-point")).is_none());
+}
+
+#[test]
+fn memory_copy_reports_a_measured_rate() {
+    assert!(memory_copy(2, 1 << 20) > SLOWEST_CREDIBLE_RATE);
+}
+
+#[test]
+fn file_baselines_report_measured_rates() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let written = disk_write(directory.path(), 2, 64 * 1024, 4 * 1024).expect("the write succeeds");
+    let read = page_cache_read(directory.path(), 2, 64 * 1024, 4 * 1024).expect("the read succeeds");
+    assert!(written > SLOWEST_CREDIBLE_RATE);
+    assert!(read > SLOWEST_CREDIBLE_RATE);
+}
+
+#[tokio::test]
+async fn drain_reports_the_bytes_the_loopback_server_sent() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    listener.set_nonblocking(true).expect("a non-blocking listener");
+    let address = listener.local_addr().expect("the bound address");
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(serve_loopback(listener, stopped, 2048));
+    let http = http_client().expect("an HTTP client");
+    let url = format!("http://{address}/payload");
+
+    assert_eq!(drain(&http, &url, 2048).await.expect("the whole body arrives"), 2048);
+    let short = drain(&http, &url, 4096).await.expect_err("a short body is refused");
+    assert_eq!(short.to_string(), "loopback served 2048 bytes, expected 4096");
+
+    stop.send(()).expect("the server is still listening");
+    serving
+        .await
+        .expect("the server task joins")
+        .expect("the server stops cleanly");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sysctl_trims_the_value_it_reads() {
+    assert_eq!(
+        sysctl_with("unused", &|_| Ok(std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b" value \n".to_vec(),
+            stderr: Vec::new(),
+        })),
+        Some("value".to_owned())
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn model_reads_the_board_sysctl_reports() {
+    let board = std::process::Command::new("sysctl")
+        .args(["-n", "hw.model"])
+        .output()
+        .expect("sysctl runs");
+    let reported = String::from_utf8(board.stdout).expect("sysctl prints text");
+    assert_eq!(model(), reported.trim());
 }
