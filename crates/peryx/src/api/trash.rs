@@ -23,8 +23,8 @@ fn trash_record_example() -> serde_json::Value {
     json!({
         "ecosystem": "example",
         "repository": "hosted",
-        "name": "example",
-        "reference": "example-1.0.bin",
+        "resource": "example",
+        "artifact": "example-1.0.bin",
         "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "reason": "compromised build",
         "actor": "usr_550e8400e29b41d4a716446655440000",
@@ -159,9 +159,9 @@ fn inspect_trash() -> OperationBuilder {
             "The repository route the artifact was deleted from",
             json!("hosted"),
         ),
-        ("name", true, "The ecosystem artifact name", json!("example")),
+        ("resource", true, "The ecosystem resource name", json!("example")),
         (
-            "reference",
+            "artifact",
             false,
             "The ecosystem artifact reference, if any",
             json!("example-1.0.bin"),

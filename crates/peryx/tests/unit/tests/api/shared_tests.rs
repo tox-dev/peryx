@@ -424,3 +424,44 @@ fn test_protected_reads_do_not_require_the_write_scheme() {
         serde_json::json!([{"indexAccessToken": []}, {"bearerGrant": []}])
     );
 }
+
+/// The trash document uses the handler's wire names: the record examples carry exactly the fields it
+/// writes, and the inspect query names the parameters it reads, so a reader building against the
+/// document does not send `name` for `resource` or `reference` for `artifact`.
+#[test]
+fn test_trash_document_uses_the_wire_names() {
+    let spec = serde_json::to_value(openapi()).unwrap();
+    let example =
+        |path: &str| spec["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["example"].clone();
+    let expected = BTreeSet::from([
+        "actor",
+        "artifact",
+        "deadline_unix",
+        "deleted_at_unix",
+        "digest",
+        "ecosystem",
+        "reason",
+        "repository",
+        "resource",
+        "restorable",
+        "state",
+    ]);
+
+    for record in [
+        example("/+trash")["trash"][0].clone(),
+        example("/+trash/record")["record"].clone(),
+    ] {
+        let keys: BTreeSet<&str> = record.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, expected);
+    }
+    let query: BTreeSet<&str> = spec["paths"]["/+trash/record"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        query,
+        BTreeSet::from(["artifact", "digest", "ecosystem", "repository", "resource"])
+    );
+}

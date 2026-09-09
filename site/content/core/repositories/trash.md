@@ -13,8 +13,8 @@ ecosystem owners. Each owner defines its delete, restore, and retention operatio
 | ----------------- | ------------------------------------------------------------------- |
 | `ecosystem`       | Registered implementation identifier                                |
 | `repository`      | Route that owned the deleted record                                 |
-| `name`            | Ecosystem entity name                                               |
-| `reference`       | Optional owner-defined reference                                    |
+| `resource`        | Ecosystem entity name                                               |
+| `artifact`        | Optional owner-defined artifact reference                           |
 | `digest`          | Optional content digest                                             |
 | `reason`          | Optional deletion reason                                            |
 | `actor`           | Deleting identity when the caller may read it                       |
@@ -35,8 +35,8 @@ exists.
 
 ## Inspect one record
 
-`GET /+trash/record` identifies a record with `ecosystem`, `repository`, and `name`. The implementation may require a
-`reference`, `digest`, or both to disambiguate records.
+`GET /+trash/record` identifies a record with `ecosystem`, `repository`, and `resource`. The implementation may require
+an `artifact`, `digest`, or both to disambiguate records.
 
 ## Authorization
 
