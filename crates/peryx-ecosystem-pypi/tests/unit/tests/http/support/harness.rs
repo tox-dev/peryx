@@ -131,11 +131,7 @@ async fn harness_with_options(
             name: "hosted".to_owned(),
             route: "hosted".to_owned(),
             policy: local_policy,
-            acl: if token {
-                crate::tests::writer_acl("s3cret")
-            } else {
-                IndexAcl::default()
-            },
+            acl: if token { hosted_acl() } else { IndexAcl::default() },
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile },
         },
@@ -576,6 +572,22 @@ fn sealed_acl() -> IndexAcl {
         anonymous_read: false,
         tokens: Vec::new(),
     }
+}
+
+/// The wildcard writer plus a token scoped to a single project, so a mutation that loses track of which
+/// project it addresses shows up as an authorization change rather than passing on the wildcard.
+fn hosted_acl() -> IndexAcl {
+    let mut acl = crate::tests::writer_acl("s3cret");
+    acl.tokens.push(NamedToken {
+        name: "narrow".to_owned(),
+        secret: NARROW_SECRET.to_owned(),
+        grants: vec![Grant {
+            resources: vec![Glob::new("other")],
+            actions: std::collections::BTreeSet::from([Action::Write, Action::Delete]),
+        }],
+        expires_at: None,
+    });
+    acl
 }
 
 fn named_token(name: &str, secret: &str, actions: impl IntoIterator<Item = Action>) -> NamedToken {

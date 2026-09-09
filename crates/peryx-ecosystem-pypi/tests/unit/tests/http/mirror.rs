@@ -201,6 +201,12 @@ async fn test_mirror_detail_from_html_only_upstream() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(&format!("/pypi/files/{}/flask-1.0.whl", digest.as_str())));
+    let fetched = h.server.received_requests().await.unwrap();
+    assert_eq!(
+        fetched.len(),
+        1,
+        "an html page is buffered from its one fetch, never streamed as json and fetched again"
+    );
 }
 #[tokio::test]
 async fn test_mirror_detail_from_html_keeps_fields_but_drops_gpg_sig() {

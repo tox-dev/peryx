@@ -354,6 +354,10 @@ pub fn multipart_body_with_content_parts(fields: &[(&str, &str)], contents: &[(&
 pub fn upload_auth() -> String {
     format!("Basic {}", STANDARD.encode("__token__:s3cret"))
 }
+pub const NARROW_SECRET: &str = "narr0w";
+pub fn narrow_auth() -> String {
+    format!("Basic {}", STANDARD.encode(format!("__token__:{NARROW_SECRET}")))
+}
 pub async fn post_upload(
     state: &Arc<AppState>,
     uri: &str,

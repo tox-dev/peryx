@@ -734,3 +734,66 @@ fn test_version_key_desc_ranks_releases_before_legacy_spellings() {
     assert_eq!(super::version_key_desc(&legacy, &release), Ordering::Greater);
     assert_eq!(super::version_key_desc(&other_legacy, &legacy), Ordering::Less);
 }
+
+fn footprint_candidate(resource: &str, group: &str, artifact: &str, digest: &str) -> RetentionCandidate {
+    RetentionCandidate {
+        resource: resource.to_owned(),
+        artifact: artifact.to_owned(),
+        digest: digest.to_owned(),
+        class: RetentionClass::Hosted,
+        visibility: RetentionVisibility::Active,
+        source: None,
+        bytes: 0,
+        upload_time_unix: None,
+        group: Some(group.to_owned()),
+        rank: 0,
+        orphan: false,
+    }
+}
+
+/// The estimate counts the bytes each owned field holds beyond the struct itself, so lengthening one
+/// field moves the total by exactly that many bytes and lengthening none moves it not at all.
+///
+/// Checking a total against a second copy of the same formula cannot catch an operator changing
+/// inside it, because the copy changes with it. Checking what each field contributes can.
+#[rstest]
+#[case::resource("resource")]
+#[case::group("group")]
+#[case::artifact("artifact")]
+#[case::digest("digest")]
+fn test_footprint_counts_the_bytes_of_every_owned_field(#[case] longer: &str) {
+    // Distinct lengths above one, so scaling a field by its neighbour cannot leave the growth
+    // looking like a sum: with every field one byte long, multiplying by one moves nothing.
+    let fields = |field: &str| match field {
+        "resource" => ("aaaaaaaa", "bbb", "cccc", "ddddd"),
+        "group" => ("aa", "bbbbbbbbb", "cccc", "ddddd"),
+        "artifact" => ("aa", "bbb", "cccccccccc", "ddddd"),
+        _ => ("aa", "bbb", "cccc", "ddddddddddd"),
+    };
+    let base = super::footprint(&footprint_candidate("aa", "bbb", "cccc", "ddddd"));
+    let (resource, group, artifact, digest) = fields(longer);
+
+    let grown = super::footprint(&footprint_candidate(resource, group, artifact, digest));
+
+    assert_eq!(
+        grown,
+        base + 6,
+        "lengthening {longer} by six bytes has to move the estimate by six"
+    );
+}
+
+#[test]
+fn test_footprint_starts_from_the_struct_the_candidate_occupies() {
+    assert_eq!(
+        super::footprint(&footprint_candidate("", "", "", "")),
+        size_of::<RetentionCandidate>()
+    );
+}
+
+/// The default per-project budget is 256 MiB. Written as a product of three numbers and compared
+/// against nowhere else, an operator changed inside it would move the size every project is planned
+/// against while every test that merely passes it along kept passing.
+#[test]
+fn test_the_project_budget_is_two_hundred_and_fifty_six_mebibytes() {
+    assert_eq!(RETENTION_PROJECT_BUDGET_BYTES, 268_435_456);
+}

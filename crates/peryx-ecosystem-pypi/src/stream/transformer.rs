@@ -408,7 +408,12 @@ impl PageTransformer {
                         return;
                     }
                 };
-                let value = value << 4 | u16::from(digit);
+                // A shift-and-or over disjoint bit ranges is an addition wearing other clothes, and
+                // that is why swapping the operator changes nothing: with the low nibble always zero,
+                // `|`, `^` and `+` agree on every input. Spelled as the arithmetic it performs, a
+                // wrong operator shows up. Four hex digits is the most `\uXXXX` carries, so the
+                // accumulation tops out at `0xFFF * 16 + 15`, exactly `u16::MAX`.
+                let value = value * 16 + u16::from(digit);
                 if seen + 1 == 4 {
                     self.key_decode = KeyDecode::Literal;
                     self.push_key_codepoint(value);
@@ -561,7 +566,6 @@ impl PageTransformer {
                 }
             }
             b',' if self.depth == self.array_depth => {}
-            _ if self.capture.is_empty() && is_json_whitespace(byte) => {}
             _ => self.capture.push(byte),
         }
         Ok(())
@@ -843,3 +847,7 @@ fn supports_metadata_sibling(filename: &str) -> bool {
             .get(filename.len().saturating_sub(7)..)
             .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".tar.gz"))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/stream/transformer_bounds.rs"]
+mod bound_tests;

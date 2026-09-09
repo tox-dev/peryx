@@ -1371,3 +1371,153 @@ fn test_a_served_file_contributes_the_release_upstream_left_undeclared() {
         ["demo-2.0-py3-none-any.whl"]
     );
 }
+
+/// A member name spelled with `\uXXXX` escapes is the same name, so the page dispatches the same way
+/// as one spelled literally. Only this drives the key decoder's hex arithmetic, and the two letter
+/// ranges are separate arms, so each spelling has to be its own case.
+#[rstest]
+#[case::lowercase_hex(r"\u0066\u0069\u006c\u0065\u0073")]
+#[case::uppercase_hex(r"\u0066\u0069\u006C\u0065\u0073")]
+#[case::escape_then_literal(r"\u0066iles")]
+fn transformer_dispatches_a_member_name_spelled_with_escapes(#[case] files_key: &str) {
+    let plain = upstream_page();
+    let escaped = plain.replace(r#""files""#, &format!(r#""{files_key}""#));
+
+    let (_, registrations) = transform(&escaped, plain_context(), 7);
+
+    assert_eq!(registrations, transform(&plain, plain_context(), 7).1);
+    assert!(!registrations.is_empty(), "the escaped key has to reach the file walk");
+}
+
+/// A page that carries no `project-status` of its own gets the seeded one, and knowing half of it is
+/// still knowing something: a status with no reason, or a reason with no status, has to reach the
+/// page. Only a page seeded with neither has nothing to add.
+#[rstest]
+#[case::status_without_reason(Some("quarantined"), None)]
+#[case::reason_without_status(None, Some("under review"))]
+#[case::both(Some("quarantined"), Some("under review"))]
+fn transformer_seeds_a_project_status_it_knows_any_part_of(#[case] status: Option<&str>, #[case] reason: Option<&str>) {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.seed_project_status(status.map(str::to_owned), reason.map(str::to_owned));
+    let mut out = Vec::new();
+    for piece in upstream_page().as_bytes().chunks(7) {
+        transformer.push_into(piece, &mut out).unwrap();
+    }
+    transformer.finish().unwrap();
+
+    assert!(
+        String::from_utf8(out).unwrap().contains(r#""project-status""#),
+        "a seeded status peryx knows any part of belongs on the page"
+    );
+}
+
+#[test]
+fn transformer_seeds_no_project_status_it_knows_nothing_of() {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.seed_project_status(None, None);
+    let mut out = Vec::new();
+    for piece in upstream_page().as_bytes().chunks(7) {
+        transformer.push_into(piece, &mut out).unwrap();
+    }
+    transformer.finish().unwrap();
+
+    assert!(!String::from_utf8(out).unwrap().contains(r#""project-status""#));
+}
+
+/// Whitespace between file elements is captured with them and handed to the JSON parser, which skips
+/// it the way the grammar says to. The page transforms the same whether upstream indents its files or
+/// packs them, so nothing depends on the element bytes starting at the opening brace.
+#[test]
+fn transformer_reads_a_file_element_indented_away_from_its_brace() {
+    let packed = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0"],"files":[{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl","hashes":{},"size":10,"yanked":false},{"filename":"demo-1.0.tar.gz","url":"https://up/demo-1.0.tar.gz","hashes":{},"size":20,"yanked":false}]}"#;
+    let spaced = packed.replace(r#"[{"filename""#, "[\n\t   {\"filename\"").replace(
+        r#",{"filename":"demo-1.0.tar.gz""#,
+        ",\n\t   \t{\"filename\":\"demo-1.0.tar.gz\"",
+    );
+
+    let (spaced_out, spaced_registrations) = transform(&spaced, plain_context(), 5);
+
+    assert_eq!(
+        (spaced_out, spaced_registrations),
+        transform(packed, plain_context(), 5),
+        "indentation around an element is not part of it"
+    );
+}
+
+/// A bracket inside a version string is part of the string, not the end of the array. Only the quote
+/// arm tracks that, so without it the scanner would read the string's own bracket as the array's
+/// close and stop mid-page.
+#[test]
+fn transformer_keeps_a_bracket_inside_a_version_string() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0]","2.0"],"files":[]}"#;
+
+    let (out, _) = transform(page, plain_context(), 3);
+
+    assert!(out.contains(r#""1.0]""#), "the version keeps its bracket: {out}");
+    assert!(out.contains(r#""2.0""#), "the version after it still arrives: {out}");
+}
+
+/// A brace inside a string value belongs to the string, not to the object around it. Each captured
+/// object tracks that for itself, so without the quote arm the scanner would take the string's own
+/// brace for the object's close and hand a truncated object to the parser.
+#[rstest]
+#[case::meta(r#""meta":{"api-version":"1.1","note":"a}b"}"#)]
+#[case::project_status(r#""project-status":{"status":"quarantined","reason":"closed}open"}"#)]
+fn transformer_keeps_a_brace_inside_a_captured_object(#[case] member: &str) {
+    let page = format!(r#"{{{member},"name":"demo","versions":["1.0"],"files":[]}}"#);
+
+    let (out, _) = transform(&page, plain_context(), 3);
+
+    assert!(
+        out.contains(r#""name":"demo""#),
+        "the page continues past the object: {out}"
+    );
+    assert!(
+        out.contains(r#""versions""#),
+        "the members after it still arrive: {out}"
+    );
+}
+
+/// A versions array lists strings, so an object inside one is a page peryx refuses. Knowing where that
+/// array ends is what makes the refusal about the object rather than about the document running out:
+/// without following the nesting, the scanner takes the object's own brace for the array's close, and
+/// the page is reported truncated instead of ill-typed.
+#[test]
+fn transformer_refuses_an_object_inside_the_versions_array() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":[{"a":"b"}],"files":[]}"#;
+    let mut transformer = PageTransformer::new(plain_context());
+    let mut out = Vec::new();
+
+    let refusal = page
+        .as_bytes()
+        .chunks(3)
+        .find_map(|piece| transformer.push_into(piece, &mut out).err());
+
+    assert!(
+        matches!(refusal, Some(TransformError::Parse(_))),
+        "the versions array ends at its own bracket, so the object is what is refused: {refusal:?}"
+    );
+}
+
+/// A brace does not close an array. A stray `}` inside `versions` leaves the array open, so the page
+/// runs out before it ends and is refused as truncated. Ending the array there instead would report a
+/// parse error and call a document that was really cut short a well-formed one that said the wrong
+/// thing.
+#[test]
+fn transformer_does_not_end_the_versions_array_at_a_brace() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":[}],"files":[]}"#;
+    let mut transformer = PageTransformer::new(plain_context());
+    let mut out = Vec::new();
+    for piece in page.as_bytes().chunks(3) {
+        transformer
+            .push_into(piece, &mut out)
+            .expect("a brace inside the array is captured rather than acted on");
+    }
+
+    let refusal = transformer.finish().err();
+
+    assert!(
+        matches!(refusal, Some(TransformError::Truncated)),
+        "the array never closed, so the page ran out: {refusal:?}"
+    );
+}

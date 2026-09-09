@@ -535,3 +535,128 @@ async fn test_virtual_index_surfaces_an_undecodable_hosted_record() {
 
     assert!(matches!(err, CacheError::Parse(_)), "{err:?}");
 }
+
+const RANGED_WHEEL: &str = "sample_pkg-1.0-py3-none-any.whl";
+const RANGED_METADATA: &str = "Metadata-Version: 2.1\nName: sample-pkg\nVersion: 1.0\n";
+
+fn ranged_wheel_bytes() -> Vec<u8> {
+    ranged_wheel_holding(RANGED_METADATA.as_bytes(), zip::CompressionMethod::Deflated)
+}
+
+fn ranged_wheel_holding(metadata: &[u8], method: zip::CompressionMethod) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut bytes = Vec::new();
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+    let options = zip::write::SimpleFileOptions::default().compression_method(method);
+    archive.start_file("sample_pkg/__init__.py", options).unwrap();
+    archive.write_all(b"__version__ = \"1.0\"\n").unwrap();
+    archive
+        .start_file("sample_pkg-1.0.dist-info/METADATA", options)
+        .unwrap();
+    archive.write_all(metadata).unwrap();
+    archive.start_file("sample_pkg-1.0.dist-info/WHEEL", options).unwrap();
+    archive
+        .write_all(b"Wheel-Version: 1.0\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+        .unwrap();
+    archive.finish().unwrap();
+    bytes
+}
+
+async fn ranged_outcome(wheel: Vec<u8>) -> RemoteMetadata {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path(format!("/files/{RANGED_WHEEL}")))
+        .respond_with(RangedWheelServer(wheel))
+        .mount(&server)
+        .await;
+    let client = ArtifactClient::from(UpstreamClient::new(&format!("{}/", server.uri())).unwrap());
+    wheel_metadata_by_range(&client, &format!("{}/files/{RANGED_WHEEL}", server.uri()), RANGED_WHEEL)
+        .await
+        .unwrap()
+}
+
+/// The member budget admits a member of exactly its size and refuses only what passes it, and it asks
+/// that of both sizes a ZIP records: what the member occupies in the archive and what it becomes when
+/// decoded. Either one over the budget is enough to decline the ranged read, so a member that
+/// compresses small still cannot smuggle a large one past.
+///
+/// Only a member at the limit separates admitting from refusing it, which is why each case is exact.
+#[tokio::test]
+async fn test_a_member_of_exactly_the_budget_is_read() {
+    let metadata = vec![b'm'; usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap()];
+    let outcome = ranged_outcome(ranged_wheel_holding(&metadata, zip::CompressionMethod::Stored)).await;
+
+    assert!(
+        matches!(&outcome, RemoteMetadata::Found(read) if *read == metadata),
+        "a member at the budget is within it"
+    );
+}
+
+#[tokio::test]
+async fn test_a_member_one_byte_past_the_budget_is_declined() {
+    let metadata = vec![b'm'; usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap() + 1];
+    let outcome = ranged_outcome(ranged_wheel_holding(&metadata, zip::CompressionMethod::Stored)).await;
+
+    assert!(matches!(outcome, RemoteMetadata::Unsupported));
+}
+
+#[tokio::test]
+async fn test_a_member_that_compresses_small_is_still_judged_by_its_decoded_size() {
+    let metadata = vec![b'm'; usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap() + 1];
+    let wheel = ranged_wheel_holding(&metadata, zip::CompressionMethod::Deflated);
+    assert!(
+        wheel.len() < metadata.len(),
+        "the member has to compress well for this to mean anything"
+    );
+
+    assert!(matches!(ranged_outcome(wheel).await, RemoteMetadata::Unsupported));
+}
+
+/// A server that answers the ranged read the way a real one does: a `HEAD` carrying the length and a
+/// strong validator, then each `GET` returning exactly the bytes its `Range` asked for.
+struct RangedWheelServer(Vec<u8>);
+
+impl wiremock::Respond for RangedWheelServer {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let etag = "\"sample-pkg-1.0\"";
+        let Some(range) = request.headers.get("range") else {
+            return wiremock::ResponseTemplate::new(200)
+                .insert_header("etag", etag)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", self.0.len().to_string().as_str());
+        };
+        let spec = range.to_str().unwrap().trim_start_matches("bytes=").to_owned();
+        let (start, end) = spec.split_once('-').expect("a bounded range");
+        let (start, end): (usize, usize) = (start.parse().unwrap(), end.parse().unwrap());
+        wiremock::ResponseTemplate::new(206)
+            .insert_header("etag", etag)
+            .insert_header(
+                "content-range",
+                format!("bytes {start}-{end}/{}", self.0.len()).as_str(),
+            )
+            .set_body_bytes(self.0[start..=end].to_vec())
+    }
+}
+
+/// Reading a wheel's metadata over ranges is arithmetic on offsets and lengths: where the central
+/// directory starts and ends, where the member's data begins, and how far it runs. Every one of those
+/// ends is inclusive, so each is a length short of the next offset. Getting any of them wrong asks the
+/// server for the wrong bytes, and the answer is either a refused range or a member that will not
+/// decode, never the metadata.
+///
+/// Nothing drove that arithmetic before: the only ranged-read test rejected bad filenames without
+/// fetching anything.
+#[tokio::test]
+async fn test_a_wheel_member_is_read_back_whole_over_ranges() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path(format!("/files/{RANGED_WHEEL}")))
+        .respond_with(RangedWheelServer(ranged_wheel_bytes()))
+        .mount(&server)
+        .await;
+    let client = ArtifactClient::from(UpstreamClient::new(&format!("{}/", server.uri())).unwrap());
+
+    let outcome = wheel_metadata_by_range(&client, &format!("{}/files/{RANGED_WHEEL}", server.uri()), RANGED_WHEEL)
+        .await
+        .unwrap();
+
+    assert!(matches!(&outcome, RemoteMetadata::Found(metadata) if metadata == RANGED_METADATA.as_bytes()));
+}

@@ -381,7 +381,12 @@ impl JsonValidator {
             self.failed = true;
             return;
         };
-        let value = (value << 4) | digit;
+        // A shift-and-or over disjoint bit ranges is an addition wearing other clothes: the low
+        // nibble is always zero, so `|`, `^` and `+` agree on every input and the operator's choice
+        // cannot be observed. Spelled as the arithmetic it performs, a wrong one shows. Four hex
+        // digits is all `\uXXXX` carries, so the accumulation tops out at `0xFFF * 16 + 15`, exactly
+        // `u16::MAX`.
+        let value = value * 16 + digit;
         if digits + 1 < 4 {
             self.state = State::Str {
                 escape: Escape::Unicode {

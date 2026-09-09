@@ -90,3 +90,7 @@ fn paginate(mut candidates: Vec<ShadowCandidate>, query: &ShadowQuery) -> Shadow
         next_cursor,
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/shadow/query_tests.rs"]
+mod tests;

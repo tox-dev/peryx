@@ -908,3 +908,67 @@ async fn test_deleting_one_file_of_a_multi_file_project_keeps_the_project_listed
         "a project that still serves a file stays listed: {list}"
     );
 }
+
+#[tokio::test]
+async fn test_a_token_scoped_to_another_project_cannot_delete_this_one() {
+    let h = authority_harness().await;
+    // The path carries no trailing slash, so which project the token is being spent on has to come from
+    // the segment rather than from an empty one the split leaves behind.
+    upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await;
+
+    let status = request(&h.state, "DELETE", "/hosted/peryxpkg/1.0", Some(&narrow_auth())).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (served, ..) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
+    assert_eq!(served, StatusCode::OK, "the refused delete left the project served");
+}
+
+#[tokio::test]
+async fn test_a_delete_carrying_no_reason_records_none() {
+    let h = authority_harness().await;
+    upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await;
+
+    let status = request(
+        &h.state,
+        "DELETE",
+        "/hosted/peryxpkg/1.0/?ignored=1",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let entries = h.state.serving.meta.list_upload_entries("hosted", "peryxpkg").unwrap();
+    let (_, bytes) = entries.first().expect("the soft-deleted record is kept");
+    let record: crate::upload::Uploaded = serde_json::from_slice(bytes).unwrap();
+    let trash = record.trashed.expect("the record carries trash metadata");
+    assert_eq!(trash.reason, None, "only a reason parameter supplies the reason");
+}
+
+/// The narrow token is granted `other` and nothing else, so it deleting `other` is the one request
+/// that tells the project taken from the path apart from any other spelling of it.
+#[tokio::test]
+async fn test_a_token_scoped_to_this_project_can_delete_it() {
+    let h = authority_harness().await;
+    let wheel = fixture_wheel_for_project("other", "1.0");
+    let fields = [
+        (":action", "file_upload"),
+        ("name", "other"),
+        ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("other-1.0-py3-none-any.whl", &wheel)));
+    assert_eq!(
+        post_upload(&h.state, "/hosted/", Some(&narrow_auth()), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    let status = request(&h.state, "DELETE", "/hosted/other/1.0", Some(&narrow_auth())).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let (served, ..) = get(&h.state, "/hosted/simple/other/", Some("application/json")).await;
+    assert_eq!(
+        served,
+        StatusCode::NOT_FOUND,
+        "the token spent on its own project removed it"
+    );
+}
