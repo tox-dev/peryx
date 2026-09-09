@@ -187,7 +187,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _mutation-telemetry-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _embedded-docs-contract _features-tool-contract _frontend-test-contract _mise-trust-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _mutation-telemetry-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check that mutation scope stays on production code and that the shard plan follows it.
@@ -233,6 +233,23 @@ _readthedocs-contract:
     # Read the Docs runs each command as /bin/sh -c '<command>' without escaping, so one quote of its
     # own ends the wrapper and the rest of the line reparses as something else.
     ! grep -q "'" .readthedocs.yaml
+
+# Check that every site file a crate embeds is named in the CI path filter.
+#
+# CI lets a pull request that changes only the site or Markdown skip the Rust jobs. A document a crate
+# reads with `include_str!` is compiled into a binary or a test, so a change to it has to run them
+# after all; the workflow lists those files by hand, and this keeps the list from going stale.
+_embedded-docs-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    grep -rhoE 'include_(str|bytes)!\("[^"]*"\)' crates --include='*.rs' \
+      | grep -oE '"[^"]+"' | tr -d '"' | grep -E '^(\.\./)+site/|\.md$' | sed -E 's#^(\.\./)+##' | sort -u \
+      | while IFS= read -r embedded; do
+          if ! grep -Fq -- "- '$embedded'" .github/workflows/ci.yml; then
+            printf '%s is embedded by a crate but missing from the embedded filter in ci.yml\n' "$embedded" >&2
+            exit 1
+          fi
+        done
 
 # Check that no test holds a paused clock across real socket work without a stated reason.
 #
@@ -1101,11 +1118,17 @@ diagrams: _project-temp
         (printf '%s is stale; run just render-diagrams\n' "$committed" >&2; exit 1)
     done
 
+# Regenerate the committed OpenAPI document the site serves.
+openapi: _project-temp
+    cargo run --quiet --package peryx --bin peryx -- openapi > site/static/openapi.json
+
 # Build and validate the documentation site.
 docs: diagrams
     zola --root site check --skip-external-links
     zola --root site build --force --output-dir "{{ justfile_directory() }}/.tox/site/public"
-    cargo run --quiet --package peryx --bin peryx -- openapi > .tox/site/public/openapi.json
+    cargo run --quiet --package peryx --bin peryx -- openapi > .tox/site/openapi.json
+    cmp site/static/openapi.json .tox/site/openapi.json || \
+      (printf 'site/static/openapi.json is stale; run just openapi\n' >&2; exit 1)
     npm --prefix site exec -- pagefind --site "{{ justfile_directory() }}/.tox/site/public" \
       --include-characters "_./-"
 
@@ -1123,8 +1146,6 @@ site-readthedocs:
     mkdir -p "$READTHEDOCS_OUTPUT/html"
     zola --root site build --base-url "$READTHEDOCS_CANONICAL_URL" --force \
       --output-dir "$READTHEDOCS_OUTPUT/html"
-    CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-      cargo run --quiet --package peryx --bin peryx -- openapi > "$READTHEDOCS_OUTPUT/html/openapi.json"
     npm --prefix site exec -- pagefind --site "$READTHEDOCS_OUTPUT/html" \
       --include-characters "_./-"
 

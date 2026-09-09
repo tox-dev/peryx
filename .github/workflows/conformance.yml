@@ -73,6 +73,7 @@ jobs:
           NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
         with:
           cache-workspace-crates: true
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
         with:
           tool: just
