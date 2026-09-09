@@ -1420,3 +1420,59 @@ fn take_failure(remaining: &AtomicUsize) -> bool {
 fn injected_storage_error(operation: &str) -> MetaError {
     redb::StorageError::from(std::io::Error::other(format!("injected webhook {operation} failure"))).into()
 }
+
+/// A parked scheduler whose deadline is far off, so only a notification can resume it.
+async fn parked_scheduler(
+    host: &Arc<TestHost>,
+) -> (oneshot::Receiver<()>, tokio::task::JoinHandle<Result<(), MetaError>>) {
+    enqueue(host.meta(), "ci", 1000);
+    let (entered_wait, entered) = oneshot::channel();
+    let (completed, completion) = oneshot::channel();
+    let waiting = tokio::spawn({
+        let host = Arc::clone(host);
+        async move {
+            let result = wait_for_work_after(host.as_ref(), || entered_wait.send(()).unwrap()).await;
+            completed.send(()).unwrap();
+            result
+        }
+    });
+    entered.await.unwrap();
+    (completion, waiting)
+}
+
+fn scheduler_host(dir: &tempfile::TempDir) -> Arc<TestHost> {
+    Arc::new(TestHost {
+        webhooks: WebhookRuntime::disabled(),
+        meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        now: AtomicI64::new(100),
+    })
+}
+
+#[tokio::test]
+async fn test_a_mutation_that_changed_files_resumes_the_scheduler() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = scheduler_host(&dir);
+    let (completion, waiting) = parked_scheduler(&host).await;
+
+    notify_changed(host.as_ref(), &Ok::<usize, ()>(1));
+
+    completion.await.unwrap();
+    waiting.await.unwrap().unwrap();
+}
+
+#[rstest]
+#[case::changed_nothing(Ok(0))]
+#[case::failed(Err(()))]
+#[tokio::test]
+async fn test_a_mutation_with_nothing_to_deliver_leaves_the_scheduler_parked(#[case] result: Result<usize, ()>) {
+    let dir = tempfile::tempdir().unwrap();
+    let host = scheduler_host(&dir);
+    let (mut completion, waiting) = parked_scheduler(&host).await;
+
+    notify_changed(host.as_ref(), &result);
+
+    assert_eq!(completion.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+    notify(host.as_ref());
+    completion.await.unwrap();
+    waiting.await.unwrap().unwrap();
+}

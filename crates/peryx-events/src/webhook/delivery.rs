@@ -51,6 +51,17 @@ pub fn notify<H: WebhookHost>(host: &H) {
     host.webhooks().notify.notify_one();
 }
 
+/// Wake the scheduler for a mutation that changed something.
+///
+/// A mutation that touched no file has nothing to deliver, so it leaves the scheduler on its own
+/// deadline rather than waking it to find nothing due. Callers pass their result through so the
+/// decision lives here, next to the wait it governs.
+pub fn notify_changed<H: WebhookHost, E>(host: &H, result: &Result<usize, E>) {
+    if result.as_ref().is_ok_and(|count| *count > 0) {
+        notify(host);
+    }
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct WebhookLifecycleError {

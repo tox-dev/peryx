@@ -204,7 +204,7 @@ async fn yank_request(
     )
     .await;
     security_mutation_event(&audit, &result);
-    notify_mutation_webhook(state, &result);
+    peryx_events::webhook::notify_changed(state.as_ref(), &result);
     count_response(result)
 }
 
@@ -236,7 +236,7 @@ async fn restore_request(
     })
     .await;
     security_mutation_event(&audit, &result);
-    notify_mutation_webhook(state, &result);
+    peryx_events::webhook::notify_changed(state.as_ref(), &result);
     count_response(result)
 }
 
@@ -281,7 +281,7 @@ pub async fn pypi_dispatch_delete(
         )
         .await;
         security_mutation_event(&audit, &result);
-        notify_mutation_webhook(&state, &result);
+        peryx_events::webhook::notify_changed(state.as_ref(), &result);
         return count_response(result);
     }
     let (project, version) = match parse_project_version(spec) {
@@ -317,7 +317,7 @@ pub async fn pypi_dispatch_delete(
     )
     .await;
     security_mutation_event(&audit, &result);
-    notify_mutation_webhook(&state, &result);
+    peryx_events::webhook::notify_changed(state.as_ref(), &result);
     count_response(result)
 }
 
@@ -428,12 +428,6 @@ fn prepare_mutation_webhook(
             request_id: audit.request_id.as_deref(),
         },
     )
-}
-
-fn notify_mutation_webhook(state: &ServingState, result: &Result<usize, CacheError>) {
-    if result.as_ref().is_ok_and(|count| *count > 0) {
-        peryx_events::webhook::notify(state);
-    }
 }
 
 /// Peel a trailing `/{action}` off the spec, but only when a project segment precedes it. A project
