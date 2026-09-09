@@ -943,3 +943,32 @@ async fn test_a_delete_carrying_no_reason_records_none() {
     let trash = record.trashed.expect("the record carries trash metadata");
     assert_eq!(trash.reason, None, "only a reason parameter supplies the reason");
 }
+
+/// The narrow token is granted `other` and nothing else, so it deleting `other` is the one request
+/// that tells the project taken from the path apart from any other spelling of it.
+#[tokio::test]
+async fn test_a_token_scoped_to_this_project_can_delete_it() {
+    let h = authority_harness().await;
+    let wheel = fixture_wheel_for_project("other", "1.0");
+    let fields = [
+        (":action", "file_upload"),
+        ("name", "other"),
+        ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
+    ];
+    let (content_type, body) = multipart_body(&fields, Some(("other-1.0-py3-none-any.whl", &wheel)));
+    assert_eq!(
+        post_upload(&h.state, "/hosted/", Some(&narrow_auth()), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    let status = request(&h.state, "DELETE", "/hosted/other/1.0", Some(&narrow_auth())).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let (served, ..) = get(&h.state, "/hosted/simple/other/", Some("application/json")).await;
+    assert_eq!(
+        served,
+        StatusCode::NOT_FOUND,
+        "the token spent on its own project removed it"
+    );
+}
