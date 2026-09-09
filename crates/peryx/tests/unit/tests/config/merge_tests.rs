@@ -245,6 +245,22 @@ fn test_rate_limits_from_toml_overlay_defaults() {
     assert_eq!(c.rate_limit.authentication, RouteLimit::new(3, 60));
 }
 
+/// `[index.prefetch]` is opaque to the core: whatever the table holds reaches the resolved index
+/// unchanged, for `peryx prefetch` to interpret.
+#[test]
+fn test_prefetch_options_reach_the_resolved_index() {
+    let c = toml_config(
+        "[[index]]\nname = \"public\"\n[[index.upstream]]\nname = \"primary\"\nurl = \"https://upstream.example/api/\"\n\
+         [index.prefetch]\nstrategy = \"selected\"\nselectors = [\"alpha\", \"beta\"]\n",
+    );
+
+    let expected: toml::Table = toml::from_str("strategy = \"selected\"\nselectors = [\"alpha\", \"beta\"]\n").unwrap();
+    assert!(matches!(
+        &c.indexes[0].kind,
+        IndexKind::Cached { prefetch, .. } if prefetch.options == expected
+    ));
+}
+
 #[test]
 fn test_mirror_upstream_concurrency_defaults() {
     let c = toml_config(

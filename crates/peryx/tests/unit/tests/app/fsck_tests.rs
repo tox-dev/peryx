@@ -31,7 +31,7 @@ fn test_cache_fsck_includes_plugin_metadata_problems() {
 
     cache_with_plugins(&config, &plugins, &command(), &mut output).unwrap();
 
-    assert_eq!(output, b"metadata\tcore\tinvalid\nproblems\t1\n");
+    assert_eq!(output, b"metadata\tcore\tinvalid\tmain\nproblems\t1\n");
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn test_cache_repair_previews_the_records_a_rebuild_would_write() {
 
     cache_with_plugins(&config, &plugins, &repair_command(false), &mut output).unwrap();
 
-    assert_eq!(output, b"metadata\tcore\twould rebuild\nplanned\t1\n");
+    assert_eq!(output, b"metadata\tcore\twould rebuild\tmain\nplanned\t1\n");
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn test_cache_repair_rebuilds_when_confirmed() {
 
     cache_with_plugins(&config, &plugins, &repair_command(true), &mut output).unwrap();
 
-    assert_eq!(output, b"metadata\tcore\trebuilt\nrepaired\t1\n");
+    assert_eq!(output, b"metadata\tcore\trebuilt\tmain\nrepaired\t1\n");
 }
 
 #[test]

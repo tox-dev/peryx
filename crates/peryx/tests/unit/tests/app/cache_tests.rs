@@ -93,8 +93,15 @@ fn test_cache_list_filters_index_pages() {
     let plugins = plugins();
     let (_directory, meta, config) = store_and_config(&plugins);
     drop(meta);
-    let cases: [(&str, CacheListArgs, &[&str]); 6] = [
+    // The gadget page was fetched at the epoch, so its age is the wall clock itself: a threshold of
+    // decades passes only when the clock the listing reads is real rather than a placeholder.
+    let cases: [(&str, CacheListArgs, &[&str]); 7] = [
         ("index", page_args(Some("other"), None, false, None, None), &[]),
+        (
+            "minimum age of decades",
+            page_args(None, None, false, Some(1_000_000_000), None),
+            &["gadget"],
+        ),
         ("resource", page_args(None, Some("other"), false, None, None), &[]),
         (
             "normalized resource",

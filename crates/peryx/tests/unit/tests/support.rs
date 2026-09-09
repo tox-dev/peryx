@@ -513,20 +513,32 @@ impl peryx_driver::serving::MetadataRepairDriver for Driver {
     fn preview_metadata_repair(
         &self,
         _: &MetaStore,
-        _: &[peryx_driver::Index],
+        indexes: &[peryx_driver::Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
-        writeln!(out, "metadata\t{}\twould rebuild", self.ecosystem.as_str()).map_err(|error| error.to_string())?;
+        writeln!(
+            out,
+            "metadata\t{}\twould rebuild\t{}",
+            self.ecosystem.as_str(),
+            index_names(indexes)
+        )
+        .map_err(|error| error.to_string())?;
         Ok(1)
     }
 
     fn repair_metadata(
         &self,
         _: &MetaStore,
-        _: &[peryx_driver::Index],
+        indexes: &[peryx_driver::Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
-        writeln!(out, "metadata\t{}\trebuilt", self.ecosystem.as_str()).map_err(|error| error.to_string())?;
+        writeln!(
+            out,
+            "metadata\t{}\trebuilt\t{}",
+            self.ecosystem.as_str(),
+            index_names(indexes)
+        )
+        .map_err(|error| error.to_string())?;
         Ok(1)
     }
 }
@@ -536,12 +548,28 @@ impl FsckDriver for Driver {
         &self,
         _: &MetaStore,
         _: &peryx_storage::blob::BlobStorage,
-        _: &[peryx_driver::Index],
+        indexes: &[peryx_driver::Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
-        writeln!(out, "metadata\t{}\tinvalid", self.ecosystem.as_str()).map_err(|error| error.to_string())?;
+        writeln!(
+            out,
+            "metadata\t{}\tinvalid\t{}",
+            self.ecosystem.as_str(),
+            index_names(indexes)
+        )
+        .map_err(|error| error.to_string())?;
         Ok(1)
     }
+}
+
+/// The checks and rebuilds echo the indexes they were handed, so a command that resolves the wrong
+/// index set, or none, shows up in its output rather than silently checking against nothing.
+fn index_names(indexes: &[peryx_driver::Index]) -> String {
+    indexes
+        .iter()
+        .map(|index| index.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 impl JobDriver for Driver {
