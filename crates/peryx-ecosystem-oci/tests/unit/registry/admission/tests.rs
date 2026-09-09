@@ -40,7 +40,9 @@ fn request(digest: &str) -> AdmissionRequest<'_> {
 
 /// The decision as a comparable value: the key it retained the push under, or the status and backoff
 /// it shed the push with.
-fn outcome(admission: Admission) -> Result<String, (StatusCode, Option<String>)> {
+type Decision = Result<String, (StatusCode, Option<String>)>;
+
+fn outcome(admission: Admission) -> Decision {
     match admission {
         Admission::Staged(key) => Ok(key),
         Admission::Shed(response) => Err((
@@ -53,7 +55,7 @@ fn outcome(admission: Admission) -> Result<String, (StatusCode, Option<String>)>
     }
 }
 
-fn shed() -> Result<String, (StatusCode, Option<String>)> {
+fn shed() -> Decision {
     Err((SHED.0, SHED.1.map(str::to_owned)))
 }
 
@@ -223,17 +225,19 @@ impl tracing::field::Visit for MessageVisitor<'_> {
     }
 }
 
-/// Admit one push under `limits` and hand back everything that was logged while it ran.
-fn messages_while_admitting(limits: IntentLimits) -> Vec<String> {
+/// Admit one push under `limits` and hand back what it decided together with everything that was
+/// logged while it ran. The decision travels with the messages so a test asserting on silence can
+/// still say the push happened.
+fn admit_while_capturing(limits: IntentLimits) -> (Decision, Vec<String>) {
     let (_dir, meta) = store();
     let collected = Messages::default();
     let seen = Arc::clone(&collected.0);
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(collected.boxed()));
 
-    admit(&meta, limits, &request(DIGEST), 100).unwrap();
+    let admission = outcome(admit(&meta, limits, &request(DIGEST), 100).unwrap());
 
     drop(guard);
-    seen.lock().unwrap().clone()
+    (admission, seen.lock().unwrap().clone())
 }
 
 /// The retained-backlog ceiling is 64 GiB per authority. It is written as a product of powers of two,
@@ -249,29 +253,27 @@ fn test_the_staging_byte_ceiling_is_sixty_four_gibibytes() {
 /// operator gets that an authority is filling up before it starts shedding.
 #[test]
 fn test_a_push_that_crosses_the_soft_threshold_warns() {
-    let messages = messages_while_admitting(IntentLimits {
+    let (admission, messages) = admit_while_capturing(IntentLimits {
         max_records: 2,
         backpressure_percent: 50,
         ..LIMITS
     });
+    let warnings = messages
+        .iter()
+        .filter(|message| message.contains("admission backpressured"))
+        .count();
 
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("admission backpressured")),
-        "{messages:?}"
-    );
+    assert_eq!((admission, warnings), (Ok(intent_key("store", "app", DIGEST)), 1));
 }
 
-/// A push with room to spare says nothing, which is what makes the warning above mean something.
+/// A push with room to spare says nothing, which is what makes the warning above mean something. The
+/// captured set is compared whole rather than searched for the warning, because it comes back empty:
+/// a search through nothing passes whatever the push did, so the key it staged under is what says the
+/// push ran at all.
 #[test]
 fn test_a_push_below_the_soft_threshold_stays_quiet() {
-    let messages = messages_while_admitting(LIMITS);
-
-    assert!(
-        !messages
-            .iter()
-            .any(|message| message.contains("admission backpressured")),
-        "{messages:?}"
+    assert_eq!(
+        admit_while_capturing(LIMITS),
+        (Ok(intent_key("store", "app", DIGEST)), Vec::<String>::new())
     );
 }

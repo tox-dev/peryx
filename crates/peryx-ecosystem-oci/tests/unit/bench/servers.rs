@@ -182,3 +182,48 @@ fn peryx_ready_port_reads_the_bound_port(#[case] line: &str, #[case] expected: u
 fn peryx_ready_port_refuses_a_line_that_does_not_carry_one(#[case] line: &str) {
     assert_eq!(peryx_ready_port(line), None);
 }
+
+/// A server told to bind port zero reports what it bound in its startup line, so that line is the only
+/// place the real port appears. One that arrives without a port leaves the harness with no address to
+/// drive, and it says so rather than falling back to the zero it asked for and benchmarking whatever
+/// answers there.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_startup_line_without_a_port_stops_the_server() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let server = BenchServer {
+        report: Server {
+            name: "portless",
+            homepage: "https://example.invalid/",
+            base_url: peryx_base,
+            probe: api_root,
+            command: None,
+            setup: None,
+            teardown: None,
+        },
+        base_url: Arc::new(|_, port| peryx_base(port)),
+        command: Some(Arc::new(|_, _, _, _| {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg("echo 'peryx listening'");
+            command
+        })),
+        setup: None,
+        teardown: None,
+        ready_log: "peryx listening",
+        ready_port: Some(peryx_ready_port),
+    };
+    let context = BenchmarkContext::new(PathBuf::from("peryx"), directory.path().join("report.json"));
+
+    let error = server
+        .start(&BenchEnvironment::new(Some(directory.path()), None), &context, &state)
+        .await
+        .map(drop)
+        .expect_err("a startup line with no port cannot name a server to drive");
+
+    assert_eq!(
+        format!("{error:#}"),
+        "portless did not report the port it bound: peryx listening"
+    );
+}
