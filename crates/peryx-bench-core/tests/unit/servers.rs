@@ -14,3 +14,8 @@ fn killing_a_reaped_process_group_reports_the_missing_group() {
         Some(rustix::io::Errno::SRCH.raw_os_error())
     );
 }
+
+#[test]
+fn a_free_port_is_a_concrete_port() {
+    assert_ne!(super::free_port().expect("the host has a free port"), 0);
+}
