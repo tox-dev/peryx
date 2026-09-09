@@ -4,6 +4,10 @@ build:
   os: ubuntu-24.04
   apt_packages:
     - minisign
+  # Read the Docs refuses a configuration that names no tool. Node is the one the build uses anyway,
+  # for pagefind, and the cheapest one its image has.
+  tools:
+    nodejs: "22"
   jobs:
     build:
       html:
