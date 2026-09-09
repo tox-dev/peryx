@@ -4,7 +4,10 @@ use std::task::{Context, Poll, Waker};
 use bytes::Bytes;
 use rstest::rstest;
 
-use super::{Inflight, ServingCache, flight_gate, release_flight, within_stale_bound};
+use super::{Inflight, ServingCache, flight_gate, negative_weight, release_flight, within_stale_bound};
+
+/// Bounds the waits that fail by never resolving; the paused clock fires it as soon as nothing else can run.
+const NEVER: std::time::Duration = std::time::Duration::from_mins(1);
 
 #[tokio::test]
 async fn test_same_key_waiters_share_one_gate() {
@@ -34,7 +37,7 @@ async fn test_flight_subscription_reports_the_next_owner() {
     drop((first, second));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_flight_subscription_closes_with_the_flight() {
     let inflight = Inflight::default();
     let flight = flight_gate(&inflight, "digest");
@@ -42,7 +45,23 @@ async fn test_flight_subscription_closes_with_the_flight() {
 
     drop(flight);
 
-    assert!(events.next_join().await.is_err());
+    let closed = tokio::time::timeout(NEVER, events.next_join())
+        .await
+        .expect("the last owner leaving closes the flight");
+    assert!(closed.is_err());
+}
+
+#[tokio::test]
+async fn test_flight_stays_shared_while_an_owner_remains() {
+    let inflight = Inflight::default();
+    let first = flight_gate(&inflight, "digest");
+    let second = flight_gate(&inflight, "digest");
+
+    drop(first);
+
+    let held = second.try_lock_owned().unwrap();
+    assert!(flight_gate(&inflight, "digest").try_lock_owned().is_err());
+    drop(held);
 }
 
 #[tokio::test]
@@ -178,6 +197,43 @@ fn test_negative_cache_default_clock_rejects_a_past_deadline() {
     cache.remember_negative("missing".to_owned(), 0);
 
     assert!(!cache.negative_fresh("missing", 0));
+}
+
+#[test]
+fn test_negative_cache_default_clock_reclaims_an_expired_entry_and_keeps_a_live_one() {
+    let cache = ServingCache::new(1024, 60);
+
+    cache.remember_negative("expired".to_owned(), 2);
+    cache.remember_negative("live".to_owned(), i64::MAX);
+
+    cache.negative.run_pending_tasks();
+    assert_eq!(cache.negative.entry_count(), 1);
+    assert!(!cache.negative_fresh("expired", 1));
+    assert!(cache.negative_fresh("live", 1));
+}
+
+#[test]
+fn test_negative_cache_budget_is_eight_mebibytes() {
+    let cache = ServingCache::new(1024, 60);
+
+    assert_eq!(cache.negative.policy().max_capacity(), Some(8_388_608));
+}
+
+#[test]
+fn test_negative_cache_accepts_an_entry_that_exactly_fills_its_byte_budget() {
+    let cache = ServingCache::new(1024, 60);
+    let capacity = usize::try_from(cache.negative.policy().max_capacity().unwrap()).unwrap();
+    let mut key = String::with_capacity(capacity - usize::try_from(negative_weight(&String::new())).unwrap());
+    key.push('x');
+    assert_eq!(
+        u64::from(negative_weight(&key)),
+        cache.negative.policy().max_capacity().unwrap()
+    );
+
+    // The key moves in whole so its capacity, which the weigher counts, reaches the cache intact.
+    cache.remember_negative_at(key, 10, 0);
+
+    assert!(cache.negative_fresh("x", 9));
 }
 
 #[test]

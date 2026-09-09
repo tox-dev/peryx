@@ -107,9 +107,10 @@ pub fn reaches_cached(indexes: &[Index], position: usize) -> bool {
 #[must_use]
 pub fn composed_indexes(indexes: &[Index], position: usize) -> Vec<usize> {
     let mut composed = vec![position];
-    let mut pending = 0;
-    while let Some(&position) = composed.get(pending) {
-        pending += 1;
+    for pending in 0.. {
+        let Some(&position) = composed.get(pending) else {
+            break;
+        };
         let IndexKind::Virtual { layers, .. } = &indexes[position].kind else {
             continue;
         };
