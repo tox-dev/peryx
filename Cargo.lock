@@ -4784,6 +4784,7 @@ dependencies = [
  "clap",
  "reqwest",
  "rstest",
+ "rustix 1.1.4",
  "rustls",
  "serde",
  "statrs 0.19.1",

@@ -23,6 +23,9 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 toml.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [dev-dependencies]
 rstest.workspace = true
 
