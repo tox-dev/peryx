@@ -345,6 +345,7 @@ fn test_restore_rejects_a_target_claimed_by_another_node() {
 #[rstest]
 #[case::rollback(1, 3, true)]
 #[case::forward(2, 0, false)]
+#[case::same_serial(1, 1, false)]
 fn test_restore_same_node_reports_only_rollbacks(
     #[case] backup_mutations: usize,
     #[case] target_mutations: usize,

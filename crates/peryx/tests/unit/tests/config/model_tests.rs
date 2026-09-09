@@ -43,6 +43,17 @@ fn test_secret_source_empty_file_is_rejected() {
     );
 }
 
+/// The limit is inclusive: a secret exactly at the cap is the largest one accepted.
+#[test]
+fn test_secret_source_file_at_the_size_limit_is_accepted() {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&vec![b'a'; 1 << 20]).unwrap();
+    assert_eq!(
+        SecretSource::File(file.path().to_owned()).read().unwrap().len(),
+        1 << 20
+    );
+}
+
 #[test]
 fn test_secret_source_oversize_file_is_rejected_without_value() {
     let mut file = tempfile::NamedTempFile::new().unwrap();
@@ -234,6 +245,29 @@ fn s3_config(conditional_writes: bool, checksum_writes: bool) -> S3StorageConfig
         conditional_writes,
         checksum_writes,
     }
+}
+
+/// The paths are secrets' neighbours, so the debug form reports only whether each kind of material
+/// is present; either half of a client identity counts, since a lone certificate or key is still a
+/// configured identity the operator would want to see in a log.
+#[rstest::rstest]
+#[case::nothing(None, None, None, "custom_ca: false, client_identity: false")]
+#[case::ca_only(Some("/ca.pem"), None, None, "custom_ca: true, client_identity: false")]
+#[case::certificate_only(None, Some("/cert.pem"), None, "custom_ca: false, client_identity: true")]
+#[case::key_only(None, None, Some("/key.pem"), "custom_ca: false, client_identity: true")]
+fn test_upstream_tls_debug_reports_presence_without_paths(
+    #[case] ca_file: Option<&str>,
+    #[case] client_cert_file: Option<&str>,
+    #[case] client_key_file: Option<&str>,
+    #[case] expected: &str,
+) {
+    let tls = crate::config::UpstreamTlsConfig {
+        ca_file: ca_file.map(PathBuf::from),
+        client_cert_file: client_cert_file.map(PathBuf::from),
+        client_key_file: client_key_file.map(PathBuf::from),
+    };
+
+    assert_eq!(format!("{tls:?}"), format!("UpstreamTlsConfig {{ {expected} }}"));
 }
 
 #[test]

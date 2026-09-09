@@ -612,6 +612,9 @@ max_accounted_bytes = 8003
 max_resources = 12
 quota_audit = true
 
+[index.settings]
+channel = "stable"
+
 [[index.upstream]]
 name = "primary"
 url = "https://primary.example/catalog/"
