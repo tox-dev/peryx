@@ -87,18 +87,24 @@ fn party(table: &Table) -> Option<usize> {
     table.parties.iter().position(|entry| entry.name == PARTY)
 }
 
+/// One row of the printed table. The change is a percentage oriented so above zero reads worse,
+/// and an ungated row carries the reason it does not count.
+fn describe(change: &Change) -> String {
+    let delta = (change.worse - 1.0) * 100.0;
+    let flag = if change.gated { "" } else { change.reason };
+    format!(
+        "{:<18} {:<34} {:>12.3} {:>12.3} {:>+8.1}%  {flag}",
+        change.table, change.row, change.base, change.head, delta
+    )
+}
+
 fn verdict(changes: &[Change]) -> bool {
     println!(
         "\n{:<18} {:<34} {:>12} {:>12} {:>9}  flag",
         "table", "metric", "base", "head", "change"
     );
     for change in changes {
-        let delta = (change.worse - 1.0) * 100.0;
-        let flag = if change.gated { "" } else { change.reason };
-        println!(
-            "{:<18} {:<34} {:>12.3} {:>12.3} {:>+8.1}%  {flag}",
-            change.table, change.row, change.base, change.head, delta
-        );
+        println!("{}", describe(change));
     }
     let kept: Vec<f64> = changes
         .iter()

@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use anyhow::bail;
 
-use super::Usage;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+use super::{Cost, Usage, cpu_millis, tree_of};
 
 #[test]
 fn usage_skips_absent_process() {
@@ -67,4 +69,35 @@ fn usage_samples_process_tree() {
         .unwrap()
         .expect("the current process is sampled");
     assert!(cost.peak_rss_bytes > 0);
+}
+
+#[test]
+fn finish_reports_the_sampled_cost_in_seconds() {
+    let usage =
+        Usage::watch_with(Duration::from_hours(1), Box::new(|| Ok((4096, 2500)))).expect("the initial sample succeeds");
+    assert_eq!(
+        usage.finish().expect("the sampler stops"),
+        Some(Cost {
+            cpu_seconds: 2.5,
+            peak_rss_bytes: 4096,
+        })
+    );
+}
+
+#[test]
+fn cpu_percent_converts_to_milliseconds_of_a_tick() {
+    assert_eq!((cpu_millis(50.0), cpu_millis(0.0)), (100, 0));
+}
+
+#[test]
+fn the_tree_holds_the_root_and_its_descendants_only() {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
+    let root = Pid::from_u32(std::process::id());
+    let tree = tree_of(&system, root);
+    assert_eq!((tree.contains(&root), tree.contains(&Pid::from_u32(1))), (true, false));
 }

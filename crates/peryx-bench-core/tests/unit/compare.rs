@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use rstest::rstest;
 
-use super::{against_paths, compare};
+use super::{Change, against_paths, compare, describe};
 use crate::report::{Cell, Party, Report, Row, Table, publish_to};
 
 fn report(value: f64, higher_is_better: bool, network_bound: bool, noisy: bool) -> Report {
@@ -104,4 +104,47 @@ fn against_paths_loads_both_reports() {
         publish_to(path, "workload", table).unwrap();
     }
     assert!(against_paths(&baseline, &head).unwrap());
+}
+
+#[rstest]
+#[case::a_faster_rate_is_not_a_regression(100.0, 200.0, true)]
+#[case::an_unchanged_metric_is_not_a_regression(2.0, 2.0, false)]
+#[case::exactly_at_the_threshold_is_not_a_regression(1.0, 1.03, false)]
+fn compare_holds_metrics_at_or_better_than_the_gate(
+    #[case] baseline: f64,
+    #[case] head: f64,
+    #[case] higher_is_better: bool,
+) {
+    assert!(!compare(
+        &report(baseline, higher_is_better, false, false),
+        &report(head, higher_is_better, false, false)
+    ));
+}
+
+#[test]
+fn against_paths_reports_a_clean_comparison() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("report.toml");
+    let table = report(1.0, false, false, false)
+        .tables
+        .remove("workload")
+        .expect("fixture table");
+    publish_to(&path, "workload", table).expect("the report is published");
+    assert!(!against_paths(&path, &path).expect("both reports load"));
+}
+
+#[test]
+fn describe_renders_the_change_as_a_signed_percentage() {
+    assert_eq!(
+        describe(&Change {
+            table: "workload".to_owned(),
+            row: "metric".to_owned(),
+            base: 1.0,
+            head: 1.1,
+            worse: 1.1,
+            gated: false,
+            reason: "noisy",
+        }),
+        "workload           metric                                    1.000        1.100    +10.0%  noisy"
+    );
 }

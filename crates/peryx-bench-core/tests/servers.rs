@@ -22,16 +22,23 @@ fn test_server(_: &BenchmarkContext, port: u16, state: &Path) -> Command {
     let requests = if state.join("setup").exists() { 1 } else { 2 };
     let body = std::fs::read(state.join("index.html")).expect("fixture body exists");
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("fixture server binds");
+    let address = listener.local_addr().expect("fixture server reports its address");
     let handle = std::thread::spawn(move || serve_fixture(&listener, &body, requests));
-    FIXTURE_THREADS
-        .lock()
-        .expect("fixture thread registry locks")
-        .insert(state.to_path_buf(), FixtureThread { handle });
+    FIXTURE_THREADS.lock().expect("fixture thread registry locks").insert(
+        state.to_path_buf(),
+        FixtureThread {
+            handle,
+            address,
+            requests,
+        },
+    );
     long_running_command()
 }
 
 struct FixtureThread {
     handle: JoinHandle<()>,
+    address: std::net::SocketAddr,
+    requests: usize,
 }
 
 static FIXTURE_THREADS: LazyLock<Mutex<HashMap<PathBuf, FixtureThread>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -51,6 +58,11 @@ impl Drop for FixtureThreadGuard {
             .expect("fixture thread registry locks")
             .remove(&self.0)
             .expect("fixture thread was registered");
+        // Release every accept the test never reached, so a server that failed to become ready ends
+        // the fixture thread instead of leaving this join to hang.
+        for _ in 0..thread.requests {
+            let _ = std::net::TcpStream::connect(thread.address);
+        }
         thread.handle.join().expect("fixture thread joins");
     }
 }
@@ -166,8 +178,9 @@ async fn server_waits_until_http_is_ready() {
         .text()
         .await
         .unwrap();
+    let pid = active.pid();
     drop(fixture_thread);
-    assert_eq!(body, "ready");
+    assert_eq!((body.as_str(), pid.is_some()), ("ready", true));
 }
 
 #[tokio::test]
@@ -183,7 +196,9 @@ async fn server_reports_early_exit_and_log() {
         .await
         .err()
         .expect("early exit fails");
-    assert!(error.to_string().contains("peryx-invalid-argument"), "{error:#}");
+    let reported = format!("{error:#}");
+    assert!(reported.contains("server exited early with"));
+    assert!(reported.contains("peryx-invalid-argument"));
 }
 
 #[tokio::test]
@@ -253,13 +268,14 @@ fn serve_fixture(listener: &std::net::TcpListener, body: &[u8], requests: usize)
     for stream in listener.incoming().take(requests) {
         let mut stream = stream.expect("fixture accepts a request");
         let mut request = [0; 1024];
-        let _ = stream.read(&mut request).expect("fixture reads a request");
-        write!(
+        // A caller that only wanted to release this accept closes without reading, so neither half
+        // of the exchange is an assertion; the tests assert on what the client received.
+        let _ = stream.read(&mut request);
+        let _ = write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
-        )
-        .expect("fixture writes headers");
-        stream.write_all(body).expect("fixture writes the body");
+        );
+        let _ = stream.write_all(body);
     }
 }

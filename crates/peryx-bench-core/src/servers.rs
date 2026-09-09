@@ -5,11 +5,15 @@
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 
 use crate::context::BenchmarkContext;
+
+#[cfg(test)]
+#[path = "../tests/unit/servers.rs"]
+mod tests;
 
 /// How long a server gets to answer its first request (uvx may resolve an environment first).
 const START_TIMEOUT: Duration = Duration::from_mins(3);
@@ -75,7 +79,7 @@ impl Drop for Active {
             // gunicorn forks workers, and a `uvx` shim execs its payload: killing the direct child
             // orphans the rest, which then linger holding CPU and skewing every later measurement.
             // The child leads its own process group (see `start`), so signal the whole group.
-            kill_process_group(&process);
+            let _ = kill_process_group(&process);
             let _ = process.kill();
             let _ = process.wait();
         }
@@ -87,14 +91,15 @@ impl Drop for Active {
 
 // Shelling out to `kill -KILL -<pgid>` took the whole GitHub-hosted runner down with the group after
 // every cold build, three runs out of three; the syscall reaches the group and nothing else.
-fn kill_process_group(process: &Child) {
+fn kill_process_group(process: &Child) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         let group = rustix::process::Pid::from_child(process);
-        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        rustix::process::kill_process_group(group, rustix::process::Signal::KILL)?;
     }
     #[cfg(not(unix))]
     let _ = process;
+    Ok(())
 }
 
 impl Server {
@@ -170,15 +175,20 @@ impl Server {
 impl Active {
     async fn wait_ready(&mut self, client: &reqwest::Client, policy: StartupPolicy) -> anyhow::Result<()> {
         let probe = self.probe_url.clone();
-        let deadline = Instant::now() + policy.timeout;
-        while Instant::now() < deadline {
-            self.ensure_running()?;
-            // Any HTTP status means the server is up and routing; only transport errors retry.
-            if client.get(&probe).timeout(policy.request_timeout).send().await.is_ok() {
-                return Ok(());
+        let polling = async {
+            loop {
+                self.ensure_running()?;
+                // Any HTTP status means the server is up and routing; only transport errors retry.
+                if client.get(&probe).timeout(policy.request_timeout).send().await.is_ok() {
+                    return anyhow::Ok(());
+                }
+                self.ensure_running()?;
+                tokio::time::sleep(policy.poll_interval).await;
             }
-            self.ensure_running()?;
-            tokio::time::sleep(policy.poll_interval).await;
+        };
+        let outcome = tokio::time::timeout(policy.timeout, polling).await;
+        if let Ok(ready) = outcome {
+            return ready;
         }
         self.ensure_running()?;
         bail!("server never answered at {probe}")

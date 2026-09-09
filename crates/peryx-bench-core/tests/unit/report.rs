@@ -4,7 +4,7 @@ use std::process::Command;
 
 use super::{
     Absent, Cell, Metric, Party, Report, Row, Table, anchor, baseline, cost_rows, cost_rows_per_request, load,
-    network_row, publish_to, repo_root, report_path, row, summarize, table,
+    network_row, publish_to, repo_root, report_path, row, summarize, table, thousands,
 };
 use crate::context::BenchmarkContext;
 use crate::servers::Server;
@@ -312,4 +312,56 @@ fn summaries_keep_each_partys_distribution() {
 fn report_path_follows_the_repository_root() {
     let root = repo_root();
     assert_eq!(report_path(), root.join("site/data/bench/report.toml"));
+}
+
+#[test]
+fn cell_tints_rank_each_party_on_a_logarithmic_ladder() {
+    let values = summarize(&[vec![2.0], vec![20.0], vec![200.0]]);
+    let seconds = row("seconds", &values, 0, Metric::Seconds, Absent::Failed);
+    let rate = row("rate", &values, 0, Metric::Rate("req/s"), Absent::Failed);
+    assert_eq!(
+        (
+            seconds.cells.iter().map(|cell| cell.tint.as_str()).collect::<Vec<_>>(),
+            rate.cells.iter().map(|cell| cell.tint.as_str()).collect::<Vec<_>>(),
+        ),
+        (vec!["faster", "slow", "worst"], vec!["worst", "slow", "faster"])
+    );
+}
+
+#[test]
+fn a_single_round_reports_neither_spread_nor_range() {
+    let values = summarize(&[vec![1.0]]);
+    let single = row("single", &values, 0, Metric::Seconds, Absent::Failed);
+    assert_eq!(
+        (single.cells[0].spread.as_str(), single.cells[0].range.as_str()),
+        ("", "")
+    );
+}
+
+#[test]
+fn request_normalization_skips_rounds_that_served_nothing() {
+    let servers = [server("direct"), server("peryx")];
+    let costs = [
+        None,
+        Some(vec![
+            Cost {
+                cpu_seconds: 2.0,
+                peak_rss_bytes: 4_000_000,
+            },
+            Cost {
+                cpu_seconds: 1.0,
+                peak_rss_bytes: 1_000_000,
+            },
+        ]),
+    ];
+    let rows = cost_rows_per_request(&servers, &costs, &[None, Some(vec![2_000, 0])]);
+    assert_eq!(rows[0].cells[1].text.as_str(), "1.0 s");
+}
+
+#[test]
+fn thousands_group_only_between_digits() {
+    assert_eq!(
+        (thousands(123.0), thousands(1_234_567.0)),
+        ("123".to_owned(), "1,234,567".to_owned())
+    );
 }

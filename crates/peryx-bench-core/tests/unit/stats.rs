@@ -1,4 +1,6 @@
-use super::{Summary, geometric_mean};
+use statrs::statistics::Data;
+
+use super::{Summary, geometric_mean, tukey_fences};
 
 #[test]
 fn summary_reduces_rounds() {
@@ -53,4 +55,26 @@ fn geometric_mean_uses_positive_ratios() {
         (geometric_mean(&[]), geometric_mean(&[-1.0, 0.0, 2.0, 8.0])),
         (None, Some(4.0))
     );
+}
+
+const fn spread(cv: f64) -> Summary {
+    Summary {
+        median: 1.0,
+        min: 1.0,
+        max: 1.0,
+        cv,
+        outliers: 0,
+        n: 2,
+    }
+}
+
+#[test]
+fn noise_flag_reads_the_threshold_as_exclusive() {
+    assert_eq!((spread(0.05).noisy(), spread(0.051).noisy()), (false, true));
+}
+
+#[test]
+fn tukey_fences_sit_one_and_a_half_iqrs_outside_the_quartiles() {
+    let mut data = Data::new(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(tukey_fences(&mut data), (-2.333_333_333_333_333, 8.333_333_333_333_332));
 }
