@@ -39,7 +39,10 @@ fn test_push_text_leaves_the_document_alone_for_a_blank_value() {
 
     push_text(&mut out, "   ", 100);
 
-    assert_eq!(out, "alpha", "a value that trims to nothing adds neither text nor a separator");
+    assert_eq!(
+        out, "alpha",
+        "a value that trims to nothing adds neither text nor a separator"
+    );
 }
 
 #[test]
@@ -97,10 +100,7 @@ fn presented(url: &str, core_metadata: CoreMetadata) -> File {
 #[case::names_its_digest(CoreMetadata::Hashes(BTreeMap::from([("sha256".to_owned(), "b".repeat(64))])), true)]
 #[case::names_no_digest(CoreMetadata::Available, false)]
 #[case::names_another_hash(CoreMetadata::Hashes(BTreeMap::from([("md5".to_owned(), "c".repeat(32))])), false)]
-fn test_present_file_keeps_only_metadata_that_names_its_digest(
-    #[case] metadata: CoreMetadata,
-    #[case] kept: bool,
-) {
+fn test_present_file_keeps_only_metadata_that_names_its_digest(#[case] metadata: CoreMetadata, #[case] kept: bool) {
     let file = super::present_file(presented("https://files.example/flask.whl", metadata), "root/pypi");
 
     assert_eq!(*file.metadata() != CoreMetadata::Absent, kept);
@@ -115,7 +115,11 @@ fn test_present_file_routes_only_a_url_that_points_away(#[case] url: &str, #[cas
     let file = super::present_file(presented(url, CoreMetadata::Absent), "root/pypi");
 
     assert_eq!(file.url != url, rewritten, "url became {}", file.url);
-    assert!(file.url.starts_with('/'), "either way it points at this node: {}", file.url);
+    assert!(
+        file.url.starts_with('/'),
+        "either way it points at this node: {}",
+        file.url
+    );
 }
 
 fn detail_listing(versions: usize) -> crate::ProjectDetail {

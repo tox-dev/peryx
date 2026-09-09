@@ -564,7 +564,11 @@ async fn test_a_transformed_page_expires_a_freshness_after_it_was_fetched() {
     // A record granting no freshness of its own takes the index's, so that is the span under test.
     let granted = state.serving.ttl_secs;
     assert!(granted >= 2, "a span of at least two seconds has an inside and an edge");
-    let page = files_before_status_page("https://example.invalid/files/flask.whl", Digest::of(b"wheel").as_str(), None);
+    let page = files_before_status_page(
+        "https://example.invalid/files/flask.whl",
+        Digest::of(b"wheel").as_str(),
+        None,
+    );
     let mut record = fresh_record(page.as_bytes());
     record.fetched_at_unix = FETCHED_AT;
     record.fresh_secs = None;
@@ -614,7 +618,11 @@ async fn test_a_page_under_a_size_limit_is_served_buffered_rather_than_streamed(
             acl: IndexAcl::default(),
         }]
     });
-    let page = files_before_status_page("https://example.invalid/files/flask.whl", Digest::of(b"wheel").as_str(), None);
+    let page = files_before_status_page(
+        "https://example.invalid/files/flask.whl",
+        Digest::of(b"wheel").as_str(),
+        None,
+    );
     state
         .serving
         .meta

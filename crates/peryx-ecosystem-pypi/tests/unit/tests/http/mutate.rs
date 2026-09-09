@@ -928,7 +928,13 @@ async fn test_a_delete_carrying_no_reason_records_none() {
     let h = authority_harness().await;
     upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await;
 
-    let status = request(&h.state, "DELETE", "/hosted/peryxpkg/1.0/?ignored=1", Some(&upload_auth())).await;
+    let status = request(
+        &h.state,
+        "DELETE",
+        "/hosted/peryxpkg/1.0/?ignored=1",
+        Some(&upload_auth()),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK);
     let entries = h.state.serving.meta.list_upload_entries("hosted", "peryxpkg").unwrap();

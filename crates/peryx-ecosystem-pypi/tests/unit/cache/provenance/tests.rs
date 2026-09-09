@@ -27,9 +27,11 @@ fn refused_for_size(outcome: &Result<super::FetchOutcome, crate::cache::CacheErr
 /// declared length is a claim rather than a measurement.
 #[tokio::test]
 async fn test_a_declared_length_of_exactly_the_limit_is_not_refused_for_size() {
-    let outcome =
-        super::process_upstream_attestation_response(attestation_response(Some(super::MAX_PROVENANCE_BYTES), b"{}".to_vec()))
-            .await;
+    let outcome = super::process_upstream_attestation_response(attestation_response(
+        Some(super::MAX_PROVENANCE_BYTES),
+        b"{}".to_vec(),
+    ))
+    .await;
 
     assert!(!refused_for_size(&outcome), "a bundle at the limit is within it");
 }

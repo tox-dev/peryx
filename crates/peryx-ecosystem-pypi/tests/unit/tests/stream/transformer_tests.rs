@@ -1396,10 +1396,7 @@ fn transformer_dispatches_a_member_name_spelled_with_escapes(#[case] files_key: 
 #[case::status_without_reason(Some("quarantined"), None)]
 #[case::reason_without_status(None, Some("under review"))]
 #[case::both(Some("quarantined"), Some("under review"))]
-fn transformer_seeds_a_project_status_it_knows_any_part_of(
-    #[case] status: Option<&str>,
-    #[case] reason: Option<&str>,
-) {
+fn transformer_seeds_a_project_status_it_knows_any_part_of(#[case] status: Option<&str>, #[case] reason: Option<&str>) {
     let mut transformer = PageTransformer::new(plain_context());
     transformer.seed_project_status(status.map(str::to_owned), reason.map(str::to_owned));
     let mut out = Vec::new();
@@ -1471,8 +1468,14 @@ fn transformer_keeps_a_brace_inside_a_captured_object(#[case] member: &str) {
 
     let (out, _) = transform(&page, plain_context(), 3);
 
-    assert!(out.contains(r#""name":"demo""#), "the page continues past the object: {out}");
-    assert!(out.contains(r#""versions""#), "the members after it still arrive: {out}");
+    assert!(
+        out.contains(r#""name":"demo""#),
+        "the page continues past the object: {out}"
+    );
+    assert!(
+        out.contains(r#""versions""#),
+        "the members after it still arrive: {out}"
+    );
 }
 
 /// A versions array lists strings, so an object inside one is a page peryx refuses. Knowing where that

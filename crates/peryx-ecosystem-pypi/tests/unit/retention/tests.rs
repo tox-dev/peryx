@@ -775,12 +775,19 @@ fn test_footprint_counts_the_bytes_of_every_owned_field(#[case] longer: &str) {
 
     let grown = super::footprint(&footprint_candidate(resource, group, artifact, digest));
 
-    assert_eq!(grown, base + 6, "lengthening {longer} by six bytes has to move the estimate by six");
+    assert_eq!(
+        grown,
+        base + 6,
+        "lengthening {longer} by six bytes has to move the estimate by six"
+    );
 }
 
 #[test]
 fn test_footprint_starts_from_the_struct_the_candidate_occupies() {
-    assert_eq!(super::footprint(&footprint_candidate("", "", "", "")), size_of::<RetentionCandidate>());
+    assert_eq!(
+        super::footprint(&footprint_candidate("", "", "", "")),
+        size_of::<RetentionCandidate>()
+    );
 }
 
 /// The default per-project budget is 256 MiB. Written as a product of three numbers and compared

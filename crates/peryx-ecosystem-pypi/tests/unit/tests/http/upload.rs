@@ -2273,12 +2273,7 @@ async fn test_a_resend_after_the_replay_window_is_audited_as_a_noop() {
         .meta
         .prune_operation_outcomes(PUBLISHED_AT + 1, 100)
         .unwrap();
-    let due = h
-        .state
-        .serving
-        .meta
-        .prune_operation_outcomes(A_DAY_LATER, 100)
-        .unwrap();
+    let due = h.state.serving.meta.prune_operation_outcomes(A_DAY_LATER, 100).unwrap();
     h.clock.store(A_DAY_LATER, Ordering::Relaxed);
     upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
 
@@ -2300,10 +2295,7 @@ async fn test_a_resend_after_the_replay_window_is_audited_as_a_noop() {
             1,
             vec![
                 (Some("success".to_owned()), Some(String::new())),
-                (
-                    Some("noop".to_owned()),
-                    Some("same content already stored".to_owned())
-                ),
+                (Some("noop".to_owned()), Some("same content already stored".to_owned())),
             ]
         )
     );

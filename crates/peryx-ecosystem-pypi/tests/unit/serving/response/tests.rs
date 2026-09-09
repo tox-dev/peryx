@@ -87,14 +87,24 @@ fn meta_error() -> MetaError {
 /// engine jargon it has no way to act on.
 #[test]
 fn test_a_denial_is_reported_in_pypi_vocabulary() {
-    let rules = ["resource-allow-list", "resource-block-list", "max-artifact-size", "unknown-rule"]
-        .map(super::pypi_rule);
+    let rules = [
+        "resource-allow-list",
+        "resource-block-list",
+        "max-artifact-size",
+        "unknown-rule",
+    ]
+    .map(super::pypi_rule);
     let fields = ["resource", "artifact", "group", "unmapped"].map(super::pypi_field);
 
     assert_eq!(
         (rules, fields),
         (
-            ["project-allow-list", "project-block-list", "max-file-size", "unknown-rule"],
+            [
+                "project-allow-list",
+                "project-block-list",
+                "max-file-size",
+                "unknown-rule"
+            ],
             ["project", "filename", "version", "unmapped"]
         )
     );

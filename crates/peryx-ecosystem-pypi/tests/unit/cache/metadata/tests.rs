@@ -550,7 +550,9 @@ fn ranged_wheel_holding(metadata: &[u8], method: zip::CompressionMethod) -> Vec<
     let options = zip::write::SimpleFileOptions::default().compression_method(method);
     archive.start_file("sample_pkg/__init__.py", options).unwrap();
     archive.write_all(b"__version__ = \"1.0\"\n").unwrap();
-    archive.start_file("sample_pkg-1.0.dist-info/METADATA", options).unwrap();
+    archive
+        .start_file("sample_pkg-1.0.dist-info/METADATA", options)
+        .unwrap();
     archive.write_all(metadata).unwrap();
     archive.start_file("sample_pkg-1.0.dist-info/WHEEL", options).unwrap();
     archive
@@ -567,13 +569,9 @@ async fn ranged_outcome(wheel: Vec<u8>) -> RemoteMetadata {
         .mount(&server)
         .await;
     let client = ArtifactClient::from(UpstreamClient::new(&format!("{}/", server.uri())).unwrap());
-    wheel_metadata_by_range(
-        &client,
-        &format!("{}/files/{RANGED_WHEEL}", server.uri()),
-        RANGED_WHEEL,
-    )
-    .await
-    .unwrap()
+    wheel_metadata_by_range(&client, &format!("{}/files/{RANGED_WHEEL}", server.uri()), RANGED_WHEEL)
+        .await
+        .unwrap()
 }
 
 /// The member budget admits a member of exactly its size and refuses only what passes it, and it asks
@@ -605,7 +603,10 @@ async fn test_a_member_one_byte_past_the_budget_is_declined() {
 async fn test_a_member_that_compresses_small_is_still_judged_by_its_decoded_size() {
     let metadata = vec![b'm'; usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap() + 1];
     let wheel = ranged_wheel_holding(&metadata, zip::CompressionMethod::Deflated);
-    assert!(wheel.len() < metadata.len(), "the member has to compress well for this to mean anything");
+    assert!(
+        wheel.len() < metadata.len(),
+        "the member has to compress well for this to mean anything"
+    );
 
     assert!(matches!(ranged_outcome(wheel).await, RemoteMetadata::Unsupported));
 }
@@ -653,13 +654,9 @@ async fn test_a_wheel_member_is_read_back_whole_over_ranges() {
         .await;
     let client = ArtifactClient::from(UpstreamClient::new(&format!("{}/", server.uri())).unwrap());
 
-    let outcome = wheel_metadata_by_range(
-        &client,
-        &format!("{}/files/{RANGED_WHEEL}", server.uri()),
-        RANGED_WHEEL,
-    )
-    .await
-    .unwrap();
+    let outcome = wheel_metadata_by_range(&client, &format!("{}/files/{RANGED_WHEEL}", server.uri()), RANGED_WHEEL)
+        .await
+        .unwrap();
 
     let RemoteMetadata::Found(metadata) = outcome else {
         panic!("the member is present, so the ranged read finds it");
