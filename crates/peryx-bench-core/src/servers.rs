@@ -75,7 +75,7 @@ impl Drop for Active {
             // gunicorn forks workers, and a `uvx` shim execs its payload: killing the direct child
             // orphans the rest, which then linger holding CPU and skewing every later measurement.
             // The child leads its own process group (see `start`), so signal the whole group.
-            kill_process_group(process.id());
+            kill_process_group(&process);
             let _ = process.kill();
             let _ = process.wait();
         }
@@ -85,17 +85,16 @@ impl Drop for Active {
     }
 }
 
-fn kill_process_group(pid: u32) {
+// Shelling out to `kill -KILL -<pgid>` took the whole GitHub-hosted runner down with the group after
+// every cold build, three runs out of three; the syscall reaches the group and nothing else.
+fn kill_process_group(process: &Child) {
     #[cfg(unix)]
     {
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let group = rustix::process::Pid::from_child(process);
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
     }
     #[cfg(not(unix))]
-    let _ = pid;
+    let _ = process;
 }
 
 impl Server {
