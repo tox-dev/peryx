@@ -91,6 +91,8 @@ fn cpu_percent_converts_to_milliseconds_of_a_tick() {
 
 #[test]
 fn the_tree_holds_the_root_and_its_descendants_only() {
+    let mut child = idle_child().spawn().expect("the child starts");
+    let descendant = Pid::from_u32(child.id());
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -99,5 +101,32 @@ fn the_tree_holds_the_root_and_its_descendants_only() {
     );
     let root = Pid::from_u32(std::process::id());
     let tree = tree_of(&system, root);
-    assert_eq!((tree.contains(&root), tree.contains(&Pid::from_u32(1))), (true, false));
+    child.kill().expect("the child is killable");
+    child.wait().expect("the child is reaped");
+    assert_eq!(
+        (
+            tree.contains(&root),
+            tree.contains(&descendant),
+            tree.contains(&Pid::from_u32(1)),
+        ),
+        (true, true, false)
+    );
+}
+
+/// A child that stays alive until its stdin closes, so the sample sees a tree rather than one process.
+fn idle_child() -> std::process::Command {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "read value"]);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "set /p value="]);
+        command
+    };
+    command.stdin(std::process::Stdio::piped());
+    command
 }
