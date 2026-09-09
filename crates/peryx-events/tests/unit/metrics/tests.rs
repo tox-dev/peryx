@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use peryx_ha::{
     AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsBatchSource as _, AuthorityEpoch, IntervalId,
@@ -799,6 +799,38 @@ fn test_zero_interval_persists_a_completed_batch() {
     assert!(step(&receiver, &context, Duration::ZERO, &mut state));
 
     assert_eq!(persisted_reads(&meta.analytics()), Some(1));
+}
+
+#[test]
+fn test_an_idle_wake_with_nothing_pending_restarts_the_interval() {
+    let tree = RwLock::new(HashMap::default());
+    let daily = RwLock::new(BTreeMap::default());
+    let clock = clock_on_day(2);
+    // No store, so a checkpoint on this path would panic rather than pass quietly.
+    let context = Aggregator {
+        tree: &tree,
+        daily: &daily,
+        store: None,
+        retention_days: Some(7),
+        clock: &clock,
+    };
+    // Retaining the sender keeps the channel open, so an empty queue answers recv_timeout with
+    // Timeout instead of Disconnected. An interval already spent saturates the wait to zero, which
+    // reaches the idle arm without waiting on the clock.
+    let (_sender, receiver) = sync_channel::<Message>(1);
+    let interval = Duration::from_secs(10);
+    let mut state = FlushState::durable(false, Arc::new(RwLock::new(None)));
+    state.interval_started = Instant::now()
+        .checked_sub(Duration::from_secs(30))
+        .expect("the monotonic clock has run for thirty seconds");
+
+    assert!(step(&receiver, &context, interval, &mut state));
+
+    assert!(!state.pending());
+    // Skipping the reset leaves wake_in saturated at zero, and the aggregator then spins on a
+    // zero-length wait for as long as retention stays on with nothing pending.
+    let wake_in = state.wake_in(interval, true).expect("retention keeps a deadline");
+    assert!(wake_in > interval.saturating_sub(Duration::from_secs(1)));
 }
 
 #[test]
