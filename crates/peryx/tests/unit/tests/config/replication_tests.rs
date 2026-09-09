@@ -41,12 +41,16 @@ fn test_ha_replica_replication_from_toml_uses_defaults() {
     );
 }
 
-#[test]
-fn test_replica_replication_from_toml_accepts_runtime_bounds() {
-    let config = toml_config(
+/// The primary's page limit is inclusive: a replica may ask for exactly the largest page the primary
+/// serves, and only one past it is refused.
+#[rstest]
+#[case::below(250)]
+#[case::at_the_limit(peryx_ha_distributed::DEFAULT_MAX_CHANGE_PAGE_SIZE)]
+fn test_replica_replication_from_toml_accepts_runtime_bounds(#[case] page_size: usize) {
+    let config = toml_config(&format!(
         "[availability]\nmode = \"dc\"\n[availability.replication]\nrole = \"replica\"\n\
-         upstream = \"https://primary.example/\"\ntoken = \"secret\"\npoll_interval_secs = 30\npage_size = 250\n",
-    );
+         upstream = \"https://primary.example/\"\ntoken = \"secret\"\npoll_interval_secs = 30\npage_size = {page_size}\n"
+    ));
 
     assert_eq!(
         config.availability,
@@ -54,7 +58,7 @@ fn test_replica_replication_from_toml_accepts_runtime_bounds() {
             upstream: "https://primary.example/".to_owned(),
             token: SecretSource::Literal("secret".to_owned()),
             poll_interval: Duration::from_secs(30),
-            page_size: NonZeroUsize::new(250).unwrap(),
+            page_size: NonZeroUsize::new(page_size).unwrap(),
         })
     );
 }
