@@ -615,6 +615,7 @@ async fn test_update_validates_the_body() {
 #[case::matching_list(vec![HeaderValue::from_static("\"0\", \"1\"")])]
 #[case::quoted_comma(vec![HeaderValue::from_static("\"opaque,tag\", \"1\"")])]
 #[case::empty_members(vec![HeaderValue::from_static(",,\"1\",")])]
+#[case::space_before_comma(vec![HeaderValue::from_static("\"0\" , \"1\"")])]
 #[case::multiple_fields(vec![HeaderValue::from_static("\"0\""), HeaderValue::from_static("\"1\"")])]
 #[tokio::test]
 async fn test_update_accepts_rfc_if_match_forms(#[case] fields: Vec<HeaderValue>) {

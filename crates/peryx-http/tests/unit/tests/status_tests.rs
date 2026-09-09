@@ -157,7 +157,7 @@ async fn indexes() -> (Vec<Index>, UpstreamRouter) {
                 "reachable",
                 IndexAcl::default(),
                 IndexKind::Cached {
-                    client: reachable,
+                    client: reachable.clone(),
                     offline: false,
                 },
             ),
@@ -165,7 +165,7 @@ async fn indexes() -> (Vec<Index>, UpstreamRouter) {
                 "unreachable",
                 IndexAcl::default(),
                 IndexKind::Cached {
-                    client: unreachable,
+                    client: unreachable.clone(),
                     offline: false,
                 },
             ),
@@ -194,6 +194,32 @@ async fn indexes() -> (Vec<Index>, UpstreamRouter) {
                 },
             ),
             missing_driver,
+            // One index per state made all four health counters read 1, so a mutated conjunct that
+            // selected a different single index still summed to 1. Distinct counts separate them.
+            index(
+                "unreachable-two",
+                IndexAcl::default(),
+                IndexKind::Cached {
+                    client: unreachable,
+                    offline: false,
+                },
+            ),
+            index(
+                "unknown-two",
+                IndexAcl::default(),
+                IndexKind::Cached {
+                    client: peryx_upstream::UpstreamClient::new("https://unknown-two.example/artifacts/").unwrap(),
+                    offline: false,
+                },
+            ),
+            index(
+                "unknown-three",
+                IndexAcl::default(),
+                IndexKind::Cached {
+                    client: peryx_upstream::UpstreamClient::new("https://unknown-three.example/artifacts/").unwrap(),
+                    offline: false,
+                },
+            ),
         ],
         route,
     )
@@ -294,6 +320,9 @@ fn assert_basic_index_list(body: &serde_json::Value) {
             "reachable".to_owned(),
             "unknown".to_owned(),
             "unreachable".to_owned(),
+            "unreachable-two".to_owned(),
+            "unknown-two".to_owned(),
+            "unknown-three".to_owned(),
         ])
     );
 }
@@ -344,9 +373,24 @@ async fn test_status_administrator_sees_the_sensitive_index_fields() {
     assert_eq!(index["write_count"], 1);
     assert_eq!(index["recent_writes"][0]["artifact"], "artifact.bin");
     assert!(index["hosted"].is_object());
+    assert_eq!(
+        body["blob_storage"],
+        serde_json::json!({
+            "backend": "filesystem",
+            "capabilities": {
+                "durability": "filesystem",
+                "conditional_write": "native",
+                "range": "native",
+                "checksum": "emulated",
+                "delete": "native",
+                "listing": "native",
+                "local_staging": "native",
+            },
+        })
+    );
     assert_eq!(body["health"]["upstreams"]["reachable"], 1);
-    assert_eq!(body["health"]["upstreams"]["unreachable"], 1);
-    assert_eq!(body["health"]["upstreams"]["unknown"], 1);
+    assert_eq!(body["health"]["upstreams"]["unreachable"], 2);
+    assert_eq!(body["health"]["upstreams"]["unknown"], 3);
     assert_eq!(body["health"]["upstreams"]["disabled"], 1);
     assert_eq!(body["indexes"][6]["precedence"].as_array().unwrap().len(), 2);
     let indexes = body["indexes"].as_array().unwrap();
