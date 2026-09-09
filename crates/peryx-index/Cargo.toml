@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["sync"] }
 hdrhistogram.workspace = true
 rstest.workspace = true
 stats_alloc.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 
 [[bench]]
 name = "route_resolver"

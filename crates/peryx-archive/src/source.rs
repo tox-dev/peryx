@@ -198,14 +198,17 @@ impl Read for FileRangeReader {
 impl Seek for FileRangeReader {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let position = match pos {
-            SeekFrom::Start(offset) => offset.min(self.len),
-            SeekFrom::Current(offset) if offset < 0 => self.position.saturating_sub(offset.unsigned_abs()),
-            SeekFrom::Current(offset) => self.position.saturating_add(offset.unsigned_abs()).min(self.len),
-            SeekFrom::End(offset) if offset < 0 => self.len.saturating_sub(offset.unsigned_abs()),
-            SeekFrom::End(_) => self.len,
-        };
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(offset) => self.position.saturating_add_signed(offset),
+            SeekFrom::End(offset) => self.len.saturating_add_signed(offset),
+        }
+        .min(self.len);
         self.file.seek(SeekFrom::Start(self.start + position))?;
         self.position = position;
         Ok(position)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/source_tests.rs"]
+mod tests;

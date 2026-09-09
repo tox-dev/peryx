@@ -4,15 +4,16 @@ use flate2::{Compression, write::GzEncoder};
 use rstest::rstest;
 
 use crate::{
-    ArchiveError, ArchiveFormat, ArchiveProfile, MAX_DECOMPRESSED_INSPECT_BYTES, Member, MemberKind, generic_format,
-    generic_member_kind, list_members, list_members_nested_path, list_members_path, read_error, read_member,
-    read_member_chunk, read_member_chunk_path, read_text_member_chunk_nested_path, safe_member_name,
-    strip_ascii_suffix_ignore_case,
+    ArchiveError, ArchiveFormat, ArchiveProfile, DEFAULT_MEMBER_CHUNK, MAX_CONTAINER_DEPTH,
+    MAX_DECOMPRESSED_INSPECT_BYTES, MAX_MEMBER_CHUNK, MAX_NESTED_ARCHIVE_SIZE, MAX_ZIP_CENTRAL_DIRECTORY_BYTES, Member,
+    MemberChunk, MemberKind, generic_format, generic_member_kind, list_members, list_members_nested_path,
+    list_members_path, read_error, read_member, read_member_chunk, read_member_chunk_path,
+    read_text_member_chunk_nested_path, safe_member_name, strip_ascii_suffix_ignore_case,
 };
 
-const BODY: &[u8] = b"body\n";
+pub const BODY: &[u8] = b"body\n";
 
-struct TestProfile;
+pub struct TestProfile;
 
 impl ArchiveProfile for TestProfile {
     fn format(&self, name: &str) -> Option<ArchiveFormat> {
@@ -24,9 +25,9 @@ impl ArchiveProfile for TestProfile {
     }
 }
 
-const PROFILE: TestProfile = TestProfile;
+pub const PROFILE: TestProfile = TestProfile;
 
-fn zip(entries: &[(&str, &[u8])], method: zip::CompressionMethod) -> Vec<u8> {
+pub fn zip(entries: &[(&str, &[u8])], method: zip::CompressionMethod) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
@@ -111,11 +112,11 @@ fn truncated_tar(path: &str, size: u64, body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn oversized_nested_tar() -> Vec<u8> {
+fn nested_tar_declaring(size: u64) -> Vec<u8> {
     let mut header = tar::Header::new_gnu();
     header.set_path("inner.zip").unwrap();
     header.set_mode(0o644);
-    header.set_size((128 << 20) + 1);
+    header.set_size(size);
     header.set_cksum();
     let mut bytes = header.as_bytes().to_vec();
     bytes.extend_from_slice(&[0; 1024]);
@@ -129,7 +130,7 @@ fn zip_with_declared_size(size: u32) -> Vec<u8> {
     bytes
 }
 
-fn write_archive(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+pub fn write_archive(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("archive");
     std::fs::write(&path, bytes).unwrap();
@@ -252,6 +253,15 @@ fn listed_text_member(path: &str) -> Member {
     }
 }
 
+#[rstest]
+#[case::default_member_chunk(DEFAULT_MEMBER_CHUNK, 262_144)]
+#[case::max_member_chunk(MAX_MEMBER_CHUNK, 1_048_576)]
+#[case::max_nested_archive(MAX_NESTED_ARCHIVE_SIZE, 134_217_728)]
+#[case::max_zip_central_directory(MAX_ZIP_CENTRAL_DIRECTORY_BYTES, 16_777_216)]
+fn test_byte_limits_are_the_documented_sizes(#[case] limit: u64, #[case] bytes: u64) {
+    assert_eq!(limit, bytes);
+}
+
 #[test]
 fn test_read_error_preserves_the_source_message() {
     assert!(matches!(
@@ -334,7 +344,24 @@ fn test_file_backed_archive_readers_share_listing_and_range_behavior() {
             (chunk.bytes, chunk.size, chunk.offset, chunk.next_offset),
             (b"cka".to_vec(), 7, 2, Some(5))
         );
+        let tail = read_member_chunk_path(&PROFILE, name, &path, "file.txt", 2, u64::MAX).unwrap();
+        assert_eq!((tail.bytes, tail.next_offset), (b"ckage".to_vec(), None));
     }
+}
+
+#[rstest]
+#[case("bundle.zip", zip_with("file.txt"))]
+#[case("bundle.tar", tar(&[("file.txt", BODY)]))]
+fn test_member_chunk_at_the_member_end_is_empty(#[case] filename: &str, #[case] bytes: Vec<u8>) {
+    assert_eq!(
+        read_member_chunk(&PROFILE, filename, &bytes, "file.txt", 5, 1).unwrap(),
+        MemberChunk {
+            bytes: Vec::new(),
+            size: 5,
+            offset: 5,
+            next_offset: None,
+        }
+    );
 }
 
 #[rstest]
@@ -364,6 +391,16 @@ fn test_text_chunks_trim_an_incomplete_trailing_character() {
     let (_dir, path) = write_archive(&bytes);
     let chunk = read_text_member_chunk_nested_path(&PROFILE, "bundle.zip", &path, &[], "text.txt", 0, 3).unwrap();
     assert_eq!((chunk.bytes, chunk.next_offset), (b"ab".to_vec(), Some(2)));
+}
+
+#[test]
+fn test_text_chunks_reject_a_window_shorter_than_its_first_character() {
+    let bytes = zip(&[("text.txt", "éa".as_bytes())], zip::CompressionMethod::Deflated);
+    let (_dir, path) = write_archive(&bytes);
+    assert!(matches!(
+        read_text_member_chunk_nested_path(&PROFILE, "bundle.zip", &path, &[], "text.txt", 0, 1),
+        Err(ArchiveError::BinaryMember(name)) if name == "text.txt"
+    ));
 }
 
 #[rstest]
@@ -498,19 +535,24 @@ fn test_tar_member_read_rejects_the_inspection_boundary() {
     ));
 }
 
-#[test]
-fn test_tar_member_read_allows_the_exact_inspection_boundary() {
+#[rstest]
+#[case::empty_window(MAX_DECOMPRESSED_INSPECT_BYTES, MAX_DECOMPRESSED_INSPECT_BYTES - 512, 0)]
+#[case::window_to_the_member_end(MAX_DECOMPRESSED_INSPECT_BYTES - 512, MAX_DECOMPRESSED_INSPECT_BYTES - 1024, u64::MAX)]
+fn test_tar_member_read_allows_the_exact_inspection_boundary(
+    #[case] size: u64,
+    #[case] offset: u64,
+    #[case] limit: u64,
+) {
     assert!(matches!(
         read_member_chunk(
             &PROFILE,
             "bundle.tar",
-            &truncated_tar("file.txt", MAX_DECOMPRESSED_INSPECT_BYTES, BODY),
+            &truncated_tar("file.txt", size, BODY),
             "file.txt",
-            MAX_DECOMPRESSED_INSPECT_BYTES - 512,
-            0,
+            offset,
+            limit,
         ),
-        Err(ArchiveError::TruncatedMember { expected, actual })
-            if expected == MAX_DECOMPRESSED_INSPECT_BYTES && actual == BODY.len() as u64
+        Err(ArchiveError::TruncatedMember { expected, actual }) if expected == size && actual == BODY.len() as u64
     ));
 }
 
@@ -584,8 +626,22 @@ fn test_nested_archive_reader_rejects_unsafe_and_excessive_paths() {
         Err(ArchiveError::UnsafeMember(_))
     ));
     assert!(matches!(
-        list_members_nested_path(&PROFILE, "outer.zip", &path, &vec!["inner.zip".to_owned(); 9]),
+        list_members_nested_path(
+            &PROFILE,
+            "outer.zip",
+            &path,
+            &vec!["inner.zip".to_owned(); MAX_CONTAINER_DEPTH + 1]
+        ),
         Err(ArchiveError::NestingTooDeep { .. })
+    ));
+    assert!(matches!(
+        list_members_nested_path(
+            &PROFILE,
+            "outer.zip",
+            &path,
+            &vec!["inner.zip".to_owned(); MAX_CONTAINER_DEPTH]
+        ),
+        Err(ArchiveError::MemberNotFound)
     ));
     assert!(matches!(
         list_members_nested_path(&PROFILE, "outer.zip", &path, &["inner.bin".to_owned()]),
@@ -600,10 +656,19 @@ fn test_nested_archive_reader_rejects_unsafe_and_excessive_paths() {
         list_members_nested_path(&PROFILE, "outer.tar", &path, &["inner.zip".to_owned()]),
         Err(ArchiveError::MemberNotFound)
     ));
-    let (_dir, path) = write_archive(&oversized_nested_tar());
+    let (_dir, path) = write_archive(&nested_tar_declaring(MAX_NESTED_ARCHIVE_SIZE + 1));
     assert!(matches!(
         list_members_nested_path(&PROFILE, "outer.tar", &path, &["inner.zip".to_owned()]),
-        Err(ArchiveError::NestedArchiveTooLarge { size, .. }) if size == (128 << 20) + 1
+        Err(ArchiveError::NestedArchiveTooLarge { size, .. }) if size == MAX_NESTED_ARCHIVE_SIZE + 1
+    ));
+}
+
+#[test]
+fn test_nested_archive_reader_allows_a_container_at_the_size_limit() {
+    let (_dir, path) = write_archive(&nested_tar_declaring(MAX_NESTED_ARCHIVE_SIZE));
+    assert!(matches!(
+        list_members_nested_path(&PROFILE, "outer.tar", &path, &["inner.zip".to_owned()]),
+        Err(ArchiveError::TruncatedMember { expected, actual: 1024 }) if expected == MAX_NESTED_ARCHIVE_SIZE
     ));
 }
 

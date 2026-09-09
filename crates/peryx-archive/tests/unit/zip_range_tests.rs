@@ -52,6 +52,31 @@ fn test_zip_central_directory_accepts_a_span_within_the_artifact() {
     );
 }
 
+#[test]
+fn test_zip_central_directory_accepts_a_record_carrying_its_declared_comment() {
+    let mut tail = eocd(10, 5, 3);
+    tail.extend_from_slice(b"hey");
+
+    assert_eq!(
+        zip_central_directory(&tail, 15),
+        Some(ZipCentralDirectory { offset: 5, len: 10 })
+    );
+}
+
+#[test]
+fn test_zip_central_directory_accepts_a_directory_at_the_budget() {
+    let len = u32::try_from(MAX_ZIP_CENTRAL_DIRECTORY_BYTES).unwrap();
+    let tail = eocd(len, 0, 0);
+
+    assert_eq!(
+        zip_central_directory(&tail, u64::MAX),
+        Some(ZipCentralDirectory {
+            offset: 0,
+            len: MAX_ZIP_CENTRAL_DIRECTORY_BYTES
+        })
+    );
+}
+
 /// A stored central-directory entry for `name`, whose fields a case can then bend.
 fn central_entry(name: &str, payload: &[u8]) -> Vec<u8> {
     let size = u32::try_from(payload.len()).unwrap();
@@ -113,10 +138,46 @@ fn test_find_zip_entry_walks_past_the_members_it_was_not_asked_for() {
     );
 }
 
+#[test]
+fn test_find_zip_entry_steps_over_an_extra_field_and_a_comment() {
+    let mut directory = central_entry("pkg-1.0.dist-info/WHEEL", b"other");
+    directory[30..32].copy_from_slice(&3_u16.to_le_bytes());
+    directory[32..34].copy_from_slice(&2_u16.to_le_bytes());
+    directory.extend_from_slice(b"xtrhi");
+    directory.extend_from_slice(&central_entry(NAME, b"body"));
+
+    assert_eq!(
+        find_zip_entry(&directory, NAME),
+        ZipEntrySearch::Found(stored_entry(b"body"))
+    );
+}
+
+#[rstest]
+#[case::deflate_level_low(1 << 1)]
+#[case::deflate_level_high(1 << 2)]
+#[case::data_descriptor(1 << 3)]
+#[case::utf8_name(1 << 11)]
+#[case::every_readable_bit(0b1000_0000_1110)]
+fn test_find_zip_entry_honours_the_hint_flags(#[case] flags: u16) {
+    let mut directory = central_entry(NAME, b"body");
+    directory[8..10].copy_from_slice(&flags.to_le_bytes());
+
+    assert_eq!(
+        find_zip_entry(&directory, NAME),
+        ZipEntrySearch::Found(ZipEntry {
+            flags,
+            ..stored_entry(b"body")
+        })
+    );
+}
+
 #[rstest]
 #[case::encrypted(1)]
 #[case::strong_encryption(1 << 6)]
 #[case::masked_local_values(1 << 13)]
+#[case::reserved_bit_4(1 << 4)]
+#[case::reserved_bit_15(1 << 15)]
+#[case::encrypted_beside_a_hint((1 << 1) | 1)]
 fn test_find_zip_entry_refuses_flags_it_cannot_honour(#[case] flags: u16) {
     let mut directory = central_entry(NAME, b"body");
     directory[8..10].copy_from_slice(&flags.to_le_bytes());

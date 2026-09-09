@@ -22,7 +22,8 @@ impl Inflight {
 struct Gate {
     mutex: Arc<tokio::sync::Mutex<()>>,
     users: AtomicUsize,
-    joins: tokio::sync::watch::Sender<u64>,
+    /// Subscribers wait for the next join, so the channel carries the event and no count.
+    joins: tokio::sync::watch::Sender<()>,
 }
 
 impl Gate {
@@ -30,7 +31,7 @@ impl Gate {
         Self {
             mutex: Arc::default(),
             users: AtomicUsize::new(1),
-            joins: tokio::sync::watch::channel(0).0,
+            joins: tokio::sync::watch::channel(()).0,
         }
     }
 }
@@ -82,7 +83,7 @@ impl Drop for FlightGate {
 }
 
 #[derive(Debug)]
-pub struct FlightEvents(tokio::sync::watch::Receiver<u64>);
+pub struct FlightEvents(tokio::sync::watch::Receiver<()>);
 
 impl FlightEvents {
     /// Wait for another owner to join the subscribed flight.
@@ -107,7 +108,7 @@ pub fn flight_gate(inflight: &Inflight, key: &str) -> FlightGate {
         Entry::Occupied(entry) => {
             let gate = entry.get().clone();
             gate.users.fetch_add(1, Ordering::Relaxed);
-            gate.joins.send_modify(|joins| *joins += 1);
+            gate.joins.send_replace(());
             gate
         }
         Entry::Vacant(entry) => entry.insert(Arc::new(Gate::new())).clone(),

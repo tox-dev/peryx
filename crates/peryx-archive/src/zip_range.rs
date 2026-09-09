@@ -33,10 +33,10 @@ const COMPRESSION_DEFLATED: u16 = 8;
 /// fields carry no claim to cross-check.
 const FLAG_DATA_DESCRIPTOR: u16 = 1 << 3;
 
-/// General-purpose bits this reader can honour. Bits 1 and 2 only hint at the deflate level, bit 3
+/// General-purpose bits this reader can honour: bits 1 and 2 only hint at the deflate level, bit 3
 /// defers the CRC and sizes to a data descriptor, and bit 11 declares the name UTF-8. Bits 0 and 6
 /// encrypt the member, bit 13 masks the very fields cross-checked here, and the rest are reserved.
-const READABLE_FLAGS: u16 = (1 << 1) | (1 << 2) | FLAG_DATA_DESCRIPTOR | (1 << 11);
+const READABLE_FLAGS: u16 = 0b1000_0000_1110;
 
 /// The span the central directory occupies inside the archive.
 #[derive(Debug, PartialEq, Eq)]
