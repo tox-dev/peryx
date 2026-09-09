@@ -15,11 +15,43 @@ permissions:
   actions: read
   contents: read
 
+# A push to main keeps its run: cancelling it whenever the next merge lands is what left main without a
+# verdict and without a cache write for every job that had not finished yet.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A pull request that touches only the site, Markdown, or the Read the Docs and Renovate manifests
+  # cannot change a compiled artifact, so the Rust jobs stand down for it. The exception is a document
+  # a crate embeds with `include_str!`; `just _embedded-docs-contract` keeps that list current. Every
+  # push and dispatch still runs everything.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.embedded == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!site/**'
+              - '!**/*.md'
+              - '!.readthedocs.yaml'
+              - '!renovate.json'
+              - '!LICENSE'
+            embedded:
+              - 'site/content/ecosystems/oci/reference/policy.md'
+              - 'site/static/icon.svg'
+              - 'site/static/mark.svg'
+
   source:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -46,6 +78,8 @@ jobs:
       - run: just lint-automation
 
   contracts:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     # A cold `just snapshots` measured 5m19s: 2m36s to build peryx-ecosystem-pypi with every feature
     # and 112s to run its 2814 tests.
@@ -64,6 +98,8 @@ jobs:
 
   platform:
     name: platform (${{ matrix.os }})
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +118,8 @@ jobs:
       - run: just platform-test
 
   coverage:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -102,8 +140,14 @@ jobs:
           if-no-files-found: error
 
   frontend:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # `coverage-frontend` builds under `$CARGO_TARGET_DIR/frontend`; rooting that inside the workspace
+      # target directory is what lets rust-cache carry its dependencies between runs.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -153,13 +197,16 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [automation, contracts, coverage, docs, frontend, platform, source]
+    needs: [automation, changes, contracts, coverage, docs, frontend, platform, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # A job the `changes` filter stood down reports `skipped`; anything else short of success fails.
       - if: >-
-          needs.automation.result != 'success' || needs.contracts.result != 'success' ||
-          needs.coverage.result != 'success' || needs.docs.result != 'success' ||
-          needs.frontend.result != 'success' || needs.platform.result != 'success' ||
-          needs.source.result != 'success'
+          needs.automation.result != 'success' || needs.changes.result != 'success' ||
+          needs.docs.result != 'success' || needs.source.result != 'success' ||
+          !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) ||
+          !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) ||
+          !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) ||
+          !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
         run: exit 1

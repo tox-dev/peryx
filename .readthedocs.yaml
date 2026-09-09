@@ -4,8 +4,6 @@ build:
   os: ubuntu-24.04
   apt_packages:
     - minisign
-  tools:
-    rust: latest
   jobs:
     build:
       html:
