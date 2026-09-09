@@ -1106,3 +1106,7 @@ fn upstream_auth(token: Option<&str>, username: Option<&str>, password: Option<&
         _ => Auth::None,
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/server/tests.rs"]
+mod tests;
