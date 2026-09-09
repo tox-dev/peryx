@@ -565,13 +565,6 @@ impl ReservationRows {
         if adds.group {
             ensure_total_add(self.resource.groups, 1)?;
         }
-        ensure_references_add(self.blob.references)?;
-        if self.resource_key.is_some() {
-            ensure_references_add(self.resource.references)?;
-        }
-        if self.group_key.is_some() {
-            ensure_references_add(self.group)?;
-        }
         let resource_excess = max_resource_artifact_bytes.and_then(|limit| {
             let total = self.resource.artifact_bytes.total() + bytes;
             (total > limit).then_some(total)
@@ -804,9 +797,10 @@ fn release(txn: &redb::WriteTransaction, id: Uuid, scope: ReleaseScope) -> Resul
         return Ok(false);
     }
     transition(txn, &reservation, false)?;
-    if reservation.state == QuotaReservationState::Committed {
-        forget_allocation(txn, &reservation)?;
-    }
+    // `forget_allocation` re-reads the entry and removes it only while it still names this
+    // reservation, which a pending one never does: committing is the only thing that writes the
+    // index. Asking the state here as well would be a second copy of that rule.
+    forget_allocation(txn, &reservation)?;
     txn.open_table(QUOTA_RESERVATION)
         .map_err(MetaError::from)?
         .remove(key.as_str())
@@ -917,15 +911,6 @@ fn ensure_total_add(value: QuotaValue, amount: u64) -> Result<(), QuotaError> {
         .committed
         .checked_add(value.reserved)
         .and_then(|total| total.checked_add(amount))
-        .ok_or(QuotaError::CounterOverflow)?;
-    Ok(())
-}
-
-fn ensure_references_add(references: References) -> Result<(), QuotaError> {
-    references
-        .committed
-        .checked_add(references.reserved)
-        .and_then(|total| total.checked_add(1))
         .ok_or(QuotaError::CounterOverflow)?;
     Ok(())
 }

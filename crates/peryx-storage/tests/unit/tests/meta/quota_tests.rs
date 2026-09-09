@@ -1294,6 +1294,165 @@ fn test_quota_release_keeps_a_duplicate_allocations_own_index_entry() {
     );
 }
 
+#[test]
+fn test_quota_admits_a_total_that_lands_exactly_on_the_accounted_limit() {
+    let (_dir, meta) = store();
+
+    meta.reserve_quota(
+        request("resource-a", "group-a", "sha256:first", 7),
+        QuotaLimits {
+            max_accounted_bytes: Some(7),
+            ..QuotaLimits::default()
+        },
+    )
+    .expect("a total equal to the limit has reached it, not passed it");
+
+    assert_eq!(
+        meta.quota_usage("private").unwrap().accounted_bytes,
+        QuotaValue {
+            committed: 0,
+            reserved: 7,
+        }
+    );
+}
+
+#[test]
+fn test_quota_admits_a_group_that_lands_exactly_on_the_group_limit() {
+    let (_dir, meta) = store();
+
+    meta.reserve_quota(
+        request("resource-a", "group-a", "sha256:first", 7),
+        QuotaLimits {
+            max_groups_per_resource: Some(1),
+            ..QuotaLimits::default()
+        },
+    )
+    .expect("the first group of a resource reaches a limit of one without passing it");
+
+    assert_eq!(
+        meta.quota_resource_usage("private", "resource-a").unwrap().groups,
+        QuotaValue {
+            committed: 0,
+            reserved: 1,
+        }
+    );
+}
+
+#[test]
+fn test_quota_admits_an_identity_of_exactly_the_maximum_length() {
+    let (_dir, meta) = store();
+    let at_limit = "x".repeat(512);
+
+    meta.reserve_quota(request(&at_limit, "group-a", "sha256:first", 7), QuotaLimits::default())
+        .expect("a field as long as the maximum is within it");
+
+    assert_eq!(
+        meta.quota_usage("private").unwrap().accounted_bytes,
+        QuotaValue {
+            committed: 0,
+            reserved: 7,
+        }
+    );
+}
+
+#[test]
+fn test_quota_returns_a_committed_group_to_zero_when_its_reservation_is_released() {
+    let (_dir, meta) = store();
+    let reservation = meta
+        .reserve_quota(
+            request("resource-a", "group-a", "sha256:first", 7),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    meta.commit_quota_reservation(reservation.id).unwrap();
+
+    meta.release_quota_reservation(reservation.id).unwrap();
+
+    // Committing moves the group from reserved to committed, so a release that undoes both has to
+    // leave the group row empty enough to be deleted. A residue there is invisible in the counters,
+    // and shows only when the next reservation asks whether this group is new: a surviving row makes
+    // it look established, and the resource group count never rises again.
+    meta.reserve_quota(
+        request("resource-a", "group-a", "sha256:second", 7),
+        QuotaLimits::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        meta.quota_resource_usage("private", "resource-a").unwrap().groups,
+        QuotaValue {
+            committed: 0,
+            reserved: 1,
+        }
+    );
+}
+
+#[test]
+fn test_quota_rejects_a_total_that_overflows_across_committed_and_reserved() {
+    let (_dir, meta) = store();
+    let half = u64::MAX / 2 + 1;
+    let committed = meta
+        .reserve_quota(
+            request("resource-a", "group-a", "sha256:first", half),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    meta.commit_quota_reservation(committed.id).unwrap();
+
+    // Neither half overflows on its own, and the reserved column is empty again after the commit, so
+    // only the sum of both columns can refuse this.
+    assert!(matches!(
+        meta.reserve_quota(
+            request("resource-a", "group-a", "sha256:second", half),
+            QuotaLimits::default()
+        ),
+        Err(QuotaError::CounterOverflow)
+    ));
+}
+
+#[test]
+fn test_quota_releasing_a_pending_duplicate_leaves_the_committed_allocation_findable() {
+    let (_dir, meta) = store();
+    let committed = meta
+        .reserve_quota(
+            request("resource-a", "group-a", "sha256:shared", 7),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    meta.commit_quota_reservation(committed.id).unwrap();
+    let duplicate = meta
+        .reserve_quota(
+            request("resource-a", "group-a", "sha256:shared", 7),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+
+    meta.release_quota_reservation(duplicate.id).unwrap();
+
+    // Both reservations answer to one allocation key, and only the committed one is behind it. The
+    // release above must leave that entry alone, or the committed reservation becomes unreachable by
+    // the identity its caller holds.
+    meta.commit_driver_txn_release_allocation(
+        QuotaAllocation {
+            repository: "private",
+            resource: Some("resource-a"),
+            group: Some("group-a"),
+            digest: "sha256:shared",
+        },
+        |()| true,
+        |_txn| Ok::<_, QuotaError>(((), Vec::new())),
+    )
+    .unwrap();
+
+    assert_eq!(
+        (
+            meta.quota_reservation(committed.id).unwrap(),
+            meta.quota_usage("private").unwrap()
+        ),
+        (None, QuotaUsage::default())
+    );
+}
+
 fn request<'a>(resource: &'a str, group: &'a str, digest: &'a str, bytes: u64) -> NewQuotaReservation<'a> {
     NewQuotaReservation {
         repository: "private",
