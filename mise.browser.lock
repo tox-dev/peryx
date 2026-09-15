@@ -24,24 +24,24 @@ checksum = "sha256:7aec872f3090e639c4237467624ea863c20fe2878914c93a6556bdbb52aa6
 url = "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.12/win64/chrome-headless-shell-win64.zip"
 
 [[tools."http:puppeteer-headless-shell"]]
-version = "152.0.7977.75"
+version = "153.0.8010.36"
 backend = "http:puppeteer-headless-shell"
 
 [tools."http:puppeteer-headless-shell".options]
 strip_components = "1"
 
 [tools."http:puppeteer-headless-shell"."platforms.linux-x64"]
-checksum = "sha256:66ffefd34dc6af6c7d8e6933546c40ed5278fa3d495c3e836895241ba3a3a19f"
-url = "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.75/linux64/chrome-headless-shell-linux64.zip"
+checksum = "sha256:a0079df5617da34bcd1debad18196568b072ec3d8ec57944008972a4fc970580"
+url = "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/linux64/chrome-headless-shell-linux64.zip"
 
 [tools."http:puppeteer-headless-shell"."platforms.macos-arm64"]
-checksum = "sha256:9f599a775de391846eac644b50ed885474e27769ba73096e15507e732e04edef"
-url = "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.75/mac-arm64/chrome-headless-shell-mac-arm64.zip"
+checksum = "sha256:3b133378fe44a5f9c849df9049763577fbed296ee4d02d1ffb31b9fcabf79850"
+url = "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/mac-arm64/chrome-headless-shell-mac-arm64.zip"
 
 [tools."http:puppeteer-headless-shell"."platforms.macos-x64"]
-checksum = "sha256:667e71c8d261f9cbb4e64639a7691d600f55e88ecc4920a6946c7971be0e67a1"
-url = "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.75/mac-x64/chrome-headless-shell-mac-x64.zip"
+checksum = "sha256:d2ab9d1cd671137283dd5dd76ad91df82c686ff3d4c0150c9c72aa0463a59037"
+url = "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/mac-x64/chrome-headless-shell-mac-x64.zip"
 
 [tools."http:puppeteer-headless-shell"."platforms.windows-x64"]
-checksum = "sha256:97bf78fdb5eba45b19ba875e2215cf02813c576780ad406ad7d2a003eef4b956"
-url = "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.75/win64/chrome-headless-shell-win64.zip"
+checksum = "sha256:dc59aeda4f9ce8a9a329693617ac5d8b75ceea52ac3d794c4af06cdee261040e"
+url = "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/win64/chrome-headless-shell-win64.zip"
