@@ -4,11 +4,11 @@ use peryx_driver::serving::{
 };
 use std::collections::BTreeSet;
 use std::convert::Infallible;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use blake2::Blake2bVar;
-use blake2::digest::{Update as _, VariableOutput as _};
+use blake2::{Blake2b256, Digest as _};
 use bytes::Bytes;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken, Principal, Signer, TokenScope};
 
@@ -1602,11 +1602,12 @@ async fn test_upload_declared_digest_mismatch_is_bad_request() {
 async fn test_upload_matching_strong_digest_ignores_mismatched_md5() {
     let wheel = fixture_wheel();
     let sha256_digest = Digest::of(&wheel);
-    let mut blake2 = Blake2bVar::new(32).unwrap();
+    let mut blake2 = Blake2b256::new();
     blake2.update(&wheel);
-    let mut blake2_digest = [0; 32];
-    blake2.finalize_variable(&mut blake2_digest).unwrap();
-    let blake2_digest = blake2_digest.map(|byte| format!("{byte:02x}")).concat();
+    let blake2_digest = blake2.finalize().iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    });
 
     for (field, digest) in [
         ("sha256_digest", sha256_digest.as_str()),

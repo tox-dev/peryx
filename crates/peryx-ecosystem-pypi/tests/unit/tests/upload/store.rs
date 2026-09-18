@@ -1,7 +1,6 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use blake2::Blake2bVar;
-use blake2::digest::{Update as _, VariableOutput as _};
+use blake2::{Blake2b256, Digest as _};
 use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::{MetaStore, QuotaLimits};
 use serde_json::{Value, json};
@@ -56,11 +55,9 @@ fn publish_wheel(
 }
 
 fn blake2_256(bytes: &[u8]) -> String {
-    let mut blake2 = Blake2bVar::new(32).unwrap();
+    let mut blake2 = Blake2b256::new();
     blake2.update(bytes);
-    let mut digest = [0; 32];
-    blake2.finalize_variable(&mut digest).unwrap();
-    hex(&digest)
+    hex(&blake2.finalize())
 }
 
 fn pending_quota(meta: &MetaStore, wheel: &[u8], limit: u64) -> Result<PendingQuota, QuotaRejection> {

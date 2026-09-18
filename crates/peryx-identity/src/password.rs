@@ -7,7 +7,8 @@
 use std::fmt;
 use std::hint::black_box;
 
-use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher as _, PasswordVerifier as _};
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
 
@@ -57,10 +58,9 @@ impl PasswordPolicy {
     pub fn hash(&self, password: &str) -> Result<PasswordVerifier, PasswordError> {
         let mut salt = [0u8; 16];
         getrandom::fill(&mut salt).map_err(|_| PasswordError::Hash)?;
-        let salt = SaltString::encode_b64(&salt).map_err(|_| PasswordError::Hash)?;
         let encoded = self
             .argon2()
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password_with_salt(password.as_bytes(), &salt)
             .map_err(|_| PasswordError::Hash)?
             .to_string();
         Ok(PasswordVerifier(encoded))
@@ -73,8 +73,10 @@ impl PasswordPolicy {
     pub fn spend_decoy(&self, password: &str) {
         let mut salt = [0u8; 16];
         let _ = getrandom::fill(&mut salt);
-        let salt = SaltString::encode_b64(&salt).expect("16-byte salts are valid");
-        let _ = black_box(self.argon2().hash_password(black_box(password).as_bytes(), &salt));
+        let _ = black_box(
+            self.argon2()
+                .hash_password_with_salt(black_box(password).as_bytes(), &salt),
+        );
     }
 
     fn argon2(&self) -> Argon2<'static> {
@@ -113,7 +115,7 @@ impl PasswordVerifier {
 }
 
 /// Re-enroll when the algorithm profile or any cost differs from the active policy.
-fn profile_trails(hash: &PasswordHash<'_>, policy: &PasswordPolicy) -> bool {
+fn profile_trails(hash: &PasswordHash, policy: &PasswordPolicy) -> bool {
     let params = Params::try_from(hash).expect("a verified argon2 hash carries valid parameters");
     hash.algorithm != Algorithm::Argon2id.ident()
         || hash.version != Some(Version::V0x13.into())

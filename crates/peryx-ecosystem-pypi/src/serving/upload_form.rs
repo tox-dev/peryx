@@ -1,8 +1,7 @@
 use axum::extract::{Multipart, multipart};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use blake2::Blake2bVar;
-use blake2::digest::{Update as _, VariableOutput as _};
+use blake2::{Blake2b256, Digest as _};
 use peryx_driver::body::BodyFailure;
 use peryx_policy::{PolicyAction, PolicyDenial};
 
@@ -254,7 +253,7 @@ async fn stage_content(
         return Err(upload_size_reject(form, size, limit).into());
     }
     let mut pending = blobs.begin().await.map_err(storage_reject)?;
-    let mut blake2 = Blake2bVar::new(32).expect("blake2b-256 output size is valid");
+    let mut blake2 = Blake2b256::new();
     let mut size = 0_u64;
     loop {
         let chunk = match field.chunk().await {
@@ -275,10 +274,7 @@ async fn stage_content(
         blake2.update(&chunk);
         pending.write_chunk(chunk).await.map_err(storage_reject)?;
     }
-    let mut digest = [0; 32];
-    blake2
-        .finalize_variable(&mut digest)
-        .expect("blake2b-256 output buffer has the requested size");
+    let digest = blake2.finalize();
     Ok(StagedUpload {
         blob: pending.finish().await.map_err(storage_reject)?,
         blake2_256: hex(&digest),

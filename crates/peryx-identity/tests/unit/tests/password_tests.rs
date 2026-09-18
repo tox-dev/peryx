@@ -1,4 +1,4 @@
-use argon2::password_hash::{PasswordHasher as _, SaltString};
+use argon2::password_hash::PasswordHasher as _;
 use argon2::{Algorithm, Argon2, Params, Version};
 use rstest::rstest;
 
@@ -107,10 +107,9 @@ fn test_debug_redacts_the_verifier() {
 }
 
 fn custom_verifier(algorithm: Algorithm, version: Version, output_len: usize) -> PasswordVerifier {
-    let salt = SaltString::encode_b64(&[0; 16]).unwrap();
     let params = Params::new(8, 1, 1, Some(output_len)).unwrap();
     let encoded = Argon2::new(algorithm, version, params)
-        .hash_password(b"correct horse", &salt)
+        .hash_password_with_salt(b"correct horse", &[0; 16])
         .unwrap()
         .to_string();
     serde_json::from_value(serde_json::Value::String(encoded)).unwrap()
