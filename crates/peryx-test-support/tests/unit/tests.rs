@@ -608,6 +608,9 @@ fn process_ready_reports_a_reap_between_the_two_startup_waits() {
             .harness()
             .spawn_until_event("reaped-mid-startup", "", "fixture process started")
             .expect("observe process start");
+        // Waits for the log write, not just the channel send, so the reap below can never race the
+        // fixture's second line landing on disk.
+        node.await_event("fixture booting").expect("observe process booting");
         reap_process(node.pid(), Some(nix::sys::signal::Signal::SIGKILL));
 
         let ready = node.await_ready();
