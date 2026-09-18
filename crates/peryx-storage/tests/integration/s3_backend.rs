@@ -16,7 +16,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use peryx_storage::blob::{BlobDurability, BlobStorage, BlobSupport, Digest, S3Config, S3Settings};
 use rstest::rstest;
 #[cfg(feature = "container-tests")]
-use testcontainers::core::wait::ExitWaitStrategy;
+use testcontainers::core::wait::HttpWaitStrategy;
 #[cfg(feature = "container-tests")]
 use testcontainers::core::{CmdWaitFor, ExecCommand, ImageExt as _, IntoContainerPort as _, WaitFor};
 #[cfg(feature = "container-tests")]
@@ -31,8 +31,8 @@ use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const BUCKET: &str = "peryx-tests";
-const ROOT_ACCESS_KEY: &str = "peryx-minio";
-const ROOT_SECRET_KEY: &str = "peryx-minio-secret";
+const ROOT_ACCESS_KEY: &str = "peryx-versity";
+const ROOT_SECRET_KEY: &str = "peryx-versity-secret";
 #[cfg(feature = "container-tests")]
 const READONLY_ACCESS_KEY: &str = "peryx-readonly";
 #[cfg(feature = "container-tests")]
@@ -181,8 +181,8 @@ impl WireBehavior {
 }
 
 #[cfg(feature = "container-tests")]
-struct Minio {
-    _container: ContainerAsync<GenericImage>,
+struct Versity {
+    container: ContainerAsync<GenericImage>,
     endpoint: String,
     network: String,
     name: String,
@@ -736,20 +736,32 @@ fn admin_client(endpoint: &str) -> aws_sdk_s3::Client {
 }
 
 #[cfg(feature = "container-tests")]
-async fn minio() -> Minio {
+const S3_PORT: u16 = 7_070;
+
+/// The image ships no `EXPOSE` metadata, and the posix backend needs `/data` created before it
+/// `chdir`s into it, so `VGW_BINARY` reroutes the entrypoint's `exec "$BIN" "$@"` through a shell
+/// that creates the directory first.
+#[cfg(feature = "container-tests")]
+async fn versity() -> Versity {
     let suffix = format!(
         "{}-{}",
         std::process::id(),
         NEXT_CONTAINER.fetch_add(1, Ordering::Relaxed)
     );
     let network = format!("peryx-s3-{suffix}");
-    let name = format!("peryx-minio-{suffix}");
-    let container = GenericImage::new("minio/minio", "RELEASE.2025-04-22T22-12-26Z")
-        .with_wait_for(WaitFor::message_on_stderr("API:"))
-        .with_cmd(["server", "/data"])
-        .with_env_var("MINIO_CONSOLE_ADDRESS", ":9001")
-        .with_env_var("MINIO_ROOT_USER", ROOT_ACCESS_KEY)
-        .with_env_var("MINIO_ROOT_PASSWORD", ROOT_SECRET_KEY)
+    let name = format!("peryx-versity-{suffix}");
+    let container = GenericImage::new("versity/versitygw", "v1.8.0")
+        .with_wait_for(WaitFor::http(
+            HttpWaitStrategy::new("/health").with_expected_status_code(200_u16),
+        ))
+        .with_exposed_port(S3_PORT.tcp())
+        .with_env_var("VGW_BINARY", "/bin/sh")
+        .with_env_var("ROOT_ACCESS_KEY", ROOT_ACCESS_KEY)
+        .with_env_var("ROOT_SECRET_KEY", ROOT_SECRET_KEY)
+        .with_cmd([
+            "-c",
+            "mkdir -p /data && exec /usr/local/bin/versitygw --iam-dir /tmp/vgw --health /health posix /data",
+        ])
         .with_network(&network)
         .with_container_name(&name)
         .start()
@@ -757,7 +769,7 @@ async fn minio() -> Minio {
         .unwrap();
     let endpoint = format!(
         "http://127.0.0.1:{}",
-        container.get_host_port_ipv4(9_000).await.unwrap()
+        container.get_host_port_ipv4(S3_PORT.tcp()).await.unwrap()
     );
     admin_client(&endpoint)
         .create_bucket()
@@ -765,28 +777,49 @@ async fn minio() -> Minio {
         .send()
         .await
         .unwrap();
-    Minio {
-        _container: container,
+    Versity {
+        container,
         endpoint,
         network,
         name,
     }
 }
 
+/// Creates a principal restricted to `s3:GetObject`/`s3:ListBucket`, so the storage backend's
+/// error mapping can be proven against a real access-denied response.
 #[cfg(feature = "container-tests")]
-async fn run_mc(minio: &Minio, args: &[&str]) {
-    let container = GenericImage::new("minio/mc", "RELEASE.2025-04-16T18-13-26Z")
-        .with_wait_for(WaitFor::exit(ExitWaitStrategy::new().with_exit_code(0)))
-        .with_network(&minio.network)
-        .with_env_var(
-            "MC_HOST_local",
-            format!("http://{ROOT_ACCESS_KEY}:{ROOT_SECRET_KEY}@{}:9000", minio.name),
-        )
-        .with_cmd(args.iter().copied())
-        .start()
+async fn grant_readonly(versity: &Versity) {
+    exec(
+        &versity.container,
+        [
+            "versitygw".to_owned(),
+            "admin".to_owned(),
+            "-a".to_owned(),
+            ROOT_ACCESS_KEY.to_owned(),
+            "-s".to_owned(),
+            ROOT_SECRET_KEY.to_owned(),
+            "-er".to_owned(),
+            format!("http://127.0.0.1:{S3_PORT}"),
+            "create-user".to_owned(),
+            "-a".to_owned(),
+            READONLY_ACCESS_KEY.to_owned(),
+            "-s".to_owned(),
+            READONLY_SECRET_KEY.to_owned(),
+            "-r".to_owned(),
+            "user".to_owned(),
+        ],
+    )
+    .await;
+    let policy = format!(
+        r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"AWS":["{READONLY_ACCESS_KEY}"]}},"Action":["s3:GetObject","s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::{BUCKET}","arn:aws:s3:::{BUCKET}/*"]}}]}}"#
+    );
+    admin_client(&versity.endpoint)
+        .put_bucket_policy()
+        .bucket(BUCKET)
+        .policy(policy)
+        .send()
         .await
         .unwrap();
-    assert_eq!(container.exit_code().await.unwrap(), Some(0));
 }
 
 #[cfg(feature = "container-tests")]
@@ -803,11 +836,11 @@ where
 }
 
 #[cfg(feature = "container-tests")]
-async fn toxiproxy(minio: &Minio) -> Toxiproxy {
+async fn toxiproxy(versity: &Versity) -> Toxiproxy {
     let container = GenericImage::new("ghcr.io/shopify/toxiproxy", "2.12.0")
         .with_wait_for(WaitFor::message_on_stdout("Starting Toxiproxy HTTP server"))
         .with_mapped_port(0, 8_666.tcp())
-        .with_network(&minio.network)
+        .with_network(&versity.network)
         .with_cmd(["-host=0.0.0.0", "-proxy-metrics"])
         .start()
         .await
@@ -820,7 +853,7 @@ async fn toxiproxy(minio: &Minio) -> Toxiproxy {
             "-l".to_owned(),
             "0.0.0.0:8666".to_owned(),
             "-u".to_owned(),
-            format!("{}:9000", minio.name),
+            format!("{}:{S3_PORT}", versity.name),
             "s3".to_owned(),
         ],
     )
@@ -837,8 +870,8 @@ async fn toxiproxy(minio: &Minio) -> Toxiproxy {
 #[cfg(feature = "container-tests")]
 #[tokio::test]
 async fn test_s3_container_toxiproxy_publishes_only_the_data_port() {
-    let minio = minio().await;
-    let toxiproxy = toxiproxy(&minio).await;
+    let versity = versity().await;
+    let toxiproxy = toxiproxy(&versity).await;
     let ports = toxiproxy.container.ports().await.unwrap();
     let data_port = toxiproxy.endpoint.rsplit_once(':').unwrap().1.parse().unwrap();
 
@@ -1668,7 +1701,7 @@ async fn test_s3_failed_abort_preserves_the_upload_for_recovery() {
 
 #[cfg(feature = "container-tests")]
 struct InterruptedUpload {
-    minio: Minio,
+    versity: Versity,
     toxiproxy: Toxiproxy,
     staging: tempfile::TempDir,
     key: String,
@@ -1677,8 +1710,8 @@ struct InterruptedUpload {
 
 #[cfg(feature = "container-tests")]
 async fn interrupted_upload() -> InterruptedUpload {
-    let minio = minio().await;
-    let toxiproxy = toxiproxy(&minio).await;
+    let versity = versity().await;
+    let toxiproxy = toxiproxy(&versity).await;
     exec(
         &toxiproxy.container,
         [
@@ -1708,7 +1741,7 @@ async fn interrupted_upload() -> InterruptedUpload {
     .spawn()
     .unwrap();
     process.stdout = Some(wait_for_child_signal(&mut process, JOURNAL_WRITTEN).await);
-    let upload = admin_client(&minio.endpoint)
+    let upload = admin_client(&versity.endpoint)
         .list_multipart_uploads()
         .bucket(BUCKET)
         .send()
@@ -1749,7 +1782,7 @@ async fn interrupted_upload() -> InterruptedUpload {
             .unwrap(),
     );
     assert!(
-        admin_client(&minio.endpoint)
+        admin_client(&versity.endpoint)
             .list_parts()
             .bucket(BUCKET)
             .key(&key)
@@ -1762,7 +1795,7 @@ async fn interrupted_upload() -> InterruptedUpload {
             .is_empty()
     );
     InterruptedUpload {
-        minio,
+        versity,
         toxiproxy,
         staging,
         key,
@@ -1796,7 +1829,7 @@ async fn resume_upload(upload: &InterruptedUpload) {
 
 #[cfg(feature = "container-tests")]
 async fn abort_upload(upload: &InterruptedUpload) {
-    admin_client(&upload.minio.endpoint)
+    admin_client(&upload.versity.endpoint)
         .abort_multipart_upload()
         .bucket(BUCKET)
         .key(&upload.key)
@@ -1942,11 +1975,11 @@ async fn wait_for_child_signal(process: &mut tokio::process::Child, expected: &s
 
 #[cfg(feature = "container-tests")]
 async fn trickling_stream() {
-    let minio = minio().await;
+    let versity = versity().await;
     let bytes = vec![0x5a; STREAM_BYTES];
     let digest = Digest::of(&bytes);
-    let config = S3Config::new(settings(minio.endpoint.clone())).unwrap();
-    admin_client(&minio.endpoint)
+    let config = S3Config::new(settings(versity.endpoint.clone())).unwrap();
+    admin_client(&versity.endpoint)
         .put_object()
         .bucket(BUCKET)
         .key(config.key_for(digest.as_str()))
@@ -1954,7 +1987,7 @@ async fn trickling_stream() {
         .send()
         .await
         .unwrap();
-    let toxiproxy = toxiproxy(&minio).await;
+    let toxiproxy = toxiproxy(&versity).await;
     exec(
         &toxiproxy.container,
         [
@@ -1975,7 +2008,7 @@ async fn trickling_stream() {
     .await;
     let staging = tempfile::tempdir().unwrap();
     collect_stream(opened_stream_child(&toxiproxy.endpoint, staging.path(), "stream_trickle").await).await;
-    drop(minio);
+    drop(versity);
 }
 
 #[cfg(feature = "container-tests")]
@@ -2061,11 +2094,11 @@ impl StreamInterruption {
 #[cfg(feature = "container-tests")]
 #[tokio::test]
 async fn test_s3_container_uses_the_default_credential_chain() {
-    let minio = minio().await;
+    let versity = versity().await;
     let staging = tempfile::tempdir().unwrap();
     assert_child_succeeded(
         &child(
-            &minio.endpoint,
+            &versity.endpoint,
             staging.path(),
             "health",
             ROOT_ACCESS_KEY,
@@ -2073,51 +2106,36 @@ async fn test_s3_container_uses_the_default_credential_chain() {
         )
         .await,
     );
-    drop(minio);
+    drop(versity);
 }
 
 #[cfg(feature = "container-tests")]
 #[tokio::test]
 async fn test_s3_container_surfaces_invalid_credentials() {
-    let minio = minio().await;
+    let versity = versity().await;
     let staging = tempfile::tempdir().unwrap();
-    assert_child_succeeded(&child(&minio.endpoint, staging.path(), "invalid", "invalid", "invalid-secret").await);
-    drop(minio);
+    assert_child_succeeded(
+        &child(
+            &versity.endpoint,
+            staging.path(),
+            "invalid",
+            "invalid",
+            "invalid-secret",
+        )
+        .await,
+    );
+    drop(versity);
 }
 
 #[cfg(feature = "container-tests")]
 #[tokio::test]
 async fn test_s3_container_surfaces_a_valid_readonly_principal() {
-    let minio = minio().await;
-    run_mc(
-        &minio,
-        &[
-            "admin",
-            "user",
-            "add",
-            "local",
-            READONLY_ACCESS_KEY,
-            READONLY_SECRET_KEY,
-        ],
-    )
-    .await;
-    run_mc(
-        &minio,
-        &[
-            "admin",
-            "policy",
-            "attach",
-            "local",
-            "readonly",
-            "--user",
-            READONLY_ACCESS_KEY,
-        ],
-    )
-    .await;
+    let versity = versity().await;
+    grant_readonly(&versity).await;
     let staging = tempfile::tempdir().unwrap();
     assert_child_succeeded(
         &child(
-            &minio.endpoint,
+            &versity.endpoint,
             staging.path(),
             "readonly",
             READONLY_ACCESS_KEY,
@@ -2125,7 +2143,7 @@ async fn test_s3_container_surfaces_a_valid_readonly_principal() {
         )
         .await,
     );
-    drop(minio);
+    drop(versity);
 }
 
 #[tokio::test]
@@ -2193,7 +2211,7 @@ async fn test_s3_container_recovery_aborts_an_upload_no_commit_returns_for() {
 
     assert!(!multipart_journal(upload.staging.path()).exists());
     assert!(
-        admin_client(&upload.minio.endpoint)
+        admin_client(&upload.versity.endpoint)
             .list_multipart_uploads()
             .bucket(BUCKET)
             .send()
@@ -2622,8 +2640,8 @@ async fn test_s3_reports_a_structural_journal_cleanup_failure(#[case] point: Jou
 #[cfg(feature = "container-tests")]
 #[tokio::test]
 async fn test_s3_container_refuses_a_conflict_over_foreign_bytes() {
-    let minio = minio().await;
-    admin_client(&minio.endpoint)
+    let versity = versity().await;
+    admin_client(&versity.endpoint)
         .put_object()
         .bucket(BUCKET)
         .key(format!("cache/sha256/{}", Digest::of(b"expected").as_str()))
@@ -2635,7 +2653,7 @@ async fn test_s3_container_refuses_a_conflict_over_foreign_bytes() {
 
     assert_child_succeeded(
         &child(
-            &minio.endpoint,
+            &versity.endpoint,
             staging.path(),
             "foreign",
             ROOT_ACCESS_KEY,
@@ -2643,17 +2661,17 @@ async fn test_s3_container_refuses_a_conflict_over_foreign_bytes() {
         )
         .await,
     );
-    drop(minio);
+    drop(versity);
 }
 
 #[cfg(feature = "container-tests")]
 #[tokio::test]
 async fn test_s3_container_coordinates_simultaneous_multipart_acquisition() {
-    let minio = minio().await;
+    let versity = versity().await;
     let staging = tempfile::tempdir().unwrap();
     assert_child_succeeded(
         &child(
-            &minio.endpoint,
+            &versity.endpoint,
             staging.path(),
             "concurrent",
             ROOT_ACCESS_KEY,
@@ -2661,7 +2679,7 @@ async fn test_s3_container_coordinates_simultaneous_multipart_acquisition() {
         )
         .await,
     );
-    drop(minio);
+    drop(versity);
 }
 
 #[cfg(feature = "container-tests")]

@@ -116,8 +116,8 @@ Browser recipes install their checksum-verified Chrome for Testing revision from
 Chrome for Testing ships no Linux ARM or Windows ARM builds, so `mise.browser.lock` covers the four platforms it does
 publish.
 
-`just test` is hermetic. `just storage-s3` and `just coverage-native` require a running Docker daemon for the MinIO
-boundary tests.
+`just test` is hermetic. `just storage-s3` and `just coverage-native` require a running Docker daemon for the Versity S3
+Gateway boundary tests.
 
 Nightly commands are local too:
 
