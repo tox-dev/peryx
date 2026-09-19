@@ -569,6 +569,23 @@ async fn browse_http_browses_the_archive_of_an_active_project(#[case] suffix: &s
     assert!(body.contains(expected));
 }
 
+#[tokio::test]
+async fn browse_http_names_the_archive_in_the_member_pages_breadcrumbs() {
+    let (_directory, state, archive) = archive_browser_app(None);
+
+    let (status, _, body) = send(state, Method::GET, &format!("{archive}&member=README.txt"), None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let page: BrowsePage = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        page.breadcrumbs
+            .iter()
+            .map(|link| link.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pypi", "flask", WHEEL]
+    );
+}
+
 /// A cached index publishing one wheel of `flask` at `status`, its bytes already in the blob store,
 /// and the `/browse` URL of that wheel's archive.
 fn archive_browser_app(status: Option<&str>) -> (tempfile::TempDir, Arc<AppState>, String) {

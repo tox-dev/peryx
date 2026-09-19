@@ -209,6 +209,30 @@ async fn test_online_purge_preview_counts_without_removing() {
 }
 
 #[tokio::test]
+async fn test_online_purge_preview_leaves_the_cached_render_untouched() {
+    let h = harness().await;
+    cached_flask(&h).await;
+    let key = h
+        .state
+        .serving
+        .representation_key("pypi", "flask", crate::cache::SIMPLE_JSON);
+    h.state
+        .serving
+        .cache
+        .store_hot(key.clone(), bytes::Bytes::from_static(b"cached render"), i64::MAX);
+    h.state.serving.cache.hot.run_pending_tasks();
+
+    cache::purge_served_project(&h.state.serving, "pypi", "flask", false)
+        .await
+        .unwrap();
+
+    assert!(
+        h.state.serving.hot_fresh(&key).is_some(),
+        "a dry run must not invalidate the cached render"
+    );
+}
+
+#[tokio::test]
 async fn test_online_purge_of_an_undecodable_page_keeps_the_row() {
     let h = harness().await;
     cached_flask(&h).await;

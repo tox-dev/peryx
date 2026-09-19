@@ -171,6 +171,12 @@ async fn test_browser_upload_derives_legacy_fields_and_publishes() {
     let uploads = h.state.serving.meta.list_upload_entries("hosted", "peryxpkg").unwrap();
     assert_eq!(uploads.len(), 1);
     assert_eq!(uploads[0].0, filename);
+    let uploaded: crate::upload::Uploaded = serde_json::from_slice(&uploads[0].1).unwrap();
+    assert_eq!(
+        uploaded.file.requires_python.as_deref(),
+        Some(">=3.8"),
+        "a non-derived field must still be captured in browser mode"
+    );
 }
 
 #[tokio::test]
@@ -1471,6 +1477,48 @@ async fn test_upload_large_text_field_is_bad_request() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("upload field \"name\" exceeds 65536 bytes"));
 }
+#[tokio::test]
+async fn test_upload_admits_a_text_field_within_the_real_64kib_limit() {
+    let h = harness().await;
+    let value = "x".repeat(2_000);
+    let fields = [("license_file", value.as_str())];
+    let (ct, body) = multipart_body(&fields, None);
+
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await;
+
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "missing required field: content"),
+        "a 2,000-byte field must have been admitted, not rejected as too large"
+    );
+}
+#[tokio::test]
+async fn test_upload_admits_a_declared_content_length_exactly_at_the_size_limit() {
+    let hosted_policy = policy(|neutral, _pypi| {
+        neutral.max_artifact_size_bytes = Some(2);
+    });
+    let h = harness_with_policies(true, true, Policy::default(), hosted_policy, Policy::default()).await;
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        b"--b\r\nContent-Disposition: form-data; name=\"content\"; filename=\"peryxpkg-1.0-py3-none-any.whl\"\r\n\
+          Content-Length: 2\r\n\r\nab\r\n--b--\r\n",
+    );
+
+    let (status, body) = post_upload_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        "multipart/form-data; boundary=b",
+        body,
+    )
+    .await;
+
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a declared size exactly at the limit must pass the early size check: {body}"
+    );
+}
 #[rstest]
 #[case::at_limit(32, "missing required field: content")]
 #[case::over_limit(33, "bad upload: upload text fields exceed 2097152 bytes")]
@@ -1523,6 +1571,19 @@ async fn test_upload_bounds_multipart_parts() {
             "bad upload: upload has more than 256 parts".to_owned(),
         )
     );
+}
+#[tokio::test]
+async fn test_upload_admits_exactly_the_part_ceiling() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let mut fields = upload_fields();
+    let filler = vec![("ignored", ""); 250];
+    fields.extend(filler);
+    let (content_type, body) = multipart_body(&fields, Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)));
+
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
 }
 
 async fn post_text_fields(state: &Arc<AppState>, fields: &[(&str, &str)]) -> (StatusCode, String) {

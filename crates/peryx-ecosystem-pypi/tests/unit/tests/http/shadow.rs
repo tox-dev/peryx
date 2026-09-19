@@ -181,6 +181,22 @@ async fn test_private_first_shadows_every_cached_candidate_when_hosted_is_presen
 }
 
 #[tokio::test]
+async fn test_private_first_keeps_the_cached_candidate_when_no_hosted_member_has_files() {
+    let harness = overlay_harness(FallbackMode::PrivateFirst).await;
+    mount_acme(&harness).await;
+    warm_cache(&harness, "acme-pkg").await;
+
+    let (status, page) = candidates(&harness, "root/pypi", "acme-pkg").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        rows(&page),
+        vec![("pypi", HOSTED_FILE, true, None), ("pypi", CACHED_FILE, true, None),],
+        "with nothing hosted to prefer, private-first still serves the cache"
+    );
+}
+
+#[tokio::test]
 async fn test_a_cache_below_a_nested_member_is_recorded_as_a_cached_candidate() {
     let harness = nested_harness(policy(|_, pypi| pypi.fallback_mode = FallbackMode::PrivateFirst)).await;
     mount_acme(&harness).await;

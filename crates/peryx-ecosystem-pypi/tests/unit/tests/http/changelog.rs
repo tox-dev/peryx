@@ -166,6 +166,39 @@ async fn test_changelog_rejects_the_body_before_parsing_past_the_limit() {
 }
 
 #[tokio::test]
+async fn test_changelog_reads_a_body_within_the_real_64kib_limit() {
+    let h = harness().await;
+
+    let (status, _, body) = post_xml(&h.state, "/RPC2", vec![b'x'; 2_000], None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("<int>-32700</int>"),
+        "the body must have been read whole and only then rejected as malformed XML: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_changelog_ignores_a_non_hosted_indexs_acl() {
+    let h = harness().await;
+    let Harness { state, .. } = h;
+    let mut state = Arc::try_unwrap(state).ok().unwrap();
+    // The cached "pypi" index at position 0 would deny everyone, including anonymous, if its ACL were
+    // ever consulted here - only the hosted index's ACL is meant to gate this endpoint.
+    Arc::get_mut(&mut state.serving).unwrap().indexes[0].acl = IndexAcl {
+        anonymous_read: false,
+        tokens: Vec::new(),
+    };
+    let state = Arc::new(state);
+
+    assert_eq!(
+        post_xml(&state, "/RPC2", LAST_SERIAL, None).await.0,
+        StatusCode::OK,
+        "a cached (non-hosted) index's ACL must never be consulted"
+    );
+}
+
+#[tokio::test]
 async fn test_changelog_requires_catalog_read_access() {
     let state = state_with_hosted_acl(read_acl("*")).await;
     let auth = format!("Basic {}", STANDARD.encode("mirror:read-secret"));

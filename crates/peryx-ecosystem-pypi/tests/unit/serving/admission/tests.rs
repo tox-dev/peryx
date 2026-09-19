@@ -216,6 +216,92 @@ fn test_admit_still_stages_while_backpressured_below_the_hard_bound() {
 }
 
 #[test]
+fn test_staging_limits_retains_up_to_64_gib_per_authority() {
+    assert_eq!(STAGING_LIMITS.max_bytes, 64 * 1024 * 1024 * 1024);
+}
+
+#[test]
+fn test_admit_warns_only_when_backpressure_actually_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = meta(&dir);
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(capture.clone())
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        // Nowhere near the 80% soft threshold of the crate-wide limits.
+        admit(
+            &meta,
+            DurabilityCapabilities::FILESYSTEM,
+            STAGING_LIMITS,
+            &request("nominal.whl", "aa"),
+            10,
+        )
+    });
+
+    assert!(
+        !capture.text().contains("ingress admission backpressured"),
+        "{}",
+        capture.text()
+    );
+
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(capture.clone())
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        // One record against a ceiling of two already sits at the 80% soft threshold.
+        admit(
+            &meta,
+            DurabilityCapabilities::FILESYSTEM,
+            limits(2, 1 << 20),
+            &request("pressured.whl", "bb"),
+            10,
+        )
+    });
+
+    assert!(
+        capture.text().contains("ingress admission backpressured"),
+        "{}",
+        capture.text()
+    );
+}
+
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Capture {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Capture {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[test]
 fn test_admit_bounds_each_authority_independently() {
     let dir = tempfile::tempdir().unwrap();
     let meta = meta(&dir);

@@ -73,6 +73,18 @@ async fn test_inspect_legacy_member_rejects_invalid_encoding() {
     assert!(body.contains("invalid percent-encoded path segment"));
 }
 #[tokio::test]
+async fn test_inspect_path_style_member_is_ignored_when_a_container_is_given() {
+    let h = harness().await;
+    let digest = upload_wheel(&h.state, "peryxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;
+    let uri = format!(
+        "/hosted/inspect/{}/peryxpkg-1.0-py3-none-any.whl/peryxpkg-1.0.dist-info/METADATA?container=inner.zip",
+        digest.as_str()
+    );
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("invalid artifact name"), "{body}");
+}
+#[tokio::test]
 async fn test_inspect_missing_member_is_not_found() {
     let h = harness().await;
     let digest = upload_wheel(&h.state, "peryxpkg-1.0-py3-none-any.whl", &fixture_wheel()).await;

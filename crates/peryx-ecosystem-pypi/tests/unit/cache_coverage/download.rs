@@ -441,3 +441,96 @@ async fn test_tail_errors_when_the_pump_vanishes_without_a_verdict() {
         .unwrap_err();
     assert!(err.to_string().contains("abandoned"));
 }
+
+fn channel_stream() -> (
+    tokio::sync::mpsc::UnboundedSender<Result<Bytes, peryx_upstream::UpstreamError>>,
+    impl futures_util::Stream<Item = Result<Bytes, peryx_upstream::UpstreamError>>,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    (tx, futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx)))
+}
+
+/// A short, bounded wait to observe that a watched value has settled without a further change. The
+/// flush this guards runs real file I/O on the blocking pool, so there is no virtual-clock or
+/// cooperative-yield primitive that reaches quiescence without letting real time pass.
+const NO_FURTHER_CHANGE: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[tokio::test]
+async fn test_drain_to_blob_flushes_only_once_flush_every_bytes_accumulate() {
+    let h = harness().await;
+    let state = h.state.serving.clone();
+    let digest = Digest::of(b"flush-threshold-target");
+    let pending = state.blobs.begin().await.unwrap();
+    let (mut handle, producer) = state.downloads.register(digest.as_str(), pending.tail()).unwrap();
+    let (tx, body) = channel_stream();
+
+    let drain = tokio::spawn(async move {
+        let mut pending = pending;
+        drain_to_blob(body, &mut pending, &producer).await
+    });
+
+    // Under the real 256 KiB threshold this alone must not trigger a flush.
+    tx.send(Ok(Bytes::from(vec![0u8; 5_000]))).unwrap();
+    let mut progress = handle.progress().clone();
+    assert!(
+        tokio::time::timeout(NO_FURTHER_CHANGE, progress.changed())
+            .await
+            .is_err()
+    );
+    assert_eq!(handle.progress().borrow_and_update().flushed, 0);
+
+    // Crossing the real threshold flushes exactly the bytes written so far.
+    tx.send(Ok(Bytes::from(vec![0u8; 260_000]))).unwrap();
+    progress.changed().await.unwrap();
+    assert_eq!(progress.borrow_and_update().flushed, 265_000);
+
+    // A small chunk after that flush must not cross the threshold again.
+    tx.send(Ok(Bytes::from(vec![0u8; 100]))).unwrap();
+    assert!(
+        tokio::time::timeout(NO_FURTHER_CHANGE, progress.changed())
+            .await
+            .is_err()
+    );
+    assert_eq!(handle.progress().borrow_and_update().flushed, 265_000);
+
+    drop(tx);
+    drain.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn test_tail_never_reads_past_the_published_flushed_boundary() {
+    let h = harness().await;
+    let digest = Digest::of(b"tail-boundary-target");
+    let mut pending = h.state.serving.blobs.begin().await.unwrap();
+    let body = vec![7u8; 300_000];
+    pending.write_chunk(Bytes::from(body.clone())).await.unwrap();
+    pending.flush().await.unwrap();
+    let progress = DownloadProgress {
+        flushed: 50_000,
+        done: None,
+    };
+    let (handle, sender) = handle_with(pending.tail().unwrap(), progress);
+    let mut stream = tail_download(
+        h.state.serving.clone(),
+        "pypi".to_owned(),
+        digest,
+        handle,
+        "pypi".to_owned(),
+        "tail.whl".to_owned(),
+    );
+
+    let first = stream.next().await.unwrap().unwrap();
+    assert_eq!(first.len(), 50_000);
+    assert_eq!(&first[..], &body[..50_000]);
+
+    sender.send_modify(|progress| progress.flushed = 120_000);
+    let second = stream.next().await.unwrap().unwrap();
+    assert_eq!(
+        second.len(),
+        70_000,
+        "must stop at the published boundary, not the file's true length"
+    );
+    assert_eq!(&second[..], &body[50_000..120_000]);
+
+    drop(sender);
+}

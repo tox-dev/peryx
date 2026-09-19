@@ -4,6 +4,44 @@ use crate::{Provenance, Yanked};
 
 use super::*;
 
+fn detail(status: Option<&str>, reason: &str) -> ProjectDetail {
+    ProjectDetail {
+        meta: Meta {
+            project_status: status.map(str::to_owned),
+            project_status_reason: Some(reason.to_owned()),
+            ..Meta::default()
+        },
+        name: "pkg".to_owned(),
+        versions: Vec::new(),
+        files: Vec::new(),
+    }
+}
+
+#[test]
+fn test_merge_candidates_keeps_the_first_status_of_equal_severity() {
+    let merged = merge_candidates(
+        "pkg",
+        vec![
+            (0, detail(Some("quarantined"), "first")),
+            (1, detail(Some("quarantined"), "second")),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(merged.meta.project_status_reason.as_deref(), Some("first"));
+}
+
+#[test]
+fn test_merge_candidates_prefers_the_more_severe_status() {
+    let merged = merge_candidates(
+        "pkg",
+        vec![(0, detail(None, "active")), (1, detail(Some("archived"), "archived"))],
+    )
+    .unwrap();
+
+    assert_eq!(merged.meta.project_status.as_deref(), Some("archived"));
+}
+
 #[test]
 fn test_present_file_advertises_cached_generated_metadata() {
     let artifact = "a".repeat(64);

@@ -56,6 +56,11 @@ async fn test_live_stream_survives_a_persistence_error() {
             Some((Bytes::copy_from_slice(page.as_bytes()), None)),
         ),
     );
+    // fetched at the fixed clock (1000) with a 60s ttl: real expiry is 1060, not `1000 * 60`.
+    assert!(
+        state.cache.hot_fresh_versioned(&representation_key, 1060).is_none(),
+        "the streamed render must have actually expired at fetched_at + ttl"
+    );
 }
 
 #[tokio::test]
@@ -65,13 +70,25 @@ async fn test_complete_preflight_returns_a_ready_page() {
     let page = r#"{"name":"flask"}"#;
     mount_page(&server, page).await;
     let state = writable_state(&dir, &server);
+    let representation_key = state.representation_key("pypi", "flask", crate::cache::SIMPLE_JSON);
 
-    let outcome = crate::cache::stream_detail(state, 0, "flask".to_owned()).await.unwrap();
+    let outcome = crate::cache::stream_detail(state.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
 
     assert!(matches!(
         streaming_parts(outcome),
         Err(PageOutcome::Ready(bytes, None)) if bytes == page
     ));
+    // fetched at the fixed clock (1000) with a 60s ttl: real expiry is 1060, not `1000 * 60`.
+    assert!(
+        state.cache.hot_fresh_versioned(&representation_key, 1000).is_some(),
+        "the render must still be fresh at the moment it was cached"
+    );
+    assert!(
+        state.cache.hot_fresh_versioned(&representation_key, 1060).is_none(),
+        "the render must have actually expired at fetched_at + ttl, not stayed fresh indefinitely"
+    );
 }
 
 async fn mount_page(server: &MockServer, body: &str) {

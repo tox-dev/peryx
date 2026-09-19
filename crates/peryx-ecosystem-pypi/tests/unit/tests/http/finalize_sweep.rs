@@ -112,6 +112,9 @@ async fn test_a_sweep_finalizes_a_pending_admitted_upload() {
         .unwrap();
     assert_eq!(record.state, OperationState::Published);
     assert_eq!(record.response, b"upload accepted");
+    // The fixed clock (1000) plus the real 24h retention window (86400s), not `1000 - 86400` or
+    // `1000 * 86400`.
+    assert_eq!(record.expiry_unix, Some(87_400));
 }
 
 #[tokio::test]

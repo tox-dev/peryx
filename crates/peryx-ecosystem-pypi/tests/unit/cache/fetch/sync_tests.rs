@@ -12,7 +12,7 @@ use super::{
     publish_project_response, sync_project_files, write_project_chunk,
 };
 use crate::SimpleClientExt as _;
-use crate::simple::{CoreMetadata, File, Provenance, Yanked};
+use crate::simple::{CoreMetadata, DetailSink as _, File, Provenance, Yanked};
 use crate::simple_client::CachedValidators;
 use crate::store::PypiStore as _;
 use crate::store::{
@@ -690,6 +690,57 @@ async fn test_sync_rejects_a_declared_oversize_body() {
 
     assert!(matches!(error, ProjectSyncError::TooLarge));
     assert!(active_project_generation(&meta, "pypi", "flask").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_sync_admits_a_declared_length_exactly_at_the_byte_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"meta":{"api-version":"1.1"},"name":"flask","versions":[],"files":[]}"#,
+            JSON,
+        ))
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+    let mut head = client.head_project("flask", CachedValidators::default()).await.unwrap();
+    head.content_length = Some(MAX_PROJECT_BYTES);
+
+    let outcome = publish_project_response(&meta, "pypi", &Policy::default(), "flask", client.base_url(), head, 1)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, ProjectSyncOutcome::Published { files: 0 });
+}
+
+#[test]
+fn test_file_batcher_admits_exactly_max_files_before_refusing_the_next() {
+    let (_dir, meta) = store();
+    let (id, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
+    let policy = Policy::default();
+    let mut batcher = super::FileBatcher::new(&meta, "pypi", "flask", &policy, id, None, 2);
+
+    batcher.file(file("a.whl", &"a".repeat(64))).unwrap();
+    batcher.file(file("b.whl", &"b".repeat(64))).unwrap();
+    let admitted = batcher.finish().unwrap();
+
+    assert_eq!(admitted, 2);
+}
+
+#[test]
+fn test_file_batcher_rejects_the_file_beyond_max_files() {
+    let (_dir, meta) = store();
+    let (id, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
+    let policy = Policy::default();
+    let mut batcher = super::FileBatcher::new(&meta, "pypi", "flask", &policy, id, None, 2);
+    batcher.file(file("a.whl", &"a".repeat(64))).unwrap();
+    batcher.file(file("b.whl", &"b".repeat(64))).unwrap();
+
+    let error = batcher.file(file("c.whl", &"c".repeat(64))).unwrap_err();
+
+    assert!(matches!(error, ProjectSyncError::TooManyFiles));
 }
 
 #[tokio::test]

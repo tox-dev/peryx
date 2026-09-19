@@ -22,7 +22,7 @@ const FILENAME: &str = "demo-1.0-py3-none-any.whl";
 
 #[tokio::test]
 async fn project_page_converts_metadata_lifecycle_and_provenance() {
-    let (_directory, state) = rich_project();
+    let (_directory, state) = rich_project(stored_provenance);
     let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let page = PypiServing
         .browse(BrowseRequest {
@@ -102,7 +102,7 @@ async fn project_page_converts_metadata_lifecycle_and_provenance() {
 
 #[tokio::test]
 async fn project_page_supports_substring_filters() {
-    let (_directory, state) = rich_project();
+    let (_directory, state) = rich_project(stored_provenance);
     let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let page = PypiServing
         .browse(BrowseRequest {
@@ -124,7 +124,7 @@ async fn project_page_supports_substring_filters() {
 
 #[tokio::test]
 async fn project_page_rejects_invalid_filename_regexes() {
-    let (_directory, state) = rich_project();
+    let (_directory, state) = rich_project(stored_provenance);
     let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let error = PypiServing
         .browse(BrowseRequest {
@@ -143,7 +143,48 @@ async fn project_page_rejects_invalid_filename_regexes() {
     );
 }
 
-fn rich_project() -> (tempfile::TempDir, Arc<AppState>) {
+#[tokio::test]
+async fn project_page_reads_a_provenance_bundle_up_to_the_real_byte_limit() {
+    let (_directory, state) = rich_project(padded_provenance);
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
+
+    let page = PypiServing
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: "index=hosted&project=demo".to_owned(),
+            access: &access,
+            base: None,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(matches!(
+        &page.sections[6],
+        BrowseSection::Table { heading, rows, .. }
+            if heading == "Files"
+                && rows[0].badges.iter().any(|badge| {
+                    badge.label == "hosted provenance" && badge.class == "provenance-valid"
+                })
+    ));
+}
+
+fn padded_provenance(artifact: &str) -> Vec<u8> {
+    let mut bundle = serde_json::to_value(serde_json::json!({
+        "version": 1,
+        "attestation_bundles": [{
+            "publisher": null,
+            "attestations": [attestation(Some(&statement(FILENAME, artifact, "matched")))],
+        }],
+    }))
+    .unwrap();
+    // Larger than the mutant's shrunk read cap (~2,050 bytes) but well under the real 2 MiB one.
+    bundle["padding"] = serde_json::json!("x".repeat(5_000));
+    serde_json::to_vec(&bundle).unwrap()
+}
+
+fn rich_project(provenance_for: impl FnOnce(&str) -> Vec<u8>) -> (tempfile::TempDir, Arc<AppState>) {
     let directory = tempfile::tempdir().unwrap();
     let mut state = AppState::new(
         MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
@@ -175,7 +216,7 @@ fn rich_project() -> (tempfile::TempDir, Arc<AppState>) {
         .put_metadata(artifact.as_str(), metadata_digest.as_str())
         .unwrap();
 
-    let provenance = stored_provenance(artifact.as_str());
+    let provenance = provenance_for(artifact.as_str());
     let provenance_digest = Digest::of(&provenance);
     state
         .serving

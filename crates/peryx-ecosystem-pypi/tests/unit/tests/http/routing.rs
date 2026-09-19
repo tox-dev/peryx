@@ -209,6 +209,18 @@ async fn test_project_list_html() {
     "application/vnd.pypi.simple.v1+json"
 )]
 #[case::empty_media_range(Some(";q=1, application/json;q=0.5"), "application/vnd.pypi.simple.v1+json")]
+#[case::later_duplicate_range_never_lowers_an_earlier_higher_quality(
+    Some("application/json;q=0.8, application/json;q=0.1, text/html;q=0.5"),
+    "application/vnd.pypi.simple.v1+json"
+)]
+#[case::wildcard_range_cannot_outrank_an_earlier_exact_match(
+    Some("application/vnd.pypi.simple.v1+json;q=0.1, application/*;q=0.9"),
+    "text/html; charset=utf-8"
+)]
+#[case::two_digit_fraction_quality(
+    Some("application/json;q=0.85, text/html;q=0.6"),
+    "application/vnd.pypi.simple.v1+json"
+)]
 #[tokio::test]
 async fn test_simple_negotiation_selects_supported_representation(
     #[case] accept: Option<&str>,

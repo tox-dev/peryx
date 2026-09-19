@@ -870,6 +870,65 @@ async fn test_promote_charges_no_quota_for_a_file_it_skips() {
     );
 }
 
+/// A re-promotion that publishes nothing has nothing new to serve, so the render a prior read cached
+/// must survive it untouched rather than being retired for no reason.
+#[tokio::test]
+async fn test_promote_leaves_the_cached_render_untouched_when_it_publishes_nothing() {
+    let h = authority_promotion_harness().await;
+    let wheel = fixture_wheel();
+    upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &wheel).await;
+    let auth = upload_auth();
+    request_response(&h.state, "PUT", "/prod/peryxpkg/1.0/promote?from=staging", Some(&auth)).await;
+    let key = h
+        .state
+        .serving
+        .representation_key("prod", "peryxpkg", crate::cache::SIMPLE_JSON);
+    h.state
+        .serving
+        .cache
+        .store_hot(key.clone(), bytes::Bytes::from_static(b"cached render"), i64::MAX);
+    h.state.serving.cache.hot.run_pending_tasks();
+
+    let (status, body) =
+        request_response(&h.state, "PUT", "/prod/peryxpkg/1.0/promote?from=staging", Some(&auth)).await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 0 file(s)"));
+    assert!(
+        h.state.serving.hot_fresh(&key).is_some(),
+        "promoting nothing new must not invalidate the target's cached render"
+    );
+}
+
+/// An audit-mode required-attestation rule records what it would have blocked without blocking it, the
+/// same treatment a direct upload gets; a promotion must not turn that recorded observation into a
+/// refusal it would not have faced on upload.
+#[tokio::test]
+async fn test_promote_does_not_block_on_an_audit_mode_attestation_denial() {
+    let h = promotion_harness_with_target_policy(policy(|_neutral, pypi| {
+        pypi.required_attestations = vec!["https://docs.pypi.org/attestations/publish/v1".to_owned()];
+        pypi.attestation_mode = crate::policy::AttestationMode::Audit;
+    }))
+    .await;
+    upload_wheel_to(
+        &h.state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 1 file(s)"));
+}
+
 /// A target that refuses one file of a release publishes none of it, and accounts for none of it. Half
 /// a release is neither the state the caller asked for nor the one they had.
 #[tokio::test]
