@@ -4,8 +4,8 @@ use rstest::rstest;
 use crate::model::{TrashFilters, UiTrashPage};
 
 use super::{
-    Trash, TrashFilterField, TrashState, next_cursor, next_disabled, previous_disabled, set_text, trash_page,
-    trash_results, update_filter,
+    Trash, TrashFilterField, TrashState, TrashUi, next_cursor, next_disabled, next_page, previous_disabled,
+    previous_page, run_query, set_text, submit_query, trash_page, trash_results, update_filter,
 };
 
 #[test]
@@ -124,22 +124,140 @@ fn trash_update_filter_changes_only_the_named_field(#[case] field: TrashFilterFi
     assert_eq!(filters.get_untracked(), expected);
 }
 
+#[test]
+fn trash_submit_query_restarts_paging_with_the_typed_filters() {
+    let owner = Owner::new();
+    owner.set();
+    let typed = TrashFilters {
+        repository: "fresh".to_owned(),
+        ..TrashFilters::default()
+    };
+    let state = seeded(
+        typed.clone(),
+        Some("page-3"),
+        vec![None, Some("page-2".to_owned())],
+        false,
+        None,
+    );
+
+    submit_query(state);
+
+    assert_eq!(
+        (
+            state.active.get_untracked(),
+            state.cursor.get_untracked(),
+            state.previous.get_untracked()
+        ),
+        (typed, None, Vec::new())
+    );
+}
+
+#[rstest]
+#[case::more_pages(Some("page-2"), Some("page-2"), vec![None, Some("page-1".to_owned())])]
+#[case::last_page(None, Some("page-1"), vec![None])]
+fn trash_next_page_advances_only_onto_a_known_cursor(
+    #[case] next: Option<&str>,
+    #[case] cursor: Option<&str>,
+    #[case] previous: Vec<Option<String>>,
+) {
+    let owner = Owner::new();
+    owner.set();
+    let state = paging(Some("page-1"), vec![None], next);
+
+    next_page(state);
+
+    assert_eq!(
+        (state.cursor.get_untracked(), state.previous.get_untracked()),
+        (cursor.map(str::to_owned), previous)
+    );
+}
+
+#[rstest]
+#[case::back_to_a_later_page(vec![None, Some("page-1".to_owned())], Some("page-1"), vec![None])]
+#[case::back_to_the_first_page(vec![None], None, Vec::new())]
+#[case::no_history(Vec::new(), Some("page-2"), Vec::new())]
+fn trash_previous_page_pops_the_last_visited_cursor(
+    #[case] history: Vec<Option<String>>,
+    #[case] cursor: Option<&str>,
+    #[case] previous: Vec<Option<String>>,
+) {
+    let owner = Owner::new();
+    owner.set();
+    let state = paging(Some("page-2"), history, None);
+
+    previous_page(state);
+
+    assert_eq!(
+        (state.cursor.get_untracked(), state.previous.get_untracked()),
+        (cursor.map(str::to_owned), previous)
+    );
+}
+
+/// The host build has nothing to fetch with, so a query that started must not leave the page stuck
+/// in its loading state.
+#[test]
+fn trash_run_query_settles_loading_on_the_host() {
+    let owner = Owner::new();
+    owner.set();
+    let state = seeded(TrashFilters::default(), None, Vec::new(), true, None);
+
+    run_query(
+        &TrashFilters::default(),
+        None,
+        "alice".to_owned(),
+        "secret".to_owned(),
+        state.ui,
+    );
+
+    assert_eq!(
+        (state.loading.get_untracked(), state.result.get_untracked()),
+        (false, None)
+    );
+}
+
+fn paging(cursor: Option<&str>, previous: Vec<Option<String>>, next: Option<&str>) -> TrashState {
+    seeded(TrashFilters::default(), cursor, previous, false, Some(Ok(page(next))))
+}
+
 fn state(loading: bool, previous: Vec<Option<String>>, result: Option<Result<UiTrashPage, String>>) -> TrashState {
-    let (active, set_active) = signal(TrashFilters::default());
-    let (cursor, set_cursor) = signal(None);
+    seeded(TrashFilters::default(), None, previous, loading, result)
+}
+
+fn seeded(
+    filters: TrashFilters,
+    cursor: Option<&str>,
+    previous: Vec<Option<String>>,
+    loading: bool,
+    result: Option<Result<UiTrashPage, String>>,
+) -> TrashState {
+    let (active, set_active) = signal(stale());
+    let (cursor, set_cursor) = signal(cursor.map(str::to_owned));
     let (previous, set_previous) = signal(previous);
+    let (result, set_result) = signal(result);
+    let (loading, set_loading) = signal(loading);
     TrashState {
-        user: signal(String::new()).0,
-        password: signal(String::new()).0,
-        filters: signal(TrashFilters::default()).0,
+        user: signal("alice".to_owned()).0,
+        password: signal("secret".to_owned()).0,
+        filters: signal(filters).0,
         active,
         set_active,
         cursor,
         set_cursor,
         previous,
         set_previous,
-        result: signal(result).0,
-        loading: signal(loading).0,
+        result,
+        loading,
+        ui: TrashUi {
+            result: set_result,
+            loading: set_loading,
+        },
+    }
+}
+
+fn stale() -> TrashFilters {
+    TrashFilters {
+        repository: "stale".to_owned(),
+        ..TrashFilters::default()
     }
 }
 

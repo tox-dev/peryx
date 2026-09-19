@@ -4,8 +4,8 @@ use rstest::rstest;
 use crate::model::{AnalyticsFilters, AnalyticsView, UiUsagePage};
 
 use super::{
-    AnalyticsFilterField, AnalyticsState, UsageAnalytics, analytics_results, next_cursor, next_disabled,
-    previous_disabled, set_text, update_filter, usage_page,
+    AnalyticsFilterField, AnalyticsState, AnalyticsUi, UsageAnalytics, analytics_results, next_cursor, next_disabled,
+    next_page, previous_disabled, previous_page, run_query, set_text, submit_query, update_filter, usage_page,
 };
 
 #[test]
@@ -214,22 +214,142 @@ fn analytics_update_filter_changes_only_the_named_field(
     });
 }
 
+#[test]
+fn analytics_submit_query_restarts_paging_with_the_typed_filters() {
+    Owner::new().with(|| {
+        let typed = AnalyticsFilters {
+            repository: "fresh".to_owned(),
+            ..AnalyticsFilters::default()
+        };
+        let state = seeded(
+            typed.clone(),
+            Some("page-3"),
+            vec![None, Some("page-2".to_owned())],
+            false,
+            None,
+        );
+
+        submit_query(state);
+
+        assert_eq!(
+            (
+                state.active.get_untracked(),
+                state.cursor.get_untracked(),
+                state.previous.get_untracked()
+            ),
+            (typed, None, Vec::new())
+        );
+    });
+}
+
+#[rstest]
+#[case::more_pages(Some("page-2"), Some("page-2"), vec![None, Some("page-1".to_owned())])]
+#[case::last_page(None, Some("page-1"), vec![None])]
+fn analytics_next_page_advances_only_onto_a_known_cursor(
+    #[case] next: Option<&str>,
+    #[case] cursor: Option<&str>,
+    #[case] previous: Vec<Option<String>>,
+) {
+    Owner::new().with(|| {
+        let state = paging(Some("page-1"), vec![None], next);
+
+        next_page(state);
+
+        assert_eq!(
+            (state.cursor.get_untracked(), state.previous.get_untracked()),
+            (cursor.map(str::to_owned), previous)
+        );
+    });
+}
+
+#[rstest]
+#[case::back_to_a_later_page(vec![None, Some("page-1".to_owned())], Some("page-1"), vec![None])]
+#[case::back_to_the_first_page(vec![None], None, Vec::new())]
+#[case::no_history(Vec::new(), Some("page-2"), Vec::new())]
+fn analytics_previous_page_pops_the_last_visited_cursor(
+    #[case] history: Vec<Option<String>>,
+    #[case] cursor: Option<&str>,
+    #[case] previous: Vec<Option<String>>,
+) {
+    Owner::new().with(|| {
+        let state = paging(Some("page-2"), history, None);
+
+        previous_page(state);
+
+        assert_eq!(
+            (state.cursor.get_untracked(), state.previous.get_untracked()),
+            (cursor.map(str::to_owned), previous)
+        );
+    });
+}
+
+#[test]
+fn analytics_run_query_reports_an_unparseable_date_without_loading() {
+    Owner::new().with(|| {
+        let state = seeded(AnalyticsFilters::default(), None, Vec::new(), false, None);
+        let filters = AnalyticsFilters {
+            from: "soon".to_owned(),
+            ..AnalyticsFilters::default()
+        };
+
+        run_query(&filters, None, "alice".to_owned(), "secret".to_owned(), state.ui);
+
+        assert_eq!(
+            (state.loading.get_untracked(), state.result.get_untracked()),
+            (false, Some(Err("Invalid UTC date: soon".to_owned())))
+        );
+    });
+}
+
+fn paging(cursor: Option<&str>, previous: Vec<Option<String>>, next: Option<&str>) -> AnalyticsState {
+    seeded(
+        AnalyticsFilters::default(),
+        cursor,
+        previous,
+        false,
+        Some(Ok(page(next))),
+    )
+}
+
 fn state(loading: bool, previous: Vec<Option<String>>, result: Option<Result<UiUsagePage, String>>) -> AnalyticsState {
-    let (active, set_active) = signal(AnalyticsFilters::default());
-    let (cursor, set_cursor) = signal(None);
+    seeded(AnalyticsFilters::default(), None, previous, loading, result)
+}
+
+fn seeded(
+    filters: AnalyticsFilters,
+    cursor: Option<&str>,
+    previous: Vec<Option<String>>,
+    loading: bool,
+    result: Option<Result<UiUsagePage, String>>,
+) -> AnalyticsState {
+    let (active, set_active) = signal(stale());
+    let (cursor, set_cursor) = signal(cursor.map(str::to_owned));
     let (previous, set_previous) = signal(previous);
+    let (result, set_result) = signal(result);
+    let (loading, set_loading) = signal(loading);
     AnalyticsState {
-        user: signal(String::new()).0,
-        password: signal(String::new()).0,
-        filters: signal(AnalyticsFilters::default()).0,
+        user: signal("alice".to_owned()).0,
+        password: signal("secret".to_owned()).0,
+        filters: signal(filters).0,
         active,
         set_active,
         cursor,
         set_cursor,
         previous,
         set_previous,
-        result: signal(result).0,
-        loading: signal(loading).0,
+        result,
+        loading,
+        ui: AnalyticsUi {
+            result: set_result,
+            loading: set_loading,
+        },
+    }
+}
+
+fn stale() -> AnalyticsFilters {
+    AnalyticsFilters {
+        repository: "stale".to_owned(),
+        ..AnalyticsFilters::default()
     }
 }
 
