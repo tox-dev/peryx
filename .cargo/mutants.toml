@@ -30,12 +30,17 @@ exclude_globs = [
 # logic that merely sits behind such a gate gets `any(test, ...)` on the gate and a test instead.
 exclude_re = [
   # Browser-only halves of the web loaders: `gloo_net` requests and the status handling written
-  # inline around them, the `EventSource` topology stream, the clipboard, and the query, submit and
-  # paging handlers that start those requests. `just frontend-test` drives these in a real browser.
+  # inline around them, the `EventSource` topology stream, the clipboard, and the DOM event
+  # handlers and tasks that start those requests. `just frontend-test` drives these in a real browser.
   'peryx-web/src/data/.*(replace|in) (fetch_json_required|fetch_json_optional|admin_request|load_analytics|load_trash|load_policy_decisions|subscribe_topology)\b',
   'peryx-web/src/data/.*delete match arm .* in (load_search|load_placements|load_operations|load_blob_placement)$',
   'peryx-web/src/data/topology\.rs.*Drop for TopologyStream',
-  'peryx-web/src/pages/.*(replace|in) (submit|submit_query|run_query|run_action|load_analytics|previous_page|next_page|copy_to_clipboard|start_refresh|watch_topology|close_topology_stream|BrowseDocument)\b',
+  'peryx-web/src/pages/.*(replace|in) (submit|run_action|load_analytics|copy_to_clipboard|start_refresh|watch_topology|close_topology_stream|BrowseDocument)\b',
+
+  # The only mutant either `reactive_value` twin gets is `Default::default()` for an `S::Value` with
+  # no `Default` bound, which cannot compile. The `ssr` twin reports unviable; the other is never
+  # type-checked in this build, so it would read as missed.
+  'peryx-web/src/pages/mod\.rs.*replace reactive_value -> S::Value with Default::default\(\)',
 
   # Exports the wasm coverage counters, and exists only in the `wasm32` coverage build.
   'peryx-web/src/lib\.rs.*replace capture_coverage ',
