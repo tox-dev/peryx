@@ -212,7 +212,14 @@ struct AnalyticsUi {
 }
 
 #[derive(Clone, Copy)]
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")),
+    expect(
+        dead_code,
+        reason = "native tests build the state to pin the pagination predicates, which read three fields"
+    )
+)]
 struct AnalyticsState {
     user: ReadSignal<String>,
     password: ReadSignal<String>,
@@ -225,6 +232,7 @@ struct AnalyticsState {
     set_previous: WriteSignal<Vec<Option<String>>>,
     result: ReadSignal<Option<Result<UiUsagePage, String>>>,
     loading: ReadSignal<bool>,
+    #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
     ui: AnalyticsUi,
 }
 
@@ -260,7 +268,7 @@ fn analytics_results(loading: bool, result: Option<Result<UiUsagePage, String>>)
     }
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn previous_disabled(state: AnalyticsState) -> bool {
     reactive_value(&state.previous).is_empty() || reactive_value(&state.loading)
 }
@@ -291,7 +299,7 @@ fn previous_page_action<Event>(state: AnalyticsState) -> impl FnMut(Event) {
     move |_| previous_page(state)
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn next_disabled(state: AnalyticsState) -> bool {
     reactive_value(&state.loading) || next_cursor(reactive_value(&state.result)).is_none()
 }
@@ -323,17 +331,17 @@ fn next_page_action<Event>(state: AnalyticsState) -> impl FnMut(Event) {
     move |_| next_page(state)
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn next_cursor(result: Option<Result<UiUsagePage, String>>) -> Option<String> {
     result.and_then(Result::ok).and_then(|page| page.next_cursor)
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn set_text(signal: WriteSignal<String>, value: String) {
     signal.set(value);
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn update_filter(signal: WriteSignal<AnalyticsFilters>, field: AnalyticsFilterField, value: String) {
     signal.update(|filters| match field {
         AnalyticsFilterField::View => filters.view = value,
@@ -345,7 +353,7 @@ fn update_filter(signal: WriteSignal<AnalyticsFilters>, field: AnalyticsFilterFi
 }
 
 #[derive(Clone, Copy)]
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 enum AnalyticsFilterField {
     View,
     Repository,

@@ -198,7 +198,14 @@ struct TrashUi {
 }
 
 #[derive(Clone, Copy)]
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")),
+    expect(
+        dead_code,
+        reason = "native tests build the state to pin the pagination predicates, which read three fields"
+    )
+)]
 struct TrashState {
     user: ReadSignal<String>,
     password: ReadSignal<String>,
@@ -211,6 +218,7 @@ struct TrashState {
     set_previous: WriteSignal<Vec<Option<String>>>,
     result: ReadSignal<Option<Result<UiTrashPage, String>>>,
     loading: ReadSignal<bool>,
+    #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
     ui: TrashUi,
 }
 
@@ -240,7 +248,7 @@ fn trash_results_view(state: TrashState) -> impl Fn() -> AnyView {
     move || trash_results(reactive_value(&state.loading), reactive_value(&state.result))
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn previous_disabled(state: TrashState) -> bool {
     reactive_value(&state.previous).is_empty() || reactive_value(&state.loading)
 }
@@ -271,7 +279,7 @@ fn previous_page_action<Event>(state: TrashState) -> impl FnMut(Event) {
     move |_| previous_page(state)
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn next_disabled(state: TrashState) -> bool {
     reactive_value(&state.loading) || next_cursor(reactive_value(&state.result)).is_none()
 }
@@ -303,17 +311,17 @@ fn next_page_action<Event>(state: TrashState) -> impl FnMut(Event) {
     move |_| next_page(state)
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn next_cursor(result: Option<Result<UiTrashPage, String>>) -> Option<String> {
     result.and_then(Result::ok).and_then(|page| page.next_cursor)
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn set_text(signal: WriteSignal<String>, value: String) {
     signal.set(value);
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 fn update_filter(signal: WriteSignal<TrashFilters>, field: TrashFilterField, value: String) {
     signal.update(|filters| match field {
         TrashFilterField::Repository => filters.repository = value,
@@ -324,7 +332,7 @@ fn update_filter(signal: WriteSignal<TrashFilters>, field: TrashFilterField, val
 }
 
 #[derive(Clone, Copy)]
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
 enum TrashFilterField {
     Repository,
     Ecosystem,
