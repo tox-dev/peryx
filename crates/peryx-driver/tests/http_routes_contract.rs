@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::routing::get;
 use peryx_driver::rate_limit::RouteClass;
-use peryx_driver::{AppState, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
+use peryx_driver::{AppState, MountedRoutes, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
@@ -85,6 +85,38 @@ async fn a_route_set_carries_its_registration_into_both_shapes() {
 async fn probe(router: Router<Arc<AppState>>, state: &Arc<AppState>) -> StatusCode {
     router
         .with_state(state.clone())
+        .oneshot(Request::builder().uri("/+probe").body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+/// [`MountedRoutes`] pre-binds its state, so both shapes it can be taken apart into carry the
+/// registration without a state to attach, the same guarantee [`RouteSet`] gives above.
+#[tokio::test]
+async fn mounted_routes_carries_its_registration_into_both_shapes() {
+    let descriptor = RouteDescriptor::new(
+        RouteMethod::Get,
+        "/+probe",
+        RoutePosture::Read,
+        RouteRateLimit::Class(RouteClass::Admin),
+    );
+    let mounted = || {
+        MountedRoutes::new(
+            Router::new().route("/+probe", get(|| async { "probe" })),
+            vec![descriptor],
+        )
+    };
+
+    let (router, descriptors) = mounted().into_parts();
+
+    assert_eq!(descriptors, vec![descriptor]);
+    assert_eq!(mounted_probe(router).await, StatusCode::OK);
+    assert_eq!(mounted_probe(mounted().into_router()).await, StatusCode::OK);
+}
+
+async fn mounted_probe(router: Router) -> StatusCode {
+    router
         .oneshot(Request::builder().uri("/+probe").body(Body::empty()).unwrap())
         .await
         .unwrap()

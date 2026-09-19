@@ -36,6 +36,25 @@ fn a_populated_policy_is_not_empty() {
     assert!(!expiring(RetentionSelector::Cached).is_empty());
 }
 
+#[test]
+fn selectors_reports_keep_selectors_before_expire_selectors() {
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::KeepLatestGroups { count: 2 }],
+            expire: vec![RetentionSelector::Cached],
+        },
+        str::to_owned,
+    );
+
+    assert_eq!(
+        policy.selectors().collect::<Vec<_>>(),
+        [
+            &RetentionSelector::KeepLatestGroups { count: 2 },
+            &RetentionSelector::Cached,
+        ]
+    );
+}
+
 #[rstest]
 #[case::age(RetentionSelector::Age { older_than_seconds: 1 }, "age")]
 #[case::source(RetentionSelector::Source { name: "alpha".to_owned() }, "source")]

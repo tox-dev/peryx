@@ -496,6 +496,43 @@ async fn configured_suite_runs_without_owner_dependencies() {
             )
         )
     );
+    assert!(
+        !directory.path().join("machine.toml").exists(),
+        "machine is in --skip, so its profile must not be published"
+    );
+}
+
+/// The suite above skips `transfer` alongside `machine`, so it cannot tell a check that only reads
+/// "machine" is absent from one that reads any entry differs from "machine": with `transfer` also
+/// present, both readings agree. This isolates `machine` as the only skipped entry.
+#[tokio::test]
+async fn run_suite_skips_machine_profile_when_only_machine_is_skipped() {
+    let directory = tempfile::tempdir().unwrap();
+    let runner = runner(
+        process(directory.path(), Vec::new()),
+        ReportComparator,
+        directory.path(),
+    );
+    let cli = parse(
+        &RECORDING_SUITE,
+        [
+            OsString::from("peryx-bench"),
+            OsString::from("--skip"),
+            OsString::from("machine"),
+            OsString::from("--suite-value"),
+            OsString::from("only-machine"),
+        ],
+    )
+    .unwrap();
+    let context = BenchmarkContext::with_scratch(
+        PathBuf::from("peryx"),
+        directory.path().join("report.toml"),
+        directory.path().join("scratch"),
+    );
+
+    runner.run_suite(&context, &cli).await.unwrap();
+
+    assert!(!directory.path().join("machine.toml").exists());
 }
 
 #[tokio::test]
@@ -857,6 +894,28 @@ async fn ab_preserves_explicit_selection() {
     let mut cli = cli(&["--only", "other"]);
     skip_machine(&mut cli);
     runner.ab("main", false, &cli).await.unwrap();
+}
+
+/// A/B mode compares one binary against another, so a machine profile, which describes the box
+/// running them both, has nothing to add; `ab` forces `machine` into the skip list itself rather
+/// than trusting a caller that never asked for it.
+#[tokio::test]
+async fn ab_publishes_no_machine_profile_even_when_the_caller_never_skipped_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut runs = Vec::new();
+    expect_build(&mut runs, directory.path());
+    expect_base_build(&mut runs);
+    expect_cleanup(&mut runs);
+    let runner = runner(
+        process(directory.path(), runs),
+        comparator(directory.path(), false),
+        directory.path(),
+    );
+    let cli = cli(&["--skip", "transfer"]);
+
+    runner.ab("main", false, &cli).await.unwrap();
+
+    assert!(!directory.path().join("machine.toml").exists());
 }
 
 #[rstest]

@@ -329,6 +329,22 @@ fn test_parse_rejects_oversized_text() {
 }
 
 #[test]
+fn test_parse_accepts_text_exactly_at_the_size_limit() {
+    let (prefix, suffix) = ("from d where a == \"", "\"");
+    let text = format!(
+        "{prefix}{}{suffix}",
+        "x".repeat(MAX_QUERY_BYTES - prefix.len() - suffix.len())
+    );
+    assert_eq!(text.len(), MAX_QUERY_BYTES);
+    assert!(parse(&text).is_ok());
+}
+
+#[test]
+fn test_parse_rejects_an_unknown_bare_word_as_a_literal() {
+    assert!(matches!(parse("from d where field == xyz"), Err(PqlError::Parse(_))));
+}
+
+#[test]
 fn test_parse_rejects_deep_nesting() {
     let text = format!("from d where {}a == 1{}", "(".repeat(40), ")".repeat(40));
     assert!(matches!(parse(&text), Err(PqlError::Parse(_))));
