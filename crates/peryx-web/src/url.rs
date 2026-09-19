@@ -1,7 +1,7 @@
 use peryx_core::url_encoding::push_component;
 
 #[must_use]
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 pub(crate) fn ui_browse_url(raw_query: &str) -> String {
     let mut url = "/+ui/browse".to_owned();
     if !raw_query.is_empty() {
@@ -39,7 +39,7 @@ pub(crate) fn search_page_url(
 }
 
 #[must_use]
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 pub(crate) fn search_api_url(
     query: &str,
     source_type: &str,
@@ -91,7 +91,7 @@ pub(crate) fn stats_resource_url(route: &str, resource: &str) -> String {
 }
 
 #[must_use]
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 pub(crate) fn stats_api_url(route: Option<&str>, resource: Option<&str>) -> String {
     let mut url = "/+stats".to_owned();
     if let Some(route) = route {

@@ -32,7 +32,7 @@ pub use topology::load_topology;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub use topology::{TopologyStream, subscribe_topology};
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 #[serde(transparent)]
 struct RequiredOption<T>(Option<T>);

@@ -1,11 +1,11 @@
 use crate::model::{UiSnapshot, UiStats};
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 use super::RequiredOption;
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentWrite, UiSummaryStatus, UiUpstream};
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusDocument {
     version: String,
@@ -20,7 +20,7 @@ struct StatusDocument {
     indexes: Vec<StatusIndex>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusIndex {
     name: String,
@@ -39,7 +39,7 @@ struct StatusIndex {
     recent_writes: Option<Vec<StatusRecentWrite>>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusUpstream {
     url: String,
@@ -47,28 +47,28 @@ struct StatusUpstream {
     status: String,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusAuth {
     kind: String,
     redacted: RequiredOption<String>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusHosted {
     volatile: bool,
     upload_token: StatusUploadToken,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusUploadToken {
     configured: bool,
     redacted: RequiredOption<String>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 enum StatusSummary {
@@ -77,7 +77,7 @@ enum StatusSummary {
     Unsupported,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct StatusRecentWrite {
     resource: String,
@@ -87,7 +87,7 @@ struct StatusRecentWrite {
     size: RequiredOption<u64>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 impl TryFrom<StatusDocument> for UiSnapshot {
     type Error = super::LoaderError;
 
@@ -107,7 +107,7 @@ impl TryFrom<StatusDocument> for UiSnapshot {
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 impl TryFrom<StatusIndex> for UiIndex {
     type Error = super::LoaderError;
 
@@ -163,7 +163,7 @@ impl TryFrom<StatusIndex> for UiIndex {
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn required<T>(value: Option<T>) -> Result<T, super::LoaderError> {
     value.ok_or(super::LoaderError::Invalid(super::LoaderEndpoint::Status))
 }
@@ -252,3 +252,7 @@ async fn load_admin_snapshot() -> Result<UiSnapshot, super::LoaderError> {
         Ok(UiSnapshot::default())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/data/status/tests.rs"]
+mod tests;

@@ -45,3 +45,35 @@ async fn topology_loader_reports_missing_runtime() {
         Err("The availability topology is unavailable.".to_owned())
     );
 }
+
+#[test]
+fn topology_snapshot_event_parses_into_snapshot() {
+    use peryx_core::{LocalNode, NodeRole, TopologyMode, TopologySnapshot};
+
+    assert_eq!(
+        super::parse_topology_snapshot(
+            r#"{"mode": "dc", "group": "blue", "captured_at": 1700000000, "node_count": 3,
+                "local": {"role": "replica", "frontier": 17}, "nodes": []}"#
+        ),
+        Ok(TopologySnapshot {
+            mode: TopologyMode::Dc,
+            group: Some("blue".to_owned()),
+            captured_at: 1_700_000_000,
+            node_count: 3,
+            local: LocalNode {
+                role: NodeRole::Replica,
+                liveness: None,
+                frontier: Some(17),
+            },
+            nodes: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn topology_snapshot_event_rejects_invalid_body() {
+    assert_eq!(
+        super::parse_topology_snapshot(r#"{"mode": "dc"}"#),
+        Err("The availability topology stream sent invalid data.".to_owned())
+    );
+}

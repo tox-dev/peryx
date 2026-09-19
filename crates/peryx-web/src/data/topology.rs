@@ -51,7 +51,7 @@ pub async fn load_topology() -> Result<TopologySnapshot, String> {
 /// # Errors
 ///
 /// Returns a message when the event body does not parse as a snapshot.
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn parse_topology_snapshot(data: &str) -> Result<TopologySnapshot, String> {
     serde_json::from_str(data).map_err(|_| "The availability topology stream sent invalid data.".to_owned())
 }

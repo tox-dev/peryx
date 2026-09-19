@@ -1,7 +1,7 @@
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 use crate::model::{AnalyticsView, UiUsagePage};
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct CounterGroups {
     base: BaseCounters,
@@ -10,7 +10,7 @@ struct CounterGroups {
     ecosystem: std::collections::BTreeMap<String, u64>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct BaseCounters {
     pages: u64,
@@ -19,7 +19,7 @@ struct BaseCounters {
     rejected: u64,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct CachedCounters {
     refreshes: u64,
@@ -28,13 +28,13 @@ struct CachedCounters {
     upstream_errors: u64,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct HostedCounters {
     writes: u64,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct IndexStatsDocument {
     #[serde(default)]
@@ -43,7 +43,7 @@ struct IndexStatsDocument {
     resources: PresentField<std::collections::BTreeMap<String, CounterGroups>>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct ResourceStatsDocument {
     #[serde(default)]
@@ -52,7 +52,7 @@ struct ResourceStatsDocument {
     artifacts: PresentField<std::collections::BTreeMap<String, ArtifactCounters>>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(Default)]
 enum PresentField<T> {
     #[default]
@@ -60,14 +60,14 @@ enum PresentField<T> {
     Value(T),
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for PresentField<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         T::deserialize(deserializer).map(Self::Value)
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 #[derive(serde::Deserialize)]
 struct ArtifactCounters {
     reads: u64,
@@ -75,7 +75,7 @@ struct ArtifactCounters {
     ecosystem: std::collections::BTreeMap<String, u64>,
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 impl From<CounterGroups> for crate::model::UiCounters {
     fn from(counters: CounterGroups) -> Self {
         Self {
@@ -93,7 +93,7 @@ impl From<CounterGroups> for crate::model::UiCounters {
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 impl From<ArtifactCounters> for crate::model::UiCounters {
     fn from(counters: ArtifactCounters) -> Self {
         Self {
@@ -153,7 +153,7 @@ pub async fn load_stats(
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn stats_routes(routes: std::collections::BTreeMap<String, CounterGroups>) -> crate::model::UiStats {
     let mut rows = routes
         .into_iter()
@@ -180,17 +180,17 @@ fn stats_routes(routes: std::collections::BTreeMap<String, CounterGroups>) -> cr
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn stats_index(document: IndexStatsDocument) -> Result<crate::model::UiStats, super::LoaderError> {
     stats_page(document.totals, document.resources)
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn stats_resource(document: ResourceStatsDocument) -> Result<crate::model::UiStats, super::LoaderError> {
     stats_page(document.totals, document.artifacts)
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn stats_page<T>(
     totals: PresentField<CounterGroups>,
     rows: PresentField<std::collections::BTreeMap<String, T>>,
@@ -215,7 +215,7 @@ where
     }
 }
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
 fn sort_rows(rows: &mut [(String, crate::model::UiCounters)]) {
     rows.sort_by(|(left_name, left), (right_name, right)| {
         (right.reads + right.pages)
@@ -268,6 +268,5 @@ fn parse_stats(value: &serde_json::Value, index: Option<&str>, resource: Option<
 }
 
 #[cfg(test)]
-#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/data/stats/tests.rs"]
 mod tests;
