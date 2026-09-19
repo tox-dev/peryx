@@ -120,14 +120,15 @@ fn or_unknown(value: Option<String>) -> String {
 
 /// The board, which no portable API exposes: a desktop and a laptop of the same chip thermally
 /// throttle differently, so a reader comparing against their own box needs to know which this was.
-#[cfg(target_os = "macos")]
 fn model() -> String {
-    or_unknown(sysctl("hw.model"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn model() -> String {
-    model_at(Path::new("/sys/devices/virtual/dmi/id/product_name"))
+    #[cfg(target_os = "macos")]
+    {
+        or_unknown(sysctl("hw.model"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        model_at(Path::new("/sys/devices/virtual/dmi/id/product_name"))
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -135,28 +136,29 @@ fn model_at(path: &Path) -> String {
     std::fs::read_to_string(path).map_or_else(|_| "unknown".to_owned(), |text| text.trim().to_owned())
 }
 
-#[cfg(target_os = "macos")]
 fn cores(logical: usize) -> String {
-    describe_cores(
-        logical,
-        sysctl("hw.perflevel0.logicalcpu"),
-        sysctl("hw.perflevel1.logicalcpu"),
-    )
+    #[cfg(target_os = "macos")]
+    {
+        describe_split_cores(
+            logical,
+            sysctl("hw.perflevel0.logicalcpu"),
+            sysctl("hw.perflevel1.logicalcpu"),
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        describe_cores(logical, System::physical_core_count())
+    }
 }
 
-#[cfg(target_os = "macos")]
-fn describe_cores(logical: usize, performance: Option<String>, efficiency: Option<String>) -> String {
+#[cfg(any(test, target_os = "macos"))]
+fn describe_split_cores(logical: usize, performance: Option<String>, efficiency: Option<String>) -> String {
     match (performance, efficiency) {
         (Some(performance), Some(efficiency)) => {
             format!("{logical} ({performance} performance + {efficiency} efficiency)")
         }
         _ => logical.to_string(),
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn cores(logical: usize) -> String {
-    describe_cores(logical, System::physical_core_count())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -174,7 +176,7 @@ fn sysctl(name: &str) -> Option<String> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 fn sysctl_with(name: &str, run: &dyn Fn(&str) -> std::io::Result<std::process::Output>) -> Option<String> {
     let output = run(name).ok()?;
     let text = String::from_utf8(output.stdout).ok()?;

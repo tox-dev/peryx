@@ -2,14 +2,17 @@ use std::path::Path;
 
 use sysinfo::{Disks, System};
 
-use super::{
-    FileMeasure, ProfileSettings, baselines, baselines_with, capacity, cpu, describe_cores, disk_write, drain,
-    exact_mount, gibibytes, http_client, longest_prefix, memory_copy, mount_for, or_unknown, page_cache_read, rate,
-    read_one, repeat, repo_root, reported_mount, serve_loopback, shares, spans, summarize, throughput, volumes,
-    write_one, write_profile,
-};
+#[cfg(not(target_os = "macos"))]
+use super::describe_cores;
 #[cfg(target_os = "macos")]
-use super::{cores, model, sysctl, sysctl_with};
+use super::sysctl;
+use super::{
+    FileMeasure, ProfileSettings, baselines, baselines_with, capacity, cpu, describe_split_cores, disk_write, drain,
+    exact_mount, gibibytes, http_client, longest_prefix, memory_copy, mount_for, or_unknown, page_cache_read, rate,
+    read_one, repeat, repo_root, reported_mount, serve_loopback, shares, spans, summarize, sysctl_with, throughput,
+    volumes, write_one, write_profile,
+};
+use super::{cores, model};
 
 /// Below this a returned figure cannot be a measurement: even a saturated CI disk moves far more
 /// than a kilobyte a second, so anything slower is a constant standing in for one.
@@ -85,13 +88,17 @@ fn host_fallbacks_are_explicit() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn sysctl_reports_nothing_for_a_name_the_kernel_does_not_know() {
+    assert_eq!(sysctl("peryx.invalid.sysctl"), None);
+}
+
+#[test]
 fn core_description_handles_split_and_uniform_cpus() {
-    assert_eq!(describe_cores(8, None, None), "8");
+    assert_eq!(describe_split_cores(8, None, None), "8");
     assert_eq!(
-        describe_cores(8, Some("4".to_owned()), Some("4".to_owned())),
+        describe_split_cores(8, Some("4".to_owned()), Some("4".to_owned())),
         "8 (4 performance + 4 efficiency)"
     );
-    assert_eq!(sysctl("peryx.invalid.sysctl"), None);
     assert_eq!(sysctl_with("unused", &|_| Err(std::io::Error::other("failed"))), None);
     assert_eq!(
         sysctl_with("unused", &|_| {
@@ -111,7 +118,7 @@ fn cores_reports_what_sysctl_and_the_system_report() {
     let logical = System::new_all().cpus().len();
     assert_eq!(
         cores(logical),
-        describe_cores(
+        describe_split_cores(
             logical,
             sysctl("hw.perflevel0.logicalcpu"),
             sysctl("hw.perflevel1.logicalcpu")
@@ -142,6 +149,22 @@ async fn baselines_propagate_each_file_measurement_failure() {
             .expect("measurement fails");
         assert_eq!(error.to_string(), expected);
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn cores_reports_the_logical_and_physical_counts_the_system_reports() {
+    let logical = System::new_all().cpus().len();
+    assert_eq!(cores(logical), describe_cores(logical, System::physical_core_count()));
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn model_reads_the_board_the_firmware_reports() {
+    assert_eq!(
+        model(),
+        super::model_at(Path::new("/sys/devices/virtual/dmi/id/product_name"))
+    );
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -364,7 +387,6 @@ async fn drain_reports_the_bytes_the_loopback_server_sent() {
         .expect("the server stops cleanly");
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn sysctl_trims_the_value_it_reads() {
     assert_eq!(
