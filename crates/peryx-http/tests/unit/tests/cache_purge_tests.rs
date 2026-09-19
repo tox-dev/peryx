@@ -312,6 +312,17 @@ async fn test_purge_rejects_a_body_past_the_limit() {
 }
 
 #[tokio::test]
+async fn test_purge_reads_a_body_within_the_limit() {
+    let fixture = Fixture::new().await;
+    let junk = "x".repeat(5 * 1024);
+
+    let (status, _) = fixture.purge(Some(("Alice", ADMIN_PASSWORD)), &junk, true).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(fixture.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_purge_is_not_found_for_an_ecosystem_that_purges_no_cache() {
     let fixture = Fixture::without_driver().await;
 

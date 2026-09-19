@@ -328,6 +328,19 @@ async fn test_create_rejects_malformed_requests() {
                 Method::POST,
                 "/+tokens",
                 Some("Alice"),
+                Some("application/json"),
+                Some(vec![b'a'; 2 * 1024])
+            )
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        fixture
+            .call(
+                Method::POST,
+                "/+tokens",
+                Some("Alice"),
                 Some("application/json; charset=utf-8"),
                 Some(b"not json".to_vec())
             )

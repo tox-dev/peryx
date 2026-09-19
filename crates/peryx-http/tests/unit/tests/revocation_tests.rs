@@ -400,6 +400,23 @@ async fn test_revocation_http_rejects_invalid_inputs_and_conflicts() {
 }
 
 #[tokio::test]
+async fn test_revocation_http_accepts_a_body_within_the_limit() {
+    let fixture = Fixture::new().await;
+
+    let (status, _, _) = fixture
+        .raw_request(
+            Method::PUT,
+            &format!("/+revocations/{DIGEST}"),
+            Some(("Alice", ADMIN_PASSWORD)),
+            Some(vec![b'a'; 2 * 1024]),
+            Some("application/json"),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
 async fn test_revocation_http_authenticates_before_parsing_a_put_body() {
     let fixture = Fixture::new().await;
 

@@ -489,6 +489,37 @@ async fn test_create_rejects_an_oversized_body() {
 }
 
 #[tokio::test]
+async fn test_create_accepts_a_body_within_the_route_body_limit() {
+    let fixture = Fixture::new().await;
+    let body = json!({
+        "route": "r", "display_name": "n", "ecosystem": "alpha", "definition": {"pad": "x".repeat(4_000)}
+    });
+
+    let (status, _, body) = fixture
+        .send(Method::POST, "/+repositories", Some(ADMIN), Some(body))
+        .await;
+
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
+async fn test_update_accepts_a_body_within_the_route_body_limit() {
+    let fixture = Fixture::new().await;
+    let created = fixture.create("root/alpha").await;
+    let id = created["id"].as_str().unwrap();
+
+    let (status, _, body) = fixture
+        .if_match_put(
+            id,
+            "\"1\"",
+            json!({"display_name": "n", "definition": {"pad": "x".repeat(4_000)}}),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
 async fn test_inspect_and_list_report_missing_and_bad_limit() {
     let fixture = Fixture::new().await;
     let missing = fixture

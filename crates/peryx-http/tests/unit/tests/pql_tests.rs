@@ -1146,8 +1146,18 @@ async fn test_query_accepts_bool_and_int_parameters() {
 #[tokio::test]
 async fn test_query_body_over_the_limit_is_too_large() {
     let (_dir, _meta, app) = app(false).await;
-    let (status, _headers, _document) = post(&app, json!({"query": "x".repeat(9000)}), Some(("Alice", PASSWORD))).await;
+    let (status, _headers, document) = post(&app, json!({"query": "x".repeat(9000)}), Some(("Alice", PASSWORD))).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    // Below the route's own DefaultBodyLimit, so the handler's `read_body` produced this response
+    // rather than axum rejecting the request before it ever reached the handler.
+    assert_eq!(document["error"], serde_json::json!("request body is too large"));
+}
+
+#[tokio::test]
+async fn test_query_body_within_the_limit_reaches_query_validation() {
+    let (_dir, _meta, app) = app(false).await;
+    let (status, _headers, _document) = post(&app, json!({"query": "x".repeat(3000)}), Some(("Alice", PASSWORD))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

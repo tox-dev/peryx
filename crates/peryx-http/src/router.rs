@@ -580,6 +580,8 @@ fn is_read_only_post(state: &AppState, request: &Request) -> bool {
 
 #[cfg(test)]
 mod route_tests {
+    use std::sync::{Arc, Mutex};
+
     use super::service_route_descriptors;
     use peryx_driver::rate_limit::RouteClass;
     use peryx_driver::{RoutePosture, RouteRateLimit};
@@ -611,5 +613,65 @@ mod route_tests {
             }),
             [2, 2, 44, 4]
         );
+    }
+
+    #[test]
+    fn request_throughput_floor_matches_eight_kib_per_second() {
+        assert_eq!(super::REQUEST_THROUGHPUT_FLOOR.get(), 8 * 1024);
+    }
+
+    /// A minimal layer that records the `uri` field an `info_span!` call was created with, so a test
+    /// can see what `request_span` chose without a full tracing pipeline.
+    struct SpanFieldCapture(Arc<Mutex<Option<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanFieldCapture {
+        fn on_new_span(
+            &self,
+            attributes: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Visitor<'a>(&'a mut Option<String>);
+            impl tracing::field::Visit for Visitor<'_> {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                    if field.name() == "uri" {
+                        *self.0 = Some(format!("{value:?}"));
+                    }
+                }
+
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "uri" {
+                        *self.0 = Some(value.to_owned());
+                    }
+                }
+            }
+            attributes.record(&mut Visitor(&mut self.0.lock().unwrap()));
+        }
+    }
+
+    fn captured_uri(uri: &str) -> Option<String> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let request = super::Request::builder().uri(uri).body(super::Body::empty()).unwrap();
+        let captured = Arc::new(Mutex::new(None));
+        let subscriber = tracing_subscriber::registry().with(SpanFieldCapture(captured.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = super::request_span(&request);
+        });
+        captured.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn request_span_redacts_the_query_from_a_login_callback() {
+        let uri = captured_uri("/_/login/github/callback?code=secret").unwrap();
+        assert_eq!(uri, "/_/login/github/callback");
+    }
+
+    /// A provider segment that itself contains a `/` fails the no-slash half of the check, so the
+    /// callback match requires both halves to hold, not either one.
+    #[test]
+    fn request_span_keeps_the_query_when_the_provider_segment_contains_a_slash() {
+        let uri = captured_uri("/_/login/a/b/callback?code=secret").unwrap();
+        assert_eq!(uri, "/_/login/a/b/callback?code=secret");
     }
 }

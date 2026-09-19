@@ -724,6 +724,20 @@ async fn test_a_create_request_must_carry_a_valid_json_body() {
         .await;
     assert_eq!(too_large.0, StatusCode::PAYLOAD_TOO_LARGE);
 
+    let within_limit = fixture
+        .raw(
+            Method::POST,
+            "/+grants",
+            RawRequest {
+                credential: admin,
+                body: Some(vec![b'x'; 2 * 1024]),
+                content_type: Some("application/json"),
+                ..RawRequest::default()
+            },
+        )
+        .await;
+    assert_eq!(within_limit.0, StatusCode::UNPROCESSABLE_ENTITY);
+
     let invalid = fixture
         .request(
             Method::POST,

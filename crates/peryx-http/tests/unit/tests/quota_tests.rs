@@ -260,6 +260,17 @@ async fn test_summary_reports_counters_limits_and_paginates() {
 }
 
 #[tokio::test]
+async fn test_summary_omits_a_cursor_when_the_page_exactly_fills_the_limit() {
+    let (_dir, state) = app().await;
+
+    let (status, _headers, page) = get(&state, "/+quota?limit=3", Some(("Alice", USER_PASSWORD))).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["repositories"].as_array().unwrap().len(), 3);
+    assert_eq!(page["next_cursor"], serde_json::Value::Null);
+}
+
+#[tokio::test]
 async fn test_detail_reports_one_repository_for_a_reader() {
     let (_dir, state) = app().await;
 
