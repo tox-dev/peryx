@@ -1,3 +1,4 @@
+use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use peryx_core::{Ecosystem, Lexicon};
-use peryx_identity::IndexAcl;
+use peryx_identity::{ArtifactDigest, IndexAcl, RevocationReason, UserId};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_search::{
@@ -16,6 +17,8 @@ use peryx_search::{
 use peryx_storage::blob::{BlobStore, WriteEvidence};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
+
+use crate::revocations::PutRevocationOutcome;
 
 use super::AppState;
 use crate::HttpRoutes;
@@ -1059,5 +1062,24 @@ fn test_an_invalidation_for_no_changes_leaves_the_index_alone() {
     assert_eq!(
         matches_after_invalidation(|state| state.invalidate_search_resource_for_changes("package", 0)),
         0
+    );
+}
+
+/// A digest revocation retires the search view precisely because it can change which distributions an
+/// ecosystem may describe, so a freshly created one has to refresh the published index like any other
+/// resource invalidation above.
+#[test]
+fn test_a_new_digest_revocation_refreshes_the_search_index() {
+    let digest =
+        ArtifactDigest::from_str("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+    let reason = RevocationReason::new("incident").unwrap();
+    let actor = UserId::random();
+
+    assert_eq!(
+        matches_after_invalidation(|state| {
+            let outcome = state.put_digest_revocation(&digest, &reason, &actor).unwrap();
+            assert!(matches!(outcome, PutRevocationOutcome::Created(_)));
+        }),
+        1
     );
 }

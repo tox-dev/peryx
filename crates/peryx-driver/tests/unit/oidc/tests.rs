@@ -74,6 +74,16 @@ fn test_error_messages(#[case] error: GuardedOidcTransportError, #[case] expecte
     assert_eq!(error.to_string(), expected);
 }
 
+/// The transport reuses one configured client rather than handing out a fresh, unguarded one on
+/// every call: only the client the guard's DNS resolver and timeout were built into can enforce the
+/// outbound policy the other tests here rely on.
+#[test]
+fn test_client_returns_the_same_configured_instance() {
+    let transport = guarded(&[]);
+
+    assert!(std::ptr::eq(transport.client(), transport.client()));
+}
+
 #[tokio::test]
 async fn test_approved_literal_destination_is_fetched() {
     let server = keys_server().await;
