@@ -17,7 +17,7 @@ use peryx_storage::meta::{
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::{
@@ -1377,6 +1377,59 @@ fn test_check_config_reports_invalid_cached_and_virtual_indexes() {
     );
 }
 
+/// The reported cycle has to start where the traversal actually re-entered an active index, not
+/// wherever an unrelated caller happens to sit on the same path: `root` reaches the `a` -> `b` -> `a`
+/// cycle without being part of it, so it must not appear in the message.
+#[test]
+fn test_check_config_reports_a_virtual_composition_cycle_from_its_own_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = parsed_config(
+        &dir,
+        "[[index]]\nname = \"root\"\nlayers = [\"a\"]\n\
+         [[index]]\nname = \"a\"\nlayers = [\"b\"]\n\
+         [[index]]\nname = \"b\"\nlayers = [\"a\"]\n",
+    );
+
+    let error = check_config(&config).unwrap_err().to_string();
+
+    assert_eq!(error, "virtual index composition cycle: a -> b -> a");
+}
+
+/// A cached index is offline when either the deployment is globally offline or the index itself
+/// is configured offline, and a read-only deployment is forced offline the same way a globally
+/// offline one is: a read-only node cannot write refreshed upstream state back to storage, so it
+/// must never depend on being able to reach upstream in the first place.
+#[rstest]
+#[case::none_offline(false, false, false, false)]
+#[case::global_offline(true, false, false, true)]
+#[case::index_offline(false, true, false, true)]
+#[case::read_only_forces_offline(false, false, true, true)]
+fn test_build_state_marks_a_cached_index_offline_from_any_source(
+    #[case] global_offline: bool,
+    #[case] index_offline: bool,
+    #[case] read_only: bool,
+    #[case] expect_offline: bool,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = parsed_config(
+        &dir,
+        &format!(
+            "offline = {global_offline}\n[[index]]\nname = \"cached\"\noffline = {index_offline}\n\
+             [[index.upstream]]\nname = \"primary\"\nurl = \"https://upstream.example/\"\n"
+        ),
+    );
+    config.read_only = read_only;
+
+    let state = build_state(&config).unwrap();
+
+    let offline = match &state.serving.indexes[0].kind {
+        peryx_driver::IndexKind::Cached { offline, .. } => Some(*offline),
+        peryx_driver::IndexKind::Hosted { .. } | peryx_driver::IndexKind::Virtual { .. } => None,
+    }
+    .expect("expected a cached index");
+    assert_eq!(offline, expect_offline);
+}
+
 #[test]
 fn test_build_state_rejects_an_invalid_secondary_upstream() {
     let dir = tempfile::tempdir().unwrap();
@@ -1409,6 +1462,34 @@ fn test_build_state_rejects_an_invalid_artifact_url_with_netrc() {
         &format!(
             "netrc = {:?}\n[[index]]\nname = \"cached\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
              \"https://primary.example/\"\nartifact_url = \"not a URL\"\n",
+            netrc.display().to_string()
+        ),
+    );
+
+    let error = build_state(&config).err().expect("expected invalid artifact URL");
+
+    assert!(error.to_string().contains("match netrc credentials"), "{error:#}");
+}
+
+/// A username alone, with no password, resolves to no credentials at all (`upstream_auth` only
+/// pairs a username with a password), so it must not be treated as "the upstream already carries
+/// explicit credentials": the artifact URL still needs its own netrc lookup, the same as when no
+/// credentials are configured at all.
+#[test]
+fn test_build_state_rejects_an_invalid_artifact_url_with_a_username_but_no_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let netrc = dir.path().join("credentials.netrc");
+    std::fs::write(&netrc, "machine primary.example login reader password secret\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&netrc, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let config = parsed_config(
+        &dir,
+        &format!(
+            "netrc = {:?}\n[[index]]\nname = \"cached\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
+             \"https://primary.example/\"\nartifact_url = \"not a URL\"\nusername = \"reader\"\n",
             netrc.display().to_string()
         ),
     );
@@ -1505,6 +1586,60 @@ artifact_url = "https://public-artifacts.example/files/"
             .check_resource(PolicyAction::Cached, "blocked.project")
             .is_err()
     );
+}
+
+/// An upstream with an exec credential helper reuses the same resolved provider for its artifact
+/// mirror rather than building a second, helper-less one from scratch: a mirror fetch has to carry
+/// the exec-issued token, the one credential source the artifact-URL builder cannot recreate on its
+/// own (a helper is wired to its one upstream, not portable to a second host).
+#[cfg(unix)]
+#[tokio::test]
+async fn test_build_state_reuses_the_exec_credential_provider_for_the_artifact_mirror() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/artifact.bin"))
+        .and(header("authorization", "Bearer exec-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifact".to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let helper = dir.path().join("credential-helper");
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s' \
+         '{\"version\":1,\"expires_at\":\"2099-01-01T00:00:00Z\",\"type\":\"bearer\",\"token\":\"exec-token\"}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config = parsed_config(
+        &dir,
+        &format!(
+            "[[index]]\nname = \"cache\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
+             \"https://metadata.example/catalog/\"\nartifact_url = {:?}\ntrusted_hosts = [\"localhost\"]\n\
+             [index.upstream.credential_exec]\nargv = [{:?}]\n",
+            server.uri(),
+            helper.display().to_string()
+        ),
+    );
+    let state = build_state(&config).unwrap();
+    let source = state.serving.upstream_routes["cache"].source("primary").unwrap();
+
+    let artifact = source
+        .artifacts()
+        .stream_bytes("https://artifacts.example/artifact.bin")
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    assert_eq!(artifact, b"artifact");
 }
 
 #[rstest]

@@ -13,6 +13,13 @@ fn test_read_secret_removes_one_line_ending(#[case] input: &[u8], #[case] expect
 }
 
 #[test]
+fn test_read_secret_accepts_input_at_the_byte_limit() {
+    let secret = read_secret(None, &mut Cursor::new(vec![b'a'; MAX_SECRET_BYTES]), "token").unwrap();
+
+    assert_eq!(secret.len(), MAX_SECRET_BYTES);
+}
+
+#[test]
 fn test_read_secret_rejects_oversized_input() {
     let error = read_secret(None, &mut Cursor::new(vec![b'a'; MAX_SECRET_BYTES + 1]), "token").unwrap_err();
 

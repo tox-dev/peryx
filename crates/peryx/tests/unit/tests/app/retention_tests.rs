@@ -70,6 +70,34 @@ fn test_retention_dry_run_resumes_after_a_cursor() {
     assert!(!output.contains("item-2.0.bin"), "{output}");
 }
 
+/// An age rule compares the plan's evaluation time against each candidate's upload time, so the
+/// plan has to use the real wall clock: a candidate uploaded at the Unix epoch is ancient under the
+/// real clock but not under a clock stuck near the epoch, so a rule that only the real clock
+/// satisfies proves `now` actually reads it instead of returning a constant.
+#[test]
+fn test_retention_dry_run_evaluates_age_against_the_real_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_at(&dir);
+    let rules = dir.path().join("rules.toml");
+    std::fs::write(
+        &rules,
+        "[[expire]]\nselector = \"age\"\nolder_than_seconds = 1000000000\n",
+    )
+    .unwrap();
+    let mut args = dry_run_args("main");
+    args.rules = Some(rules);
+    let mut output = Vec::new();
+
+    retention_with_plugins(&config, &plugins(), &RetentionCommand::DryRun(args), &mut output).unwrap();
+
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("remove\titem\t2.0\titem-2.0.bin\tsha-2.0\thosted\tactive\t1024\tage\n"),
+        "expected the item uploaded at the Unix epoch to be old enough to expire"
+    );
+}
+
 #[test]
 fn test_retention_dry_run_applies_a_rules_file() {
     let dir = tempfile::tempdir().unwrap();

@@ -152,6 +152,7 @@ fn test_revocation_reports_a_missing_password_file() {
 #[case::remote_http("http://packages.example", "HTTP is allowed only for a loopback")]
 #[case::unsupported_scheme("ftp://127.0.0.1", "must use HTTPS or loopback HTTP")]
 #[case::embedded_credentials("https://Alice:secret@packages.example", "must not contain credentials")]
+#[case::username_without_password("https://Alice@packages.example", "must not contain credentials")]
 #[case::missing_host("file:///path", "must contain a host")]
 fn test_revocation_rejects_unsafe_server_urls(#[case] server: &str, #[case] expected: &str) {
     let command = inspect(AdministratorClientArgs {
@@ -240,6 +241,34 @@ fn test_revocation_propagates_output_failures() {
     .unwrap_err();
 
     assert!(error.to_string().contains("failed to write whole buffer"), "{error:#}");
+}
+
+/// `https` is accepted unconditionally, `http` only for a loopback host: each scheme's arm has to
+/// stay in the match on its own, since deleting either one collapses that scheme into the
+/// catch-all rejection.
+#[rstest]
+#[case::https_remote_host("https://packages.example/")]
+#[case::http_loopback_by_name("http://localhost/")]
+#[case::http_loopback_by_address("http://127.0.0.1/")]
+fn test_server_url_accepts_https_and_loopback_http(#[case] server: &str) {
+    server_url(server).unwrap();
+}
+
+#[test]
+fn test_revocation_accepts_a_response_at_the_byte_limit() {
+    let (runtime, server) = runtime_and_server();
+    let body = format!("\"{}\"", "a".repeat(MAX_RESPONSE_BYTES - 2));
+    assert_eq!(body.len(), MAX_RESPONSE_BYTES);
+    runtime.block_on(
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body.clone()))
+            .mount(&server),
+    );
+    let mut output = Vec::new();
+
+    revocation(&inspect(client(&server)), &mut Cursor::new(PASSWORD), &mut output).unwrap();
+
+    assert_eq!(String::from_utf8(output).unwrap(), format!("{body}\n"));
 }
 
 fn client(server: &MockServer) -> AdministratorClientArgs {

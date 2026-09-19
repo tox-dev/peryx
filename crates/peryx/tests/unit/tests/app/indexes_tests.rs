@@ -76,6 +76,22 @@ fn test_index_list_filter_can_match_no_indexes() {
     );
 }
 
+/// The selector matches an index by its name or its route, either one sufficing on its own: a
+/// selector equal to the route of an index whose name differs must still resolve it, not only a
+/// selector equal to both at once.
+#[test]
+fn test_index_show_resolves_a_selector_matching_only_the_route() {
+    let plugins = plugins();
+    let mut config = Config::with_plugins(&plugins);
+    config.indexes[0].route = "distinct-route".to_owned();
+    let mut output = Vec::new();
+
+    index_with_plugins(&config, &plugins, &show_command("distinct-route"), &mut output).unwrap();
+
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("route\tdistinct-route"), "{output}");
+}
+
 #[rstest]
 #[case::hosted("main", &["kind\thosted", "uploads\tfalse"])]
 fn test_index_show_reports_index_details(#[case] selector: &str, #[case] expected: &[&str]) {

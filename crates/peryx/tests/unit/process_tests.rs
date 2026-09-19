@@ -51,6 +51,15 @@ fn make_service() -> MakeService {
 fn test_logging_layers_cover_formats_and_platform_sinks() {
     drop(fmt_layer(LogFormat::Pretty, std::io::sink));
     drop(fmt_layer(LogFormat::Json, std::io::sink));
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(
+        journald_layer(LogFormat::Pretty)
+            .err()
+            .expect("journald is unavailable off Linux")
+            .to_string(),
+        "the journald log sink is only available on Linux"
+    );
+    #[cfg(target_os = "linux")]
     let _ = journald_layer(LogFormat::Pretty);
     let _ = syslog_layer(LogFormat::Pretty);
     let _ = syslog_layer(LogFormat::Json);
@@ -64,6 +73,108 @@ fn test_logging_layers_cover_formats_and_platform_sinks() {
             ..LogConfig::default()
         });
     }
+}
+
+/// The scheduler needs BOTH conditions: a read-only or replica node has nowhere to write what it
+/// would schedule, and a `None` jobs mode means the operator asked for no local maintenance at all.
+/// Either one alone still has to suppress it.
+#[tokio::test]
+async fn test_start_process_tasks_gates_the_scheduler_on_write_access_and_local_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = plugins();
+    for (read_only, mode, expect_scheduler) in [
+        (false, config::JobsMode::Local, true),
+        (true, config::JobsMode::Local, false),
+        (false, config::JobsMode::None, false),
+    ] {
+        let mut config = local_config(&directory, &plugins);
+        config.read_only = read_only;
+        config.jobs.mode = mode;
+        let active = crate::server::activate_plugins(&config, &plugins).unwrap();
+        let state = crate::server::build_state_with_active_plugins(&config, &active).unwrap();
+        let mut tasks = ProcessTasks::new(tokio_util::sync::CancellationToken::new());
+
+        start_process_tasks(&config, &state, false, &mut tasks);
+
+        assert_eq!(
+            tasks.scheduler.is_some(),
+            expect_scheduler,
+            "read_only={read_only} mode={mode:?}"
+        );
+        tasks.shutdown().await.unwrap();
+    }
+}
+
+/// Cache warming needs BOTH conditions too: a read-only node cannot record a refreshed cache page,
+/// and a replica already receives cache state through replication rather than fetching it itself.
+#[tokio::test]
+async fn test_start_process_tasks_warms_the_cache_only_when_writable_and_primary() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = plugins();
+    for (read_only, is_replica, expect_warming) in [(false, false, true), (true, false, false), (false, true, false)] {
+        let mut config = local_config(&directory, &plugins);
+        config.read_only = read_only;
+        config.indexes[0].kind = IndexKind::Cached {
+            routing: UpstreamRoutingConfig {
+                upstreams: vec![UpstreamConfig {
+                    name: "primary".to_owned(),
+                    url: "http://127.0.0.1:1".to_owned(),
+                    artifact_url: None,
+                    trusted_hosts: Vec::new(),
+                    username: None,
+                    password: None,
+                    token: None,
+                    credential_exec: None,
+                    credential_refresh: None,
+                    tls: UpstreamTlsConfig::default(),
+                }],
+                fallback: true,
+                protected: Vec::new(),
+                pins: BTreeMap::new(),
+            },
+            upstream_concurrency: 1,
+            offline: false,
+            prefetch: Box::new(PrefetchConfig::default()),
+        };
+        let active = crate::server::activate_plugins(&config, &plugins).unwrap();
+        let state = crate::server::build_state_with_active_plugins(&config, &active).unwrap();
+        let mut tasks = ProcessTasks::new(tokio_util::sync::CancellationToken::new());
+
+        start_process_tasks(&config, &state, is_replica, &mut tasks);
+
+        assert_eq!(
+            tasks.cache_warming.len(),
+            usize::from(expect_warming),
+            "read_only={read_only} is_replica={is_replica}"
+        );
+        tasks.shutdown().await.unwrap();
+    }
+}
+
+/// The file sink's directory is whatever the configured path's parent is, as long as that parent
+/// is not empty (a bare filename with no directory component falls back to the current directory
+/// instead of an unusable empty one).
+#[test]
+fn test_logging_layer_writes_the_file_sink_under_its_configured_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let logs = directory.path().join("logs");
+    std::fs::create_dir(&logs).unwrap();
+    let (layer, guard) = logging_layer(&LogConfig {
+        sink: LogSink::File,
+        file: Some(logs.join("peryx.log")),
+        ..LogConfig::default()
+    })
+    .unwrap();
+    let subscriber = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("test event");
+    });
+    drop(guard);
+
+    assert!(
+        std::fs::read_dir(&logs).unwrap().next().is_some(),
+        "expected a rolling log file under the configured directory"
+    );
 }
 
 #[tokio::test]
@@ -250,6 +361,8 @@ fn test_log_nodelay_accepts_success_and_failure() {
 fn test_rustls_provider_install_is_idempotent() {
     install_rustls_provider();
     install_rustls_provider();
+
+    assert!(rustls::crypto::CryptoProvider::get_default().is_some());
 }
 
 struct FailingWriter;

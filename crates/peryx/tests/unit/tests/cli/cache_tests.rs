@@ -119,6 +119,32 @@ fn test_parse_cache_purge_orphaned_blobs_confirmation() {
     );
 }
 
+#[rstest]
+#[case::resource_preview(false)]
+#[case::resource_confirmed(true)]
+fn test_purge_resource_confirmed_reflects_yes(#[case] yes: bool) {
+    let command = CachePurgeCommand::Resource(CachePurgeResourceArgs {
+        runtime: RuntimeArgs::default(),
+        index: "artifacts".to_owned(),
+        resource: "resource".to_owned(),
+        yes,
+    });
+
+    assert_eq!(command.confirmed(), yes);
+}
+
+#[rstest]
+#[case::orphaned_blobs_preview(false)]
+#[case::orphaned_blobs_confirmed(true)]
+fn test_purge_orphaned_blobs_confirmed_reflects_yes(#[case] yes: bool) {
+    let command = CachePurgeCommand::OrphanedBlobs(CachePurgeOrphanedBlobsArgs {
+        runtime: RuntimeArgs::default(),
+        yes,
+    });
+
+    assert_eq!(command.confirmed(), yes);
+}
+
 /// A rebuild writes, so it waits for the same confirmation a purge does.
 #[rstest]
 #[case::preview(&["peryx", "cache", "repair"][..], false)]

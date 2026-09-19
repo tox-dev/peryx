@@ -1,3 +1,10 @@
+use std::collections::BTreeMap;
+
+use peryx_ecosystem_pypi::store::PypiStore as _;
+use peryx_ecosystem_pypi::upload::Uploaded;
+use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
+use peryx_storage::meta::MetaStore;
+
 use crate::app::policy_with_plugins;
 use crate::cli::{PolicyCommand, PolicyDryRunArgs, RuntimeArgs};
 use crate::config::{Config, IndexConfig};
@@ -80,6 +87,70 @@ fn test_policy_dry_run_rejects_configuration_without_support() {
     let error = policy_with_plugins(&config, &plugins, &command(None), &mut Vec::new()).unwrap_err();
 
     assert_eq!(error.to_string(), "no configured ecosystem supports policy dry-run");
+}
+
+/// Each ecosystem's dry run scans only the indexes configured for that ecosystem: an upload
+/// violating the pypi `hosted` index's size limit must not go unreported because a different
+/// ecosystem's indexes were scanned in its place. `oci` names none of its own indexes `hosted`, so
+/// scanning the wrong ecosystem's indexes here can only ever miss the upload, never coincidentally
+/// find it under another name.
+#[test]
+fn test_policy_dry_run_scopes_each_ecosystem_to_its_own_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::compiled_plugins();
+    let mut config = config(&dir, Config::default().indexes);
+    config
+        .indexes
+        .iter_mut()
+        .find(|index| index.name == "hosted")
+        .unwrap()
+        .policy
+        .max_artifact_size_bytes = Some(2);
+    initialize(&config, &plugins);
+    let mut hashes = BTreeMap::new();
+    hashes.insert("sha256".to_owned(), "0".repeat(64));
+    let record = serde_json::to_vec(&Uploaded {
+        version: "1.0".to_owned(),
+        file: File {
+            filename: "pkg-1.0.whl".to_owned(),
+            url: "http://localhost/files/pkg-1.0.whl".to_owned(),
+            hashes,
+            requires_python: None,
+            size: Some(3),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
+        },
+        trashed: None,
+    })
+    .unwrap();
+    MetaStore::open(config.data_dir.join("peryx.redb"))
+        .unwrap()
+        .put_upload("hosted", "pkg", "pkg-1.0.whl", &record)
+        .unwrap();
+    let mut output = Vec::new();
+
+    policy_with_plugins(
+        &config,
+        &plugins,
+        &PolicyCommand::DryRun(PolicyDryRunArgs {
+            runtime: RuntimeArgs::default(),
+            index: None,
+            resource: None,
+        }),
+        &mut output,
+    )
+    .unwrap();
+
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("upload\thosted\tpkg\tpkg-1.0.whl\t\tmax-artifact-size\tsize\tartifact size 3 exceeds limit 2\n"),
+        "expected a size-limit denial scanning the hosted index"
+    );
 }
 
 #[test]

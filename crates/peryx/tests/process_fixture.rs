@@ -177,18 +177,26 @@ fn shutdown_signal_drains_an_in_flight_upload(#[case] signal: nix::sys::signal::
     }
 }
 
+/// Both signals go back to their default disposition, not just the one that arrived: an interrupt
+/// that goes back to being an interrupt would leave a subsequent terminate signal caught by
+/// tokio's leftover handler instead of killing the process outright.
 #[cfg(unix)]
-#[test]
-fn a_second_shutdown_signal_uses_the_default_disposition() {
+#[rstest::rstest]
+#[case::same_signal_twice(nix::sys::signal::Signal::SIGTERM, nix::sys::signal::Signal::SIGTERM)]
+#[case::the_other_signal_second(nix::sys::signal::Signal::SIGINT, nix::sys::signal::Signal::SIGTERM)]
+fn a_second_shutdown_signal_uses_the_default_disposition(
+    #[case] first: nix::sys::signal::Signal,
+    #[case] second: nix::sys::signal::Signal,
+) {
     let process = RunningServe::start();
     let _upload = process.begin_upload();
 
-    process.signal(nix::sys::signal::Signal::SIGTERM);
+    process.signal(first);
     process.wait_for_shutdown();
-    process.signal(nix::sys::signal::Signal::SIGTERM);
+    process.signal(second);
     let (status, logs) = process.wait();
 
-    assert_eq!(status.signal(), Some(nix::libc::SIGTERM), "{logs}");
+    assert_eq!(status.signal(), Some(second as i32), "{logs}");
     assert_eq!(logs.matches("shutdown signal received").count(), 1, "{logs}");
 }
 
