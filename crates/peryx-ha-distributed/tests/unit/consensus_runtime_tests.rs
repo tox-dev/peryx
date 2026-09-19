@@ -285,7 +285,12 @@ impl GatedCluster {
     }
 }
 
-fn blocked_executor() -> (RaftExecutor, Sender<()>, Receiver<()>) {
+fn blocked_executor() -> (
+    RaftExecutor,
+    tokio_util::sync::CancellationToken,
+    Sender<()>,
+    Receiver<()>,
+) {
     let cancellation = tokio_util::sync::CancellationToken::new();
     let (blocked_sender, blocked_receiver) = mpsc::sync_channel(0);
     let (release_sender, release_receiver) = mpsc::channel();
@@ -300,12 +305,30 @@ fn blocked_executor() -> (RaftExecutor, Sender<()>, Receiver<()>) {
         })
         .unwrap();
     blocked_receiver.recv().unwrap();
-    (RaftExecutor::new(cancellation, thread), release_sender, exited_receiver)
+    (
+        RaftExecutor::new(cancellation.clone(), thread),
+        cancellation,
+        release_sender,
+        exited_receiver,
+    )
+}
+
+#[test]
+fn test_cancelling_an_executor_signals_without_reaping_its_thread() {
+    let (executor, cancellation, release, exited) = blocked_executor();
+
+    executor.cancel();
+
+    assert!(cancellation.is_cancelled());
+    assert_eq!(exited.try_recv(), Err(TryRecvError::Empty));
+
+    release.send(()).unwrap();
+    exited.recv().unwrap();
 }
 
 #[test]
 fn test_dropping_an_executor_returns_while_its_thread_is_blocked() {
-    let (executor, release, exited) = blocked_executor();
+    let (executor, cancellation, release, exited) = blocked_executor();
     let (returned_sender, returned_receiver) = mpsc::channel();
     let caller = std::thread::spawn(move || {
         drop(executor);
@@ -313,6 +336,7 @@ fn test_dropping_an_executor_returns_while_its_thread_is_blocked() {
     });
 
     returned_receiver.recv().unwrap();
+    assert!(cancellation.is_cancelled());
     assert_eq!(exited.try_recv(), Err(TryRecvError::Empty));
 
     release.send(()).unwrap();
@@ -322,7 +346,7 @@ fn test_dropping_an_executor_returns_while_its_thread_is_blocked() {
 
 #[test]
 fn test_shutting_down_an_executor_returns_while_its_thread_is_blocked() {
-    let (executor, release, exited) = blocked_executor();
+    let (executor, _cancellation, release, exited) = blocked_executor();
     let (returned_sender, returned_receiver) = mpsc::channel();
     let caller = std::thread::spawn(move || {
         executor.shutdown();
@@ -1040,6 +1064,32 @@ async fn test_claim_home_on_a_stopped_group_is_unavailable() {
         group.claim_home("proj").await,
         Err(OwnershipError::Unavailable(_))
     ));
+}
+
+#[tokio::test]
+async fn test_the_default_clock_reports_the_real_unix_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+    let before = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let _ = group.claim_home("proj").await.unwrap();
+
+    let lease = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+
+    let after = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let issued_at = lease.expires_at_unix - peryx_ha::AUTHORITY_WRITE_LEASE_SECS;
+    assert!((before..=after).contains(&issued_at));
 }
 
 #[tokio::test]

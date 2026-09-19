@@ -253,6 +253,21 @@ async fn test_ingest_rejects_a_malformed_body() {
 }
 
 #[tokio::test]
+async fn test_ingest_accepts_a_body_exactly_at_the_byte_cap() {
+    let router = router();
+    let base_len = serde_json::to_vec(&beacon("", 1, 1)).unwrap().len();
+    let node = "x".repeat(4096 - base_len);
+
+    let status = post(&router, Some(TOKEN), json_body(&beacon(&node, 1, 1))).await;
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the body fit under the cap and reached the membership check"
+    );
+}
+
+#[tokio::test]
 async fn test_ingest_rejects_an_oversized_body() {
     let router = router();
     let node = "x".repeat(DEFAULT_MAX_HEARTBEAT_BYTES + 1);

@@ -1031,6 +1031,66 @@ fn counting_peers(owed: &[Owed]) -> (Arc<CountingPeers>, Arc<AtomicUsize>) {
     (peers, fetches)
 }
 
+struct RangeSpy {
+    inner: LoopbackBlobSource,
+    ranges: Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+#[async_trait::async_trait]
+impl BlobTransport for RangeSpy {
+    async fn fetch_blob(&self, request: crate::BlobRequest) -> Result<Vec<u8>, TransportError> {
+        self.ranges
+            .lock()
+            .unwrap()
+            .push(request.range.map_or(0, |range| range.length));
+        self.inner.fetch_blob(request).await
+    }
+}
+
+struct SpyPeers {
+    peer: RangeSpy,
+}
+
+impl SourceTransports for SpyPeers {
+    fn transport(&self, _source_dc: &str) -> Option<&(dyn BlobTransport + Send + Sync)> {
+        Some(&self.peer as &(dyn BlobTransport + Send + Sync))
+    }
+}
+
+#[tokio::test]
+async fn test_a_copy_range_uses_the_full_eight_mebibyte_window() {
+    static BIG: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let content: &'static [u8] = BIG.get_or_init(|| vec![7u8; 8 * 1024 * 1024 + 100]);
+    let (_meta_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let owed = seed_owed(&meta, &backend, &[content]);
+
+    let ranges = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let peers: Arc<dyn SourceTransports> = Arc::new(SpyPeers {
+        peer: RangeSpy {
+            inner: LoopbackBlobSource::new(
+                owed.iter()
+                    .map(|entry| (entry.blob.clone(), Bytes::copy_from_slice(entry.content)))
+                    .collect(),
+                TransferLimits {
+                    max_operations: NonZeroUsize::new(1).unwrap(),
+                    max_encoded_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
+                },
+            ),
+            ranges: ranges.clone(),
+        },
+    });
+    let copier = copier_with("home", backend, store.clone(), peers);
+    let clock: Clock = Arc::new(|| 42);
+
+    copier
+        .copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap();
+
+    assert_eq!(ranges.lock().unwrap().as_slice(), [8 * 1024 * 1024, 100]);
+}
+
 #[tokio::test]
 async fn test_copy_pass_copies_before_the_scan_reaches_the_end_of_the_index() {
     let (_meta_dir, meta) = meta();

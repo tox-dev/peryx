@@ -118,6 +118,28 @@ fn test_histogram_buckets_are_cumulative_across_bounds() {
 }
 
 #[test]
+fn test_a_value_exactly_at_a_bucket_bound_is_counted_in_that_bucket() {
+    let metrics = AvailabilityMetrics::default();
+    metrics.record_cycle(&applied(1, 1, complete(), Duration::from_millis(5)));
+
+    let body = rendered(&metrics);
+    assert!(
+        body.contains("peryx_availability_apply_seconds_bucket{le=\"0.005\"} 1\n"),
+        "{body}"
+    );
+}
+
+#[test]
+fn test_histogram_sum_seconds_is_additive_not_multiplicative() {
+    let metrics = AvailabilityMetrics::default();
+    metrics.record_cycle(&applied(1, 1, complete(), Duration::from_millis(500)));
+    metrics.record_cycle(&applied(1, 1, complete(), Duration::from_secs(2)));
+
+    let body = rendered(&metrics);
+    assert!(body.contains("peryx_availability_apply_seconds_sum 2.5\n"), "{body}");
+}
+
+#[test]
 fn test_exposition_stays_within_the_series_budget() {
     let metrics = AvailabilityMetrics::default();
     metrics.record_cycle(&failed(SyncError::EmptySource, Duration::from_millis(1)));

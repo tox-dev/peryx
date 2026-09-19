@@ -276,6 +276,42 @@ async fn test_fetch_batch_refuses_an_oversized_frame() {
 }
 
 #[tokio::test]
+async fn test_fetch_batch_accepts_a_frame_exactly_at_the_byte_limit() {
+    let page = |limit: u64| {
+        let mut peer = LoopbackPeer::new(
+            "primary-a",
+            "secret",
+            TransferLimits {
+                max_operations: ops(8),
+                max_encoded_bytes: std::num::NonZeroU64::new(limit).unwrap(),
+            },
+        );
+        peer.append(vec![0; 32]);
+        peer
+    };
+    let unbounded = page(u64::MAX);
+    let measured = LoopbackTransport::connect(&unbounded, "secret")
+        .fetch_batch(BatchRequest {
+            after: 0,
+            max_operations: ops(8),
+        })
+        .await
+        .unwrap();
+    let exact = measured.encoded_len();
+
+    let bounded = page(exact);
+    let frame = LoopbackTransport::connect(&bounded, "secret")
+        .fetch_batch(BatchRequest {
+            after: 0,
+            max_operations: ops(8),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(frame.encoded_len(), exact);
+}
+
+#[tokio::test]
 async fn test_injected_disconnect_surfaces_as_retryable() {
     let peer = seeded_peer("primary-a", "secret", 1);
     peer.inject(PeerFault::Disconnect);

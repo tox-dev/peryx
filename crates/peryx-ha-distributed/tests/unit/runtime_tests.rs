@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use axum::response::IntoResponse as _;
 use axum::{Router, routing::get as route_get};
 use http_body_util::BodyExt as _;
 use peryx_driver::state::AppState;
@@ -820,6 +821,86 @@ fn replica_transport_assembly_handles_roster_duplicates_and_errors() {
 }
 
 #[test]
+fn metadata_peers_excludes_this_node_from_its_own_peer_set() {
+    let roster = membership(vec![
+        member(
+            "local",
+            "east",
+            "http://local.internal:4460",
+            RuntimeMemberRole::Replica,
+        ),
+        member("peer-a", "west", "http://peer.internal:4460", RuntimeMemberRole::Writer),
+    ]);
+
+    let set = metadata_peers(
+        Some(&roster),
+        Some("local"),
+        "http://upstream.internal:4460",
+        TOKEN,
+        0,
+        NonZeroUsize::MIN,
+    )
+    .unwrap();
+
+    assert_eq!(set.sources(), vec!["peer-a".to_owned(), "upstream".to_owned()]);
+}
+
+#[tokio::test]
+async fn metadata_peers_threads_the_configured_page_size_into_response_validation() {
+    let server = TestServer::start(crate::support::http_contract::fixed_get(
+        "/+replication/v1/changes",
+        || {
+            axum::Json(ChangePage {
+                version: PROTOCOL_VERSION,
+                source: "writer".to_owned(),
+                after: 0,
+                current_serial: 2,
+                changes: vec![
+                    crate::protocol::Change {
+                        serial: 1,
+                        event: b"one".to_vec(),
+                        metadata: Vec::new(),
+                        blobs: Vec::new(),
+                    },
+                    crate::protocol::Change {
+                        serial: 2,
+                        event: b"two".to_vec(),
+                        metadata: Vec::new(),
+                        blobs: Vec::new(),
+                    },
+                ],
+            })
+            .into_response()
+        },
+    ))
+    .await;
+    let roster = membership(vec![member("peer", "west", &server.url, RuntimeMemberRole::Writer)]);
+    // Larger than `DEFAULT_TRANSFER_LIMITS.max_operations` (256): a transport whose own cap fell back to
+    // that default would refuse its own request locally, before ever reaching the network, because the
+    // request it built asks for more than that fallback cap allows.
+    let page_size = NonZeroUsize::new(500).unwrap();
+    let mut set = metadata_peers(
+        Some(&roster),
+        None,
+        "http://upstream.internal:4460",
+        TOKEN,
+        0,
+        page_size,
+    )
+    .unwrap();
+
+    let report = set.advance(Duration::ZERO).await;
+
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, crate::MemberOutcome::Progressed { source, .. } if source == "peer")),
+        "a request for 500 operations must not be refused against the 256-operation default: {report:?}"
+    );
+}
+
+#[test]
 fn replica_blob_deferral_resolves_local_and_remote_datacenters() {
     let dir = tempfile::tempdir().unwrap();
     let config = replica_config(&dir, "http://primary.internal:4460");
@@ -1579,6 +1660,58 @@ async fn replica_runtime_builds_rostered_services_and_beacon() {
     lifecycle.activate();
     let runtime = runtime.prepare_worker_runtime().unwrap();
     assert!(runtime.start_with_lifecycle(lifecycle).unwrap().is_some());
+}
+
+/// `PreparedDistributedRuntime::shutdown` must delegate to the replica's `AvailabilityRuntime::shutdown`
+/// rather than return early: that inner shutdown blocks until its owner thread actually stops, so a
+/// short-circuited outer shutdown would return long before the runtime it was meant to stop.
+#[test]
+fn prepared_replica_shutdown_waits_for_its_runtime_to_actually_stop() {
+    let (dir, mut state) = state();
+    install_distributed_services(&mut state, peryx_core::TopologyMode::Ha, peryx_core::NodeRole::Replica);
+    state.serving.meta.claim_writer_identity("writer").unwrap();
+    let mut config = replica_config(&dir, "http://127.0.0.1:1");
+    config.mode = DistributedMode::Ha;
+    config.node_identity = Some("replica".to_owned());
+    config.writer_identity = Some("writer".to_owned());
+    config.membership = Some(membership(vec![
+        member("writer", "east", "http://127.0.0.1:4460", RuntimeMemberRole::Writer),
+        member("replica", "west", "http://127.0.0.1:4461", RuntimeMemberRole::Replica),
+    ]));
+    let runtime = runtime(&config, &state).unwrap();
+    let prepared = runtime.prepare_worker_runtime().unwrap();
+    let handle = match &prepared.worker {
+        PreparedWorker::Replica { runtime, .. } => runtime.handle().clone(),
+        PreparedWorker::Primary => panic!("expected a replica worker"),
+    };
+
+    let (blocking_started, started) = std::sync::mpsc::channel();
+    let (release, blocked_until_released) = std::sync::mpsc::channel();
+    let blocked = handle.spawn_blocking(move || {
+        blocking_started.send(()).unwrap();
+        blocked_until_released.recv().unwrap();
+    });
+    started.recv().unwrap();
+
+    let (finished, observed) = std::sync::mpsc::channel();
+    let shutdown_thread = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(prepared.shutdown())
+            .unwrap();
+        finished.send(()).unwrap();
+    });
+
+    assert_eq!(
+        observed.recv_timeout(Duration::from_millis(200)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+        "shutdown returned before its runtime actually stopped"
+    );
+    release.send(()).unwrap();
+    observed.recv().unwrap();
+    shutdown_thread.join().unwrap();
+    drop(blocked);
 }
 
 #[test]

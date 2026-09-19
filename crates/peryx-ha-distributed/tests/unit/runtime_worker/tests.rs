@@ -245,6 +245,83 @@ fn test_shutdown_stops_resident_work() {
     assert!(shared.is_healthy(), "a cancelled task is not a panic");
 }
 
+/// Distinct from a full shutdown: cancelling tracked work must not depend on the runtime itself being
+/// torn down, since a runtime being dropped could cancel outstanding tasks on its own regardless of
+/// whether `cancel_workers` did anything at all.
+#[test]
+fn test_cancel_workers_stops_tracked_work_without_tearing_down_the_runtime() {
+    struct SendOnDrop(std::sync::mpsc::Sender<()>);
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    let shared = Arc::new(WorkerShared::for_replica());
+    let mut runtime = AvailabilityRuntime::start(Arc::clone(&shared)).expect("runtime");
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    runtime
+        .try_spawn(Box::pin(async move {
+            let _stop = SendOnDrop(stopped_tx);
+            started_tx.send(()).expect("receiver waiting");
+            std::future::pending::<()>().await;
+        }))
+        .expect("slot");
+    started_rx.recv().expect("task starts");
+
+    runtime.cancel_workers();
+
+    stopped_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("cancel_workers drops the resident task on its own");
+    let fresh = runtime
+        .try_spawn(Box::pin(std::future::ready(())))
+        .expect("the runtime still accepts work");
+    runtime
+        .handle
+        .block_on(fresh)
+        .expect("a fresh task still completes after cancel_workers");
+}
+
+/// Distinct from a full shutdown for the same reason as `cancel_workers`: `stop_workers` must itself be
+/// the thing that joins tracked work, not an eventual drop of the whole runtime.
+#[test]
+fn test_stop_workers_joins_tracked_work_without_tearing_down_the_runtime() {
+    struct SendOnDrop(std::sync::mpsc::Sender<()>);
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    let shared = Arc::new(WorkerShared::for_replica());
+    let mut runtime = AvailabilityRuntime::start(Arc::clone(&shared)).expect("runtime");
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    runtime
+        .try_spawn(Box::pin(async move {
+            let _stop = SendOnDrop(stopped_tx);
+            started_tx.send(()).expect("receiver waiting");
+            std::future::pending::<()>().await;
+        }))
+        .expect("slot");
+    started_rx.recv().expect("task starts");
+
+    let handle = runtime.handle.clone();
+    handle.block_on(runtime.stop_workers());
+
+    stopped_rx
+        .try_recv()
+        .expect("stop_workers already joined the resident task by the time it returns");
+    let fresh = runtime
+        .try_spawn(Box::pin(std::future::ready(())))
+        .expect("the runtime still accepts work");
+    handle
+        .block_on(fresh)
+        .expect("a fresh task still completes after stop_workers");
+}
+
 #[test]
 fn test_join_runtime_thread_reports_a_panic() {
     let thread = std::thread::spawn(|| panic!("injected runtime owner panic"));
@@ -389,6 +466,39 @@ fn test_drop_does_not_join_a_permanently_blocked_owner() {
     release.send(()).unwrap();
     runtime_handle.block_on(blocked).unwrap();
     drop_thread.join().unwrap();
+}
+
+/// Unlike drop, which detaches the owner thread and returns without waiting, `shutdown` reports the
+/// owner thread's own join outcome, so it cannot return before that thread has actually stopped.
+#[test]
+fn test_shutdown_waits_for_the_owner_thread_to_actually_stop() {
+    let runtime = AvailabilityRuntime::start(Arc::new(WorkerShared::for_replica())).unwrap();
+    let (blocking_started, started) = mpsc::channel();
+    let (release, blocked_until_released) = mpsc::channel();
+    let blocked = runtime.handle.spawn_blocking(move || {
+        blocking_started.send(()).unwrap();
+        blocked_until_released.recv().unwrap();
+    });
+    started.recv().unwrap();
+
+    let (finished, observed) = mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(runtime.shutdown())
+            .unwrap();
+        finished.send(()).unwrap();
+    });
+
+    assert_eq!(
+        observed.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    );
+    release.send(()).unwrap();
+    observed.recv().unwrap();
+    shutdown_thread.join().unwrap();
+    drop(blocked);
 }
 
 #[test]

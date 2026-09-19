@@ -87,6 +87,18 @@ fn test_every_producer_at_the_frontier_is_complete() {
 }
 
 #[test]
+fn test_lag_days_is_the_difference_between_today_and_the_frontier() {
+    let batches = [batch("east", 1, 10, &[("alpha", "resource-a", 3, 30)])];
+    let report = assess_completeness(
+        &receiver(&batches),
+        &expected(&[("east", "east-dc")]),
+        &query(0, 10, 30, None),
+    );
+
+    assert_eq!(report.lag_days, Some(20));
+}
+
+#[test]
 fn test_complete_totals_equal_the_sum_of_accepted_aggregates() {
     let batches = [
         batch("east", 1, 9, &[("alpha", "resource-a", 2, 20)]),
@@ -245,6 +257,35 @@ fn test_a_historical_range_below_the_frontier_covers_a_laggard() {
     assert_eq!(report.frontier_day, Some(20));
     assert_eq!(report.required_day, Some(8));
     assert_eq!(report.lag_days, Some(1));
+}
+
+#[test]
+fn test_the_day_range_includes_its_lower_bound() {
+    let batches = [
+        batch("east", 1, 8, &[("alpha", "resource-a", 1, 10)]),
+        batch("east", 1, 10, &[("alpha", "resource-a", 2, 20)]),
+    ];
+    let report = assess_completeness(
+        &receiver(&batches),
+        &expected(&[("east", "east-dc")]),
+        &query(8, 12, 16, None),
+    );
+
+    assert_eq!(
+        report.buckets,
+        vec![
+            DayBucket {
+                day: 8,
+                downloads: 1,
+                bytes: 10
+            },
+            DayBucket {
+                day: 10,
+                downloads: 2,
+                bytes: 20
+            },
+        ]
+    );
 }
 
 #[test]

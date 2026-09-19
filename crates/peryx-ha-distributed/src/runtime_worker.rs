@@ -228,6 +228,13 @@ impl AvailabilityRuntime {
         })
     }
 
+    /// Exposes the underlying Tokio handle so a caller outside this module can hold the runtime open
+    /// (for example with `spawn_blocking`) without going through the tracked, abortable task slots.
+    #[cfg(test)]
+    pub(crate) const fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
     /// Returns `None` at capacity. A panic releases the slot and fails worker health.
     pub fn try_spawn(&self, task: BackgroundTask) -> Option<tokio::task::JoinHandle<()>> {
         self.try_spawn_inner(task, None)

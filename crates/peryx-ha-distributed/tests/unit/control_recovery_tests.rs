@@ -448,6 +448,46 @@ async fn test_a_forwarded_write_the_leader_refuses_reports_an_unreachable_peer()
     }
 }
 
+/// The follower's own `with_clock` only stamps the request it sends; the leader that actually applies
+/// the write re-stamps it with its own RPC handler's clock, which defaults to the real wall clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_a_forwarded_epoch_write_is_stamped_with_the_leaders_real_clock() {
+    let dirs: Vec<TempDir> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let (nodes, servers) = live_group(&dirs).await;
+    let elected = leader_other_than(&nodes[0], None).await;
+    let follower = (1..=3).find(|id| *id != elected).unwrap();
+    let index = usize::try_from(follower).unwrap() - 1;
+    assert_eq!(leader_other_than(&nodes[index], None).await, elected);
+    let group = group_on(&nodes[index], follower);
+    let _ = group.claim_home("proj").await.unwrap();
+    let before = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+
+    let lease = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+
+    let after = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let issued_at = lease.expires_at_unix - peryx_ha::AUTHORITY_WRITE_LEASE_SECS;
+    assert!((before..=after).contains(&issued_at));
+    for node in &nodes {
+        node.raft().shutdown().await.unwrap();
+    }
+    for server in servers {
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
 #[tokio::test]
 async fn test_a_keyed_command_the_authority_rejects_leaves_its_key_open() {
     let dir = tempfile::tempdir().unwrap();

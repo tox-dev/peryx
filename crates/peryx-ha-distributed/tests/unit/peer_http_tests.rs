@@ -7,12 +7,16 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 
+use peryx_storage::meta::{CheckpointIdentity, CheckpointManifest};
+
 use crate::peer::{BatchRequest, PeerTransport, TransferLimits, TransportError};
 use crate::peer_http::{HttpPeerError, HttpPeerTransport};
 use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
 use crate::support::http_contract;
 
 const CHANGES_ROUTE: &str = "/+replication/v1/changes";
+const CHECKPOINT_ROUTE: &str = "/+replication/v1/checkpoint";
+const CHECKPOINT_CHUNK_ROUTE: &str = "/+replication/v1/checkpoint/chunk";
 const TOKEN: &str = "secret";
 
 fn change(serial: u64) -> Change {
@@ -156,6 +160,62 @@ async fn test_fetch_applies_the_streaming_byte_cap_before_decode() {
             actual: byte_limit + 1,
         }
     );
+}
+
+#[tokio::test]
+async fn test_checkpoint_manifest_accepts_a_body_exactly_at_its_byte_cap() {
+    let manifest = CheckpointManifest {
+        identity: CheckpointIdentity {
+            source: "writer".to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            schema_version: 1,
+        },
+        serial: 4,
+        rows: 1,
+        revocations: 0,
+        blobs: 0,
+        bytes: 10,
+        digest: "d".repeat(64),
+    };
+    let json = serde_json::to_string(&manifest).unwrap();
+    let byte_limit: u64 = 8 * 1024;
+    let padding = " ".repeat(usize::try_from(byte_limit).unwrap() - json.len());
+    let body = format!("{padding}{json}");
+
+    let parsed = http_contract::run(
+        http_contract::fixed_get(CHECKPOINT_ROUTE, move || Response::new(Body::from(body.clone()))),
+        |base| async move { transport(&base, limits(8, 4096)).checkpoint_manifest().await.unwrap() },
+    )
+    .await;
+
+    assert_eq!(parsed, manifest);
+}
+
+#[tokio::test]
+async fn test_checkpoint_chunk_accepts_a_body_exactly_at_its_byte_cap() {
+    let byte_limit = (crate::http::MAX_CHECKPOINT_CHUNK_BYTES * 2) as u64;
+    let payload = vec![7u8; usize::try_from(byte_limit).unwrap()];
+    let response_body = payload.clone();
+
+    let window = http_contract::run(
+        http_contract::fixed_get(CHECKPOINT_CHUNK_ROUTE, move || {
+            let mut response = Response::new(Body::from(response_body.clone()));
+            response
+                .headers_mut()
+                .insert(crate::http::CHECKPOINT_CURSOR_HEADER, "done".parse().unwrap());
+            response
+        }),
+        |base| async move {
+            transport(&base, limits(8, 4096))
+                .checkpoint_chunk("cursor-token")
+                .await
+                .unwrap()
+        },
+    )
+    .await;
+
+    assert_eq!(window.bytes, payload);
+    assert_eq!(window.next, "done");
 }
 
 #[tokio::test]

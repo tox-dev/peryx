@@ -406,6 +406,22 @@ async fn test_primary_router_rejects_an_oversized_page_limit() {
 }
 
 #[tokio::test]
+async fn test_primary_router_accepts_a_page_limit_at_the_maximum() {
+    let stores = TestStores::new();
+
+    let response = stores
+        .router()
+        .oneshot(authenticated_request(
+            &format!("/+replication/v1/changes?after=0&limit={DEFAULT_MAX_CHANGE_PAGE_SIZE}"),
+            TOKEN,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn test_primary_router_streams_a_digest_addressed_blob() {
     let stores = TestStores::new();
     let digest = stores.blobs.put_bytes(b"artifact bytes").await.unwrap();

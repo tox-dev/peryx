@@ -617,6 +617,31 @@ async fn test_invalid_query_windows_are_rejected(#[case] query: String, #[case] 
     assert_eq!(body["error"], message);
 }
 
+#[rstest]
+#[case::repository_at_the_limit(
+    format!("repository={}&{}", "r".repeat(512), window()),
+    StatusCode::NOT_FOUND
+)]
+#[case::equal_window_bounds(format!("from={t}&to={t}", t = TODAY * SECONDS_PER_DAY), StatusCode::OK)]
+#[tokio::test]
+async fn test_valid_query_windows_at_their_bounds_are_accepted(#[case] query: String, #[case] expected: StatusCode) {
+    let (_dir, state) = app(two_writers(), Snapshot::Batches(&caught_up())).await;
+
+    let (status, _, body) = get(
+        &state,
+        &format!("/+analytics/completeness?{query}"),
+        Some(("Olivia", USER_PASSWORD)),
+    )
+    .await;
+
+    assert_eq!(status, expected, "{body:?}");
+    assert_ne!(
+        body.get("error"),
+        Some(&serde_json::json!("repository filter exceeds 512 bytes")),
+        "a 512-byte repository filter must pass the length check"
+    );
+}
+
 #[tokio::test]
 async fn test_an_installed_route_without_an_analytics_reader_is_unavailable() {
     let (_dir, state) = app_with_completeness(Vec::new(), Snapshot::Absent, false).await;

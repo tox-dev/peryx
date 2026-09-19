@@ -33,6 +33,7 @@ fn test_push_accepts_up_to_capacity_then_fails_closed() {
     assert_eq!(channel.try_push(change(1)), Ok(()));
     assert_eq!(channel.try_push(change(2)), Ok(()));
     assert!(channel.is_full());
+    assert!(!channel.is_empty());
     assert_eq!(channel.len(), 2);
 
     assert_eq!(channel.try_push(change(3)), Err(ChannelFull { capacity: 2 }));

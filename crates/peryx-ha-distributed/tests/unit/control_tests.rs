@@ -176,6 +176,28 @@ async fn test_a_receipt_the_window_replayed_is_audited_as_a_replay() {
 }
 
 #[tokio::test]
+async fn test_a_replayed_receipt_is_audited_with_the_replay_result_not_committed() {
+    let control = ScriptedControl::new([Ok(replayed(4))]);
+    let plane = ControlPlane::with_duration_source(control, fixed_unix_clock(), fixed_duration_source());
+
+    let (log, _) = crate::support::captured_async(plane.execute("alice", Some("k1"), transfer())).await;
+
+    assert!(log.contains("result=\"replayed\""), "audit log: {log}");
+    assert!(!log.contains("result=\"committed\""), "audit log: {log}");
+}
+
+#[tokio::test]
+async fn test_a_fresh_commit_is_audited_with_the_committed_result_not_replayed() {
+    let control = ScriptedControl::new([Ok(committed(4))]);
+    let plane = ControlPlane::with_duration_source(control, fixed_unix_clock(), fixed_duration_source());
+
+    let (log, _) = crate::support::captured_async(plane.execute("alice", Some("k1"), transfer())).await;
+
+    assert!(log.contains("result=\"committed\""), "audit log: {log}");
+    assert!(!log.contains("result=\"replayed\""), "audit log: {log}");
+}
+
+#[tokio::test]
 async fn test_a_repeated_key_returns_one_committed_result_without_resubmitting() {
     let control = ScriptedControl::new([Ok(committed(7)), Err(ControlError::Unavailable("gone".to_owned()))]);
     let plane = ControlPlane::new(control.clone(), fixed_unix_clock());

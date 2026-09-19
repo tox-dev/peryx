@@ -209,7 +209,9 @@ fn test_default_limits_match_the_documented_constant() {
 async fn test_a_lone_peer_drains_to_its_frontier_in_one_round() {
     let peer = peer_with("a", "tok", 3);
     let mut set = PeerSet::new(DEFAULT_SET_LIMITS, ReconnectPolicy::default());
+    assert!(set.is_empty());
     set.join("a", LoopbackTransport::connect(&peer, "tok"), 0);
+    assert!(!set.is_empty());
 
     let report = set.advance(Duration::ZERO).await;
 
@@ -517,6 +519,48 @@ async fn test_a_bad_credential_quarantines_a_peer() {
         set.advance(Duration::ZERO).await.advanced(),
         0,
         "a quarantined peer waits for its delay"
+    );
+}
+
+#[tokio::test]
+async fn test_a_quarantine_delay_adds_jitter_rather_than_subtracting_it() {
+    let peer = peer_with("a", "tok", 2);
+    let jitter_window = Duration::from_millis(50);
+    let mut set = PeerSet::new(limits(4, 256, 1024, jitter_window), policy(10));
+    set.join("a", LoopbackTransport::connect(&peer, "wrong"), 0);
+
+    let report = set.advance(Duration::ZERO).await;
+
+    let expected_delay = policy(10).quarantine_delay() + crate::backoff::jitter("a", 1, jitter_window);
+    assert_eq!(
+        report.outcomes[0],
+        MemberOutcome::Quarantined {
+            source: "a".to_owned(),
+            reason: "unauthenticated",
+            delay: expected_delay,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_a_halved_requests_backoff_waits_out_its_full_jittered_delay() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut set = PeerSet::new(limits(1, 4, 8, Duration::from_millis(50)), policy(10));
+    set.join(
+        "primary",
+        FrameBoundPeer {
+            fits: 0,
+            asked: Arc::clone(&asked),
+        },
+        0,
+    );
+
+    set.advance(Duration::ZERO).await;
+
+    assert_eq!(
+        set.advance(Duration::ZERO).await.advanced(),
+        0,
+        "the halved request's backoff has not elapsed yet"
     );
 }
 

@@ -69,6 +69,60 @@ async fn test_a_truncated_page_resumes_at_the_record_it_stopped_before() {
     );
 }
 
+/// Sized so the envelope headroom is the only thing standing between this record and the byte bound: at
+/// the documented 4 KiB envelope the record overflows by exactly 4 bytes, but a shrunken or inflated
+/// envelope constant would swallow that margin and let the record through as an ordinary page.
+#[tokio::test]
+async fn test_a_lone_record_overflows_by_exactly_the_envelope_headroom() {
+    let event = vec![b'x'; 3_142_641];
+    let (_dir, meta) = journaled(&[&event]);
+    let encoded = serde_json::to_vec(&change(1, &event)).unwrap().len();
+    assert_eq!(
+        encoded, 4_190_211,
+        "the test's byte math assumes this exact encoded length"
+    );
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    assert_eq!(
+        (status, String::from_utf8(body).unwrap()),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("journal record 1 encodes to {encoded} bytes; a change page holds {MAX_CHANGE_PAGE_BYTES}")
+        )
+    );
+}
+
+/// Five tiny records accumulate a running total before a sixth record is sized to overflow the byte
+/// bound by exactly 4 bytes measured against the correct running total. An off-by-one-or-two error in
+/// how each accepted record's size folds into that total shifts it enough to let the sixth record
+/// through.
+#[tokio::test]
+async fn test_a_page_stops_at_the_byte_bound_using_the_exact_running_total() {
+    let empty: Vec<u8> = Vec::new();
+    let big = vec![b'x'; 3_142_551];
+    let (_dir, meta) = journaled(&[&empty, &empty, &empty, &empty, &empty, &big]);
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    let page: ChangePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!((status, serials(&page)), (StatusCode::OK, vec![1, 2, 3, 4, 5]));
+}
+
+/// The second record's size is chosen so the running total lands exactly on the byte bound. A page must
+/// still serve a record that fits with nothing to spare, rather than treat an exact fit as an overflow.
+#[tokio::test]
+async fn test_a_page_includes_a_record_that_exactly_fills_the_remaining_byte_budget() {
+    let a = vec![b'x'; 3_000];
+    let b = vec![b'y'; 3_139_620];
+    let (_dir, meta) = journaled(&[&a, &b]);
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    let page: ChangePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!((status, serials(&page)), (StatusCode::OK, vec![1, 2]));
+}
+
 #[tokio::test]
 async fn test_a_record_that_fills_a_page_alone_is_named_instead_of_served() {
     let event = vec![b'x'; usize::try_from(MAX_CHANGE_PAGE_BYTES).unwrap()];

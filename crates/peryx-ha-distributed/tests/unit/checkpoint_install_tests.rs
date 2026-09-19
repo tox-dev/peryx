@@ -214,6 +214,62 @@ async fn test_an_interrupted_install_leaves_the_previous_state_usable_and_a_rest
     assert_eq!(replica.staged_checkpoint().unwrap(), None);
 }
 
+/// A restart with the same manifest must pick up from the staged cursor rather than discard it and
+/// start over, or an interruption near the end of a large transfer would refetch it whole every retry.
+#[tokio::test]
+async fn test_a_restart_resumes_from_the_staged_cursor_not_from_the_beginning() {
+    struct RecordingCursors {
+        inner: CheckpointPeer,
+        cursors: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl PeerTransport for RecordingCursors {
+        async fn fetch_batch(&self, request: BatchRequest) -> Result<BatchFrame, TransportError> {
+            self.inner.fetch_batch(request).await
+        }
+
+        async fn checkpoint_manifest(&self) -> Result<CheckpointManifest, TransportError> {
+            self.inner.checkpoint_manifest().await
+        }
+
+        async fn checkpoint_chunk(&self, cursor: &str) -> Result<CheckpointWindow, TransportError> {
+            self.cursors
+                .lock()
+                .expect("the recorder is usable")
+                .push(cursor.to_owned());
+            self.inner.checkpoint_chunk(cursor).await
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let writer = store(&dir, "writer.redb");
+    rows(&writer, 40);
+    published(&writer);
+    let replica = store(&dir, "replica.redb");
+    Replica::new(&replica, ONE)
+        .install_checkpoint(&CheckpointPeer::losing_after(writer.clone(), 2), SOURCE)
+        .await
+        .unwrap_err();
+    let staged = replica.staged_checkpoint().unwrap().unwrap();
+    assert!(staged.received > 0, "the test needs a partial transfer to resume from");
+
+    let peer = RecordingCursors {
+        inner: CheckpointPeer::serving(writer.clone()),
+        cursors: Mutex::new(Vec::new()),
+    };
+    Replica::new(&replica, ONE)
+        .install_checkpoint(&peer, SOURCE)
+        .await
+        .unwrap();
+
+    let first_cursor_requested = peer.cursors.lock().unwrap().first().cloned().unwrap();
+    assert_eq!(
+        first_cursor_requested, staged.cursor,
+        "a restart resumes from the staged cursor, not the beginning"
+    );
+}
+
 #[tokio::test]
 async fn test_a_corrupted_checkpoint_is_rejected_and_does_not_replace_live_state() {
     let dir = tempfile::tempdir().unwrap();
@@ -238,6 +294,71 @@ async fn test_a_corrupted_checkpoint_is_rejected_and_does_not_replace_live_state
             .as_deref(),
         Some(&b"display"[..])
     );
+}
+
+/// A peer that keeps claiming more data is available after every byte the manifest promises has already
+/// arrived. The transfer must stop on byte count alone rather than trust that claim, or a misbehaving
+/// peer could keep it fetching forever.
+#[tokio::test]
+async fn test_the_transfer_stops_once_every_byte_arrives_even_if_the_peer_claims_more() {
+    struct ClaimsMoreAfterEveryByteArrives {
+        payload: Vec<u8>,
+        manifest: CheckpointManifest,
+        calls: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl PeerTransport for ClaimsMoreAfterEveryByteArrives {
+        async fn fetch_batch(&self, _request: BatchRequest) -> Result<BatchFrame, TransportError> {
+            Err(TransportError::CheckpointRequired)
+        }
+
+        async fn checkpoint_manifest(&self) -> Result<CheckpointManifest, TransportError> {
+            Ok(self.manifest.clone())
+        }
+
+        async fn checkpoint_chunk(&self, _cursor: &str) -> Result<CheckpointWindow, TransportError> {
+            let mut calls = self.calls.lock().expect("the counter is usable");
+            *calls += 1;
+            if *calls == 1 {
+                Ok(CheckpointWindow {
+                    bytes: self.payload.clone(),
+                    next: "not-actually-done".to_owned(),
+                })
+            } else {
+                Err(TransportError::Disconnected)
+            }
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let writer = store(&dir, "writer.redb");
+    rows(&writer, 12);
+    let manifest = published(&writer);
+    let whole = writer
+        .checkpoint_chunk(
+            &peryx_storage::meta::CheckpointCursor::start(),
+            usize::try_from(manifest.bytes).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        whole.bytes.len() as u64,
+        manifest.bytes,
+        "the test needs the whole manifest in one window"
+    );
+    let replica = store(&dir, "replica.redb");
+    let peer = ClaimsMoreAfterEveryByteArrives {
+        payload: whole.bytes,
+        manifest: manifest.clone(),
+        calls: Mutex::new(0),
+    };
+
+    let serial = Replica::new(&replica, ONE)
+        .install_checkpoint(&peer, SOURCE)
+        .await
+        .unwrap();
+
+    assert_eq!(serial, manifest.serial);
 }
 
 #[tokio::test]

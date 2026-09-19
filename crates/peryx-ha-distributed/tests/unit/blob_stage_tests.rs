@@ -119,6 +119,12 @@ fn budget(range_bytes: usize, max_in_flight: usize, max_resident_bytes: usize) -
     }
 }
 
+#[test]
+fn test_default_ranged_pull_budget_matches_its_documented_sizes() {
+    assert_eq!(DEFAULT_RANGED_PULL_BUDGET.range_bytes.get(), 8 * 1024 * 1024);
+    assert_eq!(DEFAULT_RANGED_PULL_BUDGET.max_resident_bytes.get(), 32 * 1024 * 1024);
+}
+
 #[cfg(unix)]
 fn set_mode(root: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt as _;

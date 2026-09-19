@@ -984,6 +984,18 @@ async fn test_coordinator_cancel_of_an_abandoned_transfer_still_in_the_window_is
     coordinator.cancel("proj", &store).await.unwrap();
 }
 
+/// A single abandonment exactly filling a one-slot window must stay in it: eviction only pops once the
+/// window is over its bound, not merely at it.
+#[tokio::test]
+async fn test_coordinator_keeps_an_abandoned_transfer_that_exactly_fills_the_window() {
+    let (_dir, store) = meta();
+    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
+    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, 1);
+    abandon(&coordinator, &store, "proj").await;
+
+    coordinator.cancel("proj", &store).await.unwrap();
+}
+
 #[tokio::test]
 async fn test_coordinator_cancel_of_an_abandoned_transfer_evicted_from_the_window_is_unknown() {
     let (_dir, store) = meta();
