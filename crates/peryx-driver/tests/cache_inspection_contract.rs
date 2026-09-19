@@ -345,3 +345,31 @@ fn write_cache_fsck_reports_uncovered_ecosystems_and_sums_every_problem_source()
     assert!(output.contains("invalid content-addressed path"));
     assert_eq!(lines.last(), Some(&"problems\t5"));
 }
+
+struct FailingWriter;
+
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(Error::new(ErrorKind::BrokenPipe, "closed"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A checker reports its own findings through the same writer `write_cache_fsck` hands it, so a
+/// write failure inside a checker's own loop must surface as an `EcosystemFsck` error rather than
+/// vanish, the same as one in `write_cache_fsck`'s own writes does.
+#[test]
+fn write_cache_fsck_reports_a_checkers_own_write_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let mut drivers = DriverSet::default();
+    drivers.register_fsck(Ecosystem::new("alpha"), std::sync::Arc::new(FsckStub { problems: 1 }));
+
+    let error = write_cache_fsck(&drivers, &meta, &blobs, &[], &mut FailingWriter).unwrap_err();
+
+    assert!(matches!(error, CacheInspectionError::EcosystemFsck(_)), "{error}");
+}

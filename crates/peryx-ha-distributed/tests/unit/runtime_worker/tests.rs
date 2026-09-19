@@ -265,7 +265,9 @@ fn test_cancel_workers_stops_tracked_work_without_tearing_down_the_runtime() {
         .try_spawn(Box::pin(async move {
             let _stop = SendOnDrop(stopped_tx);
             started_tx.send(()).expect("receiver waiting");
-            std::future::pending::<()>().await;
+            loop {
+                std::future::pending::<()>().await;
+            }
         }))
         .expect("slot");
     started_rx.recv().expect("task starts");
@@ -303,7 +305,9 @@ fn test_stop_workers_joins_tracked_work_without_tearing_down_the_runtime() {
         .try_spawn(Box::pin(async move {
             let _stop = SendOnDrop(stopped_tx);
             started_tx.send(()).expect("receiver waiting");
-            std::future::pending::<()>().await;
+            loop {
+                std::future::pending::<()>().await;
+            }
         }))
         .expect("slot");
     started_rx.recv().expect("task starts");

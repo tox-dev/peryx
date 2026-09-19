@@ -127,13 +127,13 @@ async fn test_the_default_rpc_handler_stamps_leases_with_the_wall_clock() {
     )
     .await;
 
-    let expires_at_unix = match response {
-        OwnershipResponse::Applied(OwnershipEffect::WriteLeased { expires_at_unix, .. }) => expires_at_unix,
-        other => panic!("expected a granted write lease, got {other:?}"),
-    };
     assert!(
-        expires_at_unix >= before_unix + peryx_ha::AUTHORITY_WRITE_LEASE_SECS,
-        "the handler's own clock should stamp the wall-clock time, not a small constant: {expires_at_unix}",
+        matches!(
+            response,
+            OwnershipResponse::Applied(OwnershipEffect::WriteLeased { expires_at_unix, .. })
+                if expires_at_unix >= before_unix + peryx_ha::AUTHORITY_WRITE_LEASE_SECS
+        ),
+        "the handler's own clock should stamp the wall-clock time, not a small constant: {response:?}"
     );
 }
 

@@ -242,11 +242,8 @@ fn test_admit_warns_only_when_backpressure_actually_trips() {
         )
     });
 
-    assert!(
-        !capture.text().contains("ingress admission backpressured"),
-        "{}",
-        capture.text()
-    );
+    let text = capture.text();
+    assert!(!text.contains("ingress admission backpressured"), "{text}");
 
     let capture = Capture::default();
     let subscriber = tracing_subscriber::fmt()
@@ -266,11 +263,8 @@ fn test_admit_warns_only_when_backpressure_actually_trips() {
         )
     });
 
-    assert!(
-        capture.text().contains("ingress admission backpressured"),
-        "{}",
-        capture.text()
-    );
+    let text = capture.text();
+    assert!(text.contains("ingress admission backpressured"), "{text}");
 }
 
 #[derive(Clone, Default)]
@@ -278,6 +272,7 @@ struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl Capture {
     fn text(&self) -> String {
+        std::io::Write::flush(&mut self.clone()).unwrap();
         String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
     }
 }

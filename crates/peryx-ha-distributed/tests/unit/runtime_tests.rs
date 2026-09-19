@@ -1680,10 +1680,15 @@ fn prepared_replica_shutdown_waits_for_its_runtime_to_actually_stop() {
     ]));
     let runtime = runtime(&config, &state).unwrap();
     let prepared = runtime.prepare_worker_runtime().unwrap();
-    let handle = match &prepared.worker {
-        PreparedWorker::Replica { runtime, .. } => runtime.handle().clone(),
-        PreparedWorker::Primary => panic!("expected a replica worker"),
-    };
+    macro_rules! expect_replica_runtime {
+        ($worker:expr) => {
+            match $worker {
+                PreparedWorker::Replica { runtime, .. } => runtime,
+                PreparedWorker::Primary => unreachable!("expected a replica worker"),
+            }
+        };
+    }
+    let handle = expect_replica_runtime!(&prepared.worker).handle().clone();
 
     let (blocking_started, started) = std::sync::mpsc::channel();
     let (release, blocked_until_released) = std::sync::mpsc::channel();

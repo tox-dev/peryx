@@ -205,6 +205,7 @@ impl ProgressLogCapture {
     }
 
     fn progress_lines(&self) -> usize {
+        std::io::Write::flush(&mut ProgressLogSink(Some(self.0.clone()))).unwrap();
         String::from_utf8(self.0.lock().unwrap().clone())
             .unwrap()
             .lines()

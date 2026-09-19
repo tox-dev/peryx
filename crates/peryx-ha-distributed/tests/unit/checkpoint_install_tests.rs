@@ -258,6 +258,7 @@ async fn test_a_restart_resumes_from_the_staged_cursor_not_from_the_beginning() 
         inner: CheckpointPeer::serving(writer.clone()),
         cursors: Mutex::new(Vec::new()),
     };
+    assert_eq!(refused_feed(&peer).await, TransportError::CheckpointRequired);
     Replica::new(&replica, ONE)
         .install_checkpoint(&peer, SOURCE)
         .await
@@ -318,8 +319,10 @@ async fn test_a_matching_staged_manifest_resumes_rather_than_restarting() {
     let staged = replica.staged_checkpoint().unwrap().unwrap();
     assert!(staged.received > 0 && staged.received < manifest.bytes);
 
+    let peer = RefusingFromScratch(writer.clone());
+    assert_eq!(refused_feed(&peer).await, TransportError::CheckpointRequired);
     let serial = Replica::new(&replica, ONE)
-        .install_checkpoint(&RefusingFromScratch(writer.clone()), SOURCE)
+        .install_checkpoint(&peer, SOURCE)
         .await
         .unwrap();
 
@@ -408,6 +411,7 @@ async fn test_the_transfer_stops_once_every_byte_arrives_even_if_the_peer_claims
         manifest: manifest.clone(),
         calls: Mutex::new(0),
     };
+    assert_eq!(refused_feed(&peer).await, TransportError::CheckpointRequired);
 
     let serial = Replica::new(&replica, ONE)
         .install_checkpoint(&peer, SOURCE)
@@ -559,6 +563,7 @@ async fn test_reaching_the_declared_byte_count_stops_the_transfer() {
         manifest: fake_manifest(5),
         calls: Mutex::new(0),
     };
+    assert_eq!(refused_feed(&peer).await, TransportError::CheckpointRequired);
 
     let _ = Replica::new(&replica, ONE).install_checkpoint(&peer, SOURCE).await;
 
@@ -603,6 +608,7 @@ async fn test_a_done_cursor_stops_the_transfer_short_of_the_declared_byte_count(
         manifest: fake_manifest(5),
         calls: Mutex::new(0),
     };
+    assert_eq!(refused_feed(&peer).await, TransportError::CheckpointRequired);
 
     let _ = Replica::new(&replica, ONE).install_checkpoint(&peer, SOURCE).await;
 

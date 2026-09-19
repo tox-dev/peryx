@@ -191,17 +191,16 @@ async fn test_metadata_backfill_tasks_finish(#[case] drop_owner: bool) {
 async fn test_dropping_metadata_backfills_aborts_its_in_flight_tasks() {
     let backfills = MetadataBackfills::default();
     let (started, started_rx) = tokio::sync::oneshot::channel();
-    let (_release, release_rx) = tokio::sync::oneshot::channel::<()>();
     let task = backfills
         .tasks
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .spawn(async move {
             started.send(()).unwrap();
-            release_rx
-                .await
-                .expect("aborted before the still-held sender could fire");
-            unreachable!("the task is aborted before this ever runs");
+            // Aborted below while parked here.
+            loop {
+                std::future::pending::<()>().await;
+            }
         });
     started_rx.await.unwrap();
 
