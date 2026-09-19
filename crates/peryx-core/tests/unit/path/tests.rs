@@ -145,3 +145,20 @@ fn test_path_segment_validation_rejects_decoded_separators() {
         })
     );
 }
+
+#[rstest]
+#[case::empty("")]
+#[case::current_directory(".")]
+#[case::parent_directory("..")]
+#[case::separator("pkg/name")]
+#[case::windows_separator("pkg\\name")]
+#[case::control_character("pkg\u{7}")]
+fn test_path_segment_validation_rejects_unsafe_segments(#[case] value: &str) {
+    assert_eq!(
+        validate_path_segment("kind", value),
+        Err(PathSafetyError::InvalidPathSegment {
+            kind: "kind",
+            value: value.to_owned(),
+        })
+    );
+}

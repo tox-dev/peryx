@@ -476,6 +476,60 @@ async fn test_unknown_key_refresh_is_rate_limited() {
     assert_eq!(server.received_requests().await.unwrap().len(), 6);
 }
 
+/// The rate-limit test above only ever hits an unknown key while the miss is still fresh news, so
+/// `first_key_miss` is already true when the refresh records the miss and an `&&` there would agree
+/// with the real `||`. Waiting past the cache's own expiry before asking for the unknown key makes
+/// `first_key_miss` false at that moment, so only a real `||` marks the miss checked and rate-limits
+/// the repeat lookup that follows.
+#[tokio::test]
+async fn test_a_miss_discovered_by_natural_expiry_is_still_rate_limited() {
+    let (server, verifier) = verifier().await;
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "warm"), NOW)
+        .await
+        .unwrap();
+    let unknown = identity(&server.uri(), "key-2", "unknown");
+    assert_eq!(
+        verifier.verify_identity(&unknown, NOW + 121).await,
+        Err(OidcVerificationError::UnknownKey)
+    );
+    let requests_after_miss = server.received_requests().await.unwrap().len();
+    assert_eq!(
+        verifier.verify_identity(&unknown, NOW + 122).await,
+        Err(OidcVerificationError::UnknownKey)
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        requests_after_miss,
+        "the miss was already checked, so this lookup must not refresh again"
+    );
+}
+
+/// A failed refresh must record the miss it was trying to check just as a successful one does,
+/// using `|=` rather than `&=`: `first_key_miss` is true and `key_miss_checked` false going in, so
+/// only `|=` leaves the cache remembering the miss once the outage clears.
+#[tokio::test]
+async fn test_a_miss_stays_checked_after_a_refresh_failure() {
+    let (server, verifier) = verifier().await;
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "warm"), NOW)
+        .await
+        .unwrap();
+    let unknown = identity(&server.uri(), "key-2", "unknown");
+    mount_outage(&server).await;
+    assert!(verifier.verify_identity(&unknown, NOW + 1).await.is_err());
+    let requests_after_failure = server.received_requests().await.unwrap().len();
+
+    mount_issuer(&server, json!({"keys": [jwk("key-1")]})).await;
+    assert!(verifier.verify_identity(&unknown, NOW + 2).await.is_err());
+
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        requests_after_failure,
+        "the miss was already checked, so this lookup must not refresh again"
+    );
+}
+
 #[rstest]
 #[case::fresh(&["max-age=120"], OidcVerificationError::UnknownKey, true)]
 #[case::revalidation_required(

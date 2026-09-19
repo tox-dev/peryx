@@ -1032,6 +1032,38 @@ async fn test_unknown_key_refresh_is_rate_limited(#[case] refresh_succeeds: bool
     assert_eq!(discovery_requests(&server).await, 2);
 }
 
+/// The rate-limit test above only ever hits an unknown key while the miss is still fresh news, so
+/// `first_key_miss` is already true when the refresh records the miss and an `&&`, or a stray key
+/// lookup that forgets its `!`, would agree with the real check. Calling `key` directly, rather
+/// than through `callback`, avoids the confound `callback`'s own prior `endpoints` lookup would
+/// add: that call refreshes the cache first and resets `key_miss_checked` before the key lookup
+/// ever runs, so `first_key_miss` would read true there too. Waiting past the cache's own expiry
+/// before asking for the unknown key makes `first_key_miss` false at that moment, so only the real
+/// `!contains_key(..) || first_key_miss` marks the miss checked and rate-limits the repeat lookup
+/// that follows.
+#[tokio::test]
+async fn test_a_miss_discovered_by_natural_expiry_is_still_rate_limited() {
+    let (server, provider) = ready().await;
+    mount_metadata(&server, json!({"keys": [jwk("key-1")]})).await;
+    provider.key("key-1", NOW).await.unwrap();
+
+    assert!(matches!(
+        provider.key("key-2", NOW + 121).await,
+        Err(OidcProviderError::UnknownKey)
+    ));
+    let requests_after_miss = discovery_requests(&server).await;
+
+    assert!(matches!(
+        provider.key("key-2", NOW + 122).await,
+        Err(OidcProviderError::UnknownKey)
+    ));
+    assert_eq!(
+        discovery_requests(&server).await,
+        requests_after_miss,
+        "the miss was already checked, so this lookup must not refresh again"
+    );
+}
+
 #[tokio::test]
 async fn test_unknown_key_refresh_is_single_flight() {
     let (server, provider) = ready().await;

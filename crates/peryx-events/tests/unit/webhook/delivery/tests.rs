@@ -66,6 +66,20 @@ impl WebhookHost for TestHost {
     }
 }
 
+/// Every other test in this file reads the schedule through `host.meta()` directly; this one goes
+/// through the trait method itself, so a stubbed answer in place of the delegation still fails.
+#[test]
+fn test_webhook_host_next_delivery_lookup_delegates_to_meta() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = TestHost {
+        webhooks: WebhookRuntime::disabled(),
+        meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        now: AtomicI64::new(1_000),
+    };
+
+    assert_eq!(WebhookHost::next_webhook_delivery_at(&host).unwrap(), None);
+}
+
 #[test]
 fn test_record_failure_reschedules_a_retriable_response() {
     let dir = tempfile::tempdir().unwrap();
@@ -175,8 +189,16 @@ fn test_delivery_logs_report_results_and_storage_errors() {
     ] {
         assert_eq!(output.matches(message).count(), 1, "unexpected log count: {message}");
     }
-    assert_eq!(output.matches("status=Pending").count(), 1, "{output}");
-    assert_eq!(output.matches("status=Delivered").count(), 1, "{output}");
+    // The counts above hold even if a Delivered record logs as a failure and a Pending one as a
+    // success, so long as one of each fires; pairing each line's status to its own message is what
+    // proves outcomes route to the record they actually describe.
+    let delivered_line = output.lines().find(|line| line.contains("status=Delivered")).unwrap();
+    assert!(
+        delivered_line.contains("webhook delivery succeeded"),
+        "{delivered_line}"
+    );
+    let pending_line = output.lines().find(|line| line.contains("status=Pending")).unwrap();
+    assert!(pending_line.contains("webhook delivery failed"), "{pending_line}");
 }
 
 fn log_subscriber(path: &std::path::Path) -> impl tracing::Subscriber + Send + Sync + use<> {

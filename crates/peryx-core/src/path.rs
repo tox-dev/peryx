@@ -98,9 +98,9 @@ pub fn canonicalize_path(path: &str) -> Cow<'_, str> {
 /// Returns [`PathSafetyError::InvalidRoute`] for empty, traversal, encoded, or control-containing
 /// routes, and [`PathSafetyError::ReservedRoute`] for supplied reserved prefixes.
 pub fn validate_route(route: &str, reserved: &[(&str, &str)]) -> Result<(), PathSafetyError> {
-    if route.is_empty() || route.starts_with('/') || route.ends_with('/') || route.contains("//") {
-        return Err(PathSafetyError::InvalidRoute(route.to_owned()));
-    }
+    // A leading, trailing, or doubled `/` always leaves an empty segment for `valid_route_segment`
+    // below to reject, and an empty route is its own empty first segment; no separate shape check
+    // catches anything this one would miss.
     let (first, rest) = route
         .split_once('/')
         .map_or((route, None), |(first, rest)| (first, Some(rest)));
