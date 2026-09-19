@@ -1053,6 +1053,78 @@ fn transport_error_contract(
 }
 
 #[rstest]
+#[case::durable(DcAck::Durable { scope: BlobDurability::Filesystem }, "durable", Some(BlobDurability::Filesystem))]
+#[case::durable_object_store(DcAck::Durable { scope: BlobDurability::ObjectStore }, "durable", Some(BlobDurability::ObjectStore))]
+#[case::pending(DcAck::Pending, "pending", None)]
+#[case::unknown(DcAck::Unknown, "unknown", None)]
+fn dc_ack_name_and_scope_contract(#[case] ack: DcAck, #[case] name: &str, #[case] scope: Option<BlobDurability>) {
+    assert_eq!(ack.as_str(), name);
+    assert_eq!(ack.scope(), scope);
+}
+
+#[rstest]
+#[case::confirmed(WriteAckDecision::Confirmed, "confirmed")]
+#[case::pending(WriteAckDecision::Pending, "pending")]
+#[case::unavailable(WriteAckDecision::Unavailable, "unavailable")]
+fn write_ack_decision_name_contract(#[case] decision: WriteAckDecision, #[case] name: &str) {
+    assert_eq!(decision.as_str(), name);
+}
+
+#[rstest]
+#[case::matching(Digest::of(b"content"), 7, None)]
+#[case::digest_mismatch(
+    Digest::of(b"other"),
+    7,
+    Some(TransportError::DigestMismatch {
+        expected: Digest::of(b"content").as_str().to_owned(),
+        actual: Digest::of(b"other").as_str().to_owned(),
+    })
+)]
+#[case::size_mismatch(
+    Digest::of(b"content"),
+    9,
+    Some(TransportError::ReceiptSize { expected: 7, actual: 9 })
+)]
+fn peer_receipt_verify_checks_digest_before_size(
+    #[case] receipt_digest: Digest,
+    #[case] receipt_size: u64,
+    #[case] expected_error: Option<TransportError>,
+) {
+    let receipt = PeerReceipt {
+        node: "west".to_owned(),
+        digest: receipt_digest,
+        size: receipt_size,
+    };
+    let request_digest = Digest::of(b"content");
+
+    assert_eq!(
+        receipt.verify(
+            "west",
+            ReceiptRequest {
+                digest: &request_digest,
+                size: 7,
+            }
+        ),
+        expected_error.map_or(Ok(()), Err)
+    );
+}
+
+/// A source under load knows its own recovery time; every other variant leaves the choice to the
+/// caller's own backoff schedule.
+#[test]
+fn transport_error_retry_after_reads_only_from_server_error() {
+    assert_eq!(
+        TransportError::ServerError {
+            status: 503,
+            retry_after: Some(std::time::Duration::from_secs(7)),
+        }
+        .retry_after(),
+        Some(std::time::Duration::from_secs(7))
+    );
+    assert_eq!(TransportError::Timeout.retry_after(), None);
+}
+
+#[rstest]
 #[case::source_changed(TransportError::SourceChanged { expected: "a".into(), actual: "b".into() }, true)]
 #[case::frontier_gap(TransportError::FrontierGap { expected: 1, actual: 2 }, true)]
 #[case::empty_batch(TransportError::EmptyBatch { frontier: 2, after: 1 }, true)]
