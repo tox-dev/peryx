@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use peryx_driver::PrometheusSource as _;
 use peryx_driver::jobs::{
     JobLimits, JobReport, JobRunOutcome, JobScheduler, PluginScheduledJob, ScheduledJob, scheduled_job,
 };
@@ -20,7 +22,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
     CatalogSyncFactory, CatalogSyncParameters, DEFAULT_CATALOG_CONCURRENCY, DEFAULT_CATALOG_PROJECTS,
-    DEFAULT_CATALOG_TIMEOUT, catalog_projects_or_error, compile, scheduled_from_options,
+    DEFAULT_CATALOG_TIMEOUT, MAX_CATALOG_CONCURRENCY, MAX_CATALOG_PROJECTS_PER_RUN, MAX_CATALOG_TIMEOUT,
+    catalog_projects_or_error, compile, scheduled_from_options, status_error,
 };
 
 const JSON: &str = "application/vnd.pypi.simple.v1+json";
@@ -177,6 +180,110 @@ async fn release_stalled_request(upstream: StalledUpstream) {
         .await
         .expect("the upstream server exits")
         .unwrap();
+}
+
+thread_local! {
+    static ACTIVE_PROGRESS_LOG: RefCell<Option<Arc<Mutex<Vec<u8>>>>> = const { RefCell::new(None) };
+}
+
+#[derive(Default)]
+struct ProgressLogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl ProgressLogCapture {
+    fn install(&self) -> ProgressLogGuard {
+        let subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .json()
+                .with_max_level(tracing::Level::INFO)
+                .with_writer(ProgressLogWriter)
+                .finish(),
+        );
+        ACTIVE_PROGRESS_LOG.with(|slot| *slot.borrow_mut() = Some(self.0.clone()));
+        ProgressLogGuard {
+            _subscriber: subscriber,
+        }
+    }
+
+    fn progress_lines(&self) -> usize {
+        String::from_utf8(self.0.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("catalog sync progress"))
+            .count()
+    }
+}
+
+struct ProgressLogGuard {
+    _subscriber: tracing::dispatcher::DefaultGuard,
+}
+
+impl Drop for ProgressLogGuard {
+    fn drop(&mut self) {
+        ACTIVE_PROGRESS_LOG.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+struct ProgressLogWriter;
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for ProgressLogWriter {
+    type Writer = ProgressLogSink;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        ProgressLogSink(ACTIVE_PROGRESS_LOG.with(|slot| slot.borrow().clone()))
+    }
+}
+
+struct ProgressLogSink(Option<Arc<Mutex<Vec<u8>>>>);
+
+impl std::io::Write for ProgressLogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(bytes) = &self.0 {
+            bytes.lock().unwrap().extend_from_slice(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// 101 projects with `MAX_PROGRESS_UPDATES == 100` gives a progress interval of 2, so the log
+/// fires on every even `processed` count plus the final, odd one (51 lines total). Swapping the
+/// interval check's `==` for `!=` logs on every count except the last (100 lines); swapping the
+/// enclosing `||` for `&&` never logs at all, since 101 is never a multiple of 2 (0 lines).
+#[tokio::test(flavor = "current_thread")]
+async fn test_public_job_logs_progress_at_the_expected_intervals() {
+    let server = MockServer::start().await;
+    let projects = (0..101).map(|index| format!("Project{index}")).collect::<Vec<_>>();
+    mount_root(&server, &projects.iter().map(String::as_str).collect::<Vec<_>>()).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/simple/project[0-9]+/$"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(101)
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let (_dir, app) = app(vec![index(
+        "progress-logging",
+        crate::ECOSYSTEM,
+        IndexKind::Cached { client, offline: false },
+    )]);
+
+    let capture = ProgressLogCapture::default();
+    let guard = capture.install();
+    assert_eq!(
+        run(&app, parameters("progress-logging", 101, 16)).await.unwrap(),
+        JobReport {
+            processed: 101,
+            changed: 1,
+            ..JobReport::default()
+        }
+    );
+    drop(guard);
+
+    assert_eq!(capture.progress_lines(), 51);
+    server.verify().await;
 }
 
 #[test]
@@ -379,6 +486,57 @@ fn test_scheduled_options_reject_invalid_values(
         scheduled_from_options(repository, source, max_projects, concurrency, timeout_secs).unwrap_err(),
         expected
     );
+}
+
+#[test]
+fn test_scheduled_options_accept_boundary_maximums() {
+    assert!(
+        scheduled_from_options(
+            "packages",
+            None,
+            MAX_CATALOG_PROJECTS_PER_RUN,
+            MAX_CATALOG_CONCURRENCY,
+            MAX_CATALOG_TIMEOUT.as_secs(),
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn test_compile_accepts_boundary_maximum_settings() {
+    let settings = toml::from_str(&format!(
+        "repository = 'packages'\nmax_projects = {}\nconcurrency = {}\ntimeout_secs = {}",
+        MAX_CATALOG_PROJECTS_PER_RUN,
+        MAX_CATALOG_CONCURRENCY,
+        MAX_CATALOG_TIMEOUT.as_secs(),
+    ))
+    .unwrap();
+    let indexes = [JobIndexConfig {
+        name: "packages",
+        ecosystem: crate::ECOSYSTEM,
+        cached: true,
+        offline: false,
+        upstreams: Vec::new(),
+    }];
+
+    assert!(
+        compile(JobConfig {
+            kind: "catalog_sync",
+            settings: &settings,
+            indexes: &indexes,
+        })
+        .unwrap()
+        .is_ok()
+    );
+}
+
+#[rstest]
+#[case::just_below_rate_limited(428, "upstream")]
+#[case::rate_limited(429, "retryable_upstream")]
+#[case::just_below_server_error(499, "upstream")]
+#[case::server_error_boundary(500, "retryable_upstream")]
+fn test_status_error_categorizes_by_boundary(#[case] status: u16, #[case] expected_category: &str) {
+    assert_eq!(status_error(status).code(), expected_category);
 }
 
 #[test]
@@ -744,11 +902,13 @@ async fn test_catalog_job_uses_the_public_factory_and_scheduler_completion() {
         })
     );
     scheduler.shutdown().await;
-    assert_eq!(app.serving.meta.list_job_runs().unwrap()[0].state, JobState::Succeeded);
-    assert_eq!(
-        app.serving.meta.list_job_runs().unwrap()[0].kind,
-        JobKind::new("catalog_sync").unwrap()
-    );
+    let runs = app.serving.meta.list_job_runs().unwrap();
+    assert_eq!(runs[0].state, JobState::Succeeded);
+    assert_eq!(runs[0].kind, JobKind::new("catalog_sync").unwrap());
+    assert_eq!(runs[0].scope, "scheduled");
+    let mut metrics_text = String::new();
+    scheduler.metrics().write_metrics(&mut metrics_text);
+    assert!(metrics_text.contains("kind=\"catalog_sync\""));
 }
 
 #[tokio::test]

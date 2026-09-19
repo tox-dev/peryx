@@ -510,6 +510,34 @@ fn test_evaluate_retention_stops_iteration_at_a_scan_page_boundary() {
     assert_eq!(decisions, ["aaa".to_owned()]);
 }
 
+/// The periodic cancellation check only fires once every `RETENTION_SCAN_PAGE` keys, not on every
+/// key. Three single-record projects give three key-order transitions well under that page size, so
+/// a scan cancelled from inside the first project's `emit` still closes the second project (a plain
+/// key transition, not a page-boundary check) before the scan finally aborts on the third.
+#[test]
+fn test_evaluate_retention_only_checks_cancellation_at_the_scan_page_interval() {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", "aaa", "1.0", Yanked::No, None);
+    seed(&meta, "pypi", "bbb", "1.0", Yanked::No, None);
+    seed(&meta, "pypi", "ccc", "1.0", Yanked::No, None);
+    let cancellation = ScanCancellation::new();
+    let mut decisions = Vec::new();
+
+    let result = evaluate_retention(
+        &scan(&meta, "pypi", &expire_all_but_latest(0), &cancellation),
+        RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
+        |decision| {
+            cancellation.cancel();
+            decisions.push(decision.resource);
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err("retention scan cancelled".to_owned()));
+    assert_eq!(decisions, ["aaa".to_owned(), "bbb".to_owned()]);
+}
+
 #[test]
 fn test_evaluate_retention_stops_after_the_final_scan_page() {
     let (_dir, meta) = store();

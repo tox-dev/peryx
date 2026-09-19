@@ -86,6 +86,7 @@ fn plugin_exposes_identity_defaults_and_driver() {
         plugin.webhook_events(),
         ["delete", "restore", "unyank", "upload", "yank"]
     );
+    assert!(plugin.absolute_prefixes().is_empty());
     assert_eq!(plugin.driver().ecosystem(), ECOSYSTEM);
     assert!(plugin.driver().indexed().is_some());
     let registration = registration();

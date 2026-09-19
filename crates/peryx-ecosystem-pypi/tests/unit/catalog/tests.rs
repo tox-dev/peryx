@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::io::{Cursor, Write as _};
 use std::rc::Rc;
 
@@ -6,14 +7,15 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use peryx_index::serving::Inflight;
 use peryx_upstream::UpstreamClient;
+use rstest::rstest;
 use url::Url;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    CatalogBatcher, CatalogSyncError, CatalogSyncOutcome, GenerationSink, HtmlSink, HtmlState, HtmlTokenizer,
-    MAX_CATALOG_BYTES, MAX_CATALOG_PROJECTS, parse_catalog_with_limit, publish_response, read_catalog_projects,
-    redact_url, sync_catalog, write_catalog_chunk, write_catalog_stream,
+    CatalogBatcher, CatalogSink, CatalogSyncError, CatalogSyncOutcome, GenerationSink, HtmlSink, HtmlState,
+    HtmlTokenizer, MAX_CATALOG_BYTES, MAX_CATALOG_PROJECTS, MemorySink, check_transferable, parse_catalog_with_limit,
+    publish_response, read_catalog_projects, redact_url, sync_catalog, write_catalog_chunk, write_catalog_stream,
 };
 use crate::SimpleClientExt as _;
 use crate::simple_client::CachedValidators;
@@ -203,6 +205,24 @@ async fn test_sync_catalog_304_sends_etag_and_merges_returned_validator() {
     assert_eq!(catalog.generation, generation);
     assert_eq!(catalog.etag.as_deref(), Some("new"));
     assert_eq!(catalog.last_modified.as_deref(), Some("yesterday"));
+}
+
+/// `268_435_456` is a hardcoded literal, not `MAX_CATALOG_BYTES`, so this also pins that constant to
+/// `256 * 1024 * 1024`: replacing the multiplication with addition would shrink the real limit far
+/// below this content length, and the request would then fail here as oversized.
+#[tokio::test]
+async fn test_check_transferable_accepts_the_declared_byte_limit_exactly() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(Vec::new(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let mut response = client.head_index(CachedValidators::default()).await.unwrap();
+    response.content_length = Some(268_435_456);
+
+    assert!(check_transferable(&response).is_ok());
 }
 
 #[tokio::test]
@@ -425,6 +445,73 @@ fn test_catalog_batch_flushes_at_transaction_limit() {
     );
 }
 
+/// A sink that records how many times the batcher flushed to it, distinct from how many entries
+/// arrived in total, so the test can tell "flush every add" from "flush once every `CATALOG_BATCH`".
+#[derive(Default)]
+struct CountingSink {
+    flushes: usize,
+    entries: u64,
+}
+
+impl CatalogSink for CountingSink {
+    fn accept(&mut self, batch: &[(String, String)]) -> Result<u64, CatalogSyncError> {
+        self.flushes += 1;
+        self.entries += batch.len() as u64;
+        Ok(batch.len() as u64)
+    }
+}
+
+#[test]
+fn test_catalog_batcher_flushes_exactly_once_per_batch_boundary() {
+    let mut sink = CountingSink::default();
+    let mut batcher = CatalogBatcher::new(&mut sink, u64::MAX);
+    for index in 0..=super::CATALOG_BATCH {
+        batcher.add(format!("project-{index}")).unwrap();
+    }
+    let total = batcher.finish().unwrap();
+
+    assert_eq!(sink.flushes, 2);
+    assert_eq!(sink.entries, total);
+    assert_eq!(total, super::CATALOG_BATCH as u64 + 1);
+}
+
+#[test]
+fn test_catalog_batcher_only_rejects_once_past_the_project_limit() {
+    let (_dir, meta) = store();
+    let (generation, _) = begin_catalog_generation(&meta, "limit").unwrap();
+    let mut sink = GenerationSink::new(&meta, "limit", generation);
+    let mut batcher = CatalogBatcher::new(&mut sink, 2);
+
+    batcher.add("Flask".to_owned()).unwrap();
+    batcher.add("Django".to_owned()).unwrap();
+    assert!(matches!(
+        batcher.add("Numpy".to_owned()).unwrap_err(),
+        CatalogSyncError::TooManyProjects
+    ));
+}
+
+#[test]
+fn test_memory_sink_counts_only_newly_inserted_projects() {
+    let mut sink = MemorySink::default();
+
+    assert_eq!(
+        sink.accept(&[
+            ("flask".to_owned(), "Flask".to_owned()),
+            ("django".to_owned(), "Django".to_owned())
+        ])
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        sink.accept(&[
+            ("flask".to_owned(), "Flask".to_owned()),
+            ("numpy".to_owned(), "NumPy".to_owned())
+        ])
+        .unwrap(),
+        1
+    );
+}
+
 #[test]
 fn test_streaming_html_and_json_publish_equivalent_names() {
     for (format, document) in [
@@ -501,6 +588,48 @@ fn test_html_tokenizer_accepts_decoder_errors() {
     };
 
     html5ever::tendril::stream::TendrilSink::error(&mut tokenizer, "invalid input".into());
+}
+
+/// A stray `</div>` between the anchor's opening and closing tags must not itself be mistaken for
+/// the anchor's own close: if it were, the run would stop accumulating "Flask" + "Django" as one
+/// name and would instead publish just "Flask", dropping the trailing text silently.
+#[test]
+fn test_html_end_tag_guard_requires_the_anchor_element() {
+    let base = Url::parse("https://example.invalid/simple/").unwrap();
+    let mut sink = MemorySink::default();
+
+    parse_catalog_with_limit(
+        &mut Cursor::new(r#"<a href="/simple/flask/">Flask</div>Django</a>"#),
+        "html",
+        &base,
+        &mut sink,
+        MAX_CATALOG_PROJECTS,
+    )
+    .unwrap();
+
+    assert_eq!(sink.projects, BTreeSet::from(["flaskdjango".to_owned()]));
+}
+
+/// The meta tag that carries the repository's declared API version is matched by three conditions
+/// (start tag, tag name, attribute name); each case below leaves exactly one of them false so a
+/// weakened guard would wrongly capture `content="99.0"` and turn a harmless document into an
+/// `UnsupportedApiVersion` error.
+#[rstest]
+#[case::correctly_shaped_tag_with_bad_version(r#"<meta name="pypi:repository-version" content="99.0">"#, false)]
+#[case::right_attribute_on_the_wrong_element(r#"<div name="pypi:repository-version" content="99.0">"#, true)]
+fn test_html_meta_tag_guard_requires_all_three_conditions(#[case] document: &str, #[case] expect_ok: bool) {
+    let base = Url::parse("https://example.invalid/simple/").unwrap();
+    let mut sink = MemorySink::default();
+
+    let result = parse_catalog_with_limit(
+        &mut Cursor::new(document),
+        "html",
+        &base,
+        &mut sink,
+        MAX_CATALOG_PROJECTS,
+    );
+
+    assert_eq!(result.is_ok(), expect_ok);
 }
 
 #[test]

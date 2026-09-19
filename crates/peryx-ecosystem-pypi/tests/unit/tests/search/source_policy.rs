@@ -235,6 +235,67 @@ fn test_search_private_first_withholds_a_cache_below_a_nested_member() {
     assert_eq!(advertised_files(&document), [HOSTED_FILE]);
 }
 
+/// `nested_virtual_state`'s "inner" member reaches only the cached leaf, so an enclosing repository
+/// that refuses cached content drops "inner" entirely before ever asking it for candidates: that
+/// scenario never reaches the refusal the nested member itself is supposed to carry down. This one
+/// gives "inner" a hosted leaf too, so it stays a member and the refusal must travel down to the
+/// cached leaf beneath it rather than never having been asked to.
+#[test]
+fn test_search_no_fallback_refuses_a_cache_reached_through_a_mixed_nested_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let indexes = vec![
+        Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Cached {
+                client: UpstreamClient::new("https://example.test/simple/").unwrap(),
+                offline: false,
+            },
+            policy: Policy::default(),
+            acl: peryx_identity::IndexAcl::default(),
+        },
+        Index {
+            name: "hosted".to_owned(),
+            route: "hosted".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Hosted { volatile: false },
+            policy: Policy::default(),
+            acl: peryx_identity::IndexAcl::default(),
+        },
+        Index {
+            name: "inner".to_owned(),
+            route: "inner".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Virtual {
+                layers: vec![0, 1],
+                write_target: None,
+            },
+            policy: Policy::default(),
+            acl: peryx_identity::IndexAcl::default(),
+        },
+        Index {
+            name: "root-pypi".to_owned(),
+            route: VIRTUAL_ROUTE.to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Virtual {
+                layers: vec![2],
+                write_target: Some(1),
+            },
+            policy: index_policy(|_, pypi| pypi.fallback_mode = FallbackMode::NoFallback),
+            acl: peryx_identity::IndexAcl::default(),
+        },
+    ];
+    let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
+    put_both_members(&state.serving);
+
+    let document = virtual_document(&state.serving, "requests").expect("the hosted member still holds the project");
+
+    assert_eq!(advertised_files(&document), [HOSTED_FILE]);
+}
+
 #[test]
 fn test_search_no_fallback_keeps_the_hosted_leaf_of_a_nested_member() {
     let (_dir, state) = nested_virtual_state(index_policy(|_, pypi| pypi.fallback_mode = FallbackMode::NoFallback));

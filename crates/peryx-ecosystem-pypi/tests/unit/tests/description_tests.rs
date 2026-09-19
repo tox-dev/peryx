@@ -11,6 +11,13 @@ fn test_render_markdown_escapes_inline_html() {
     assert!(html.contains("&lt;script&gt;"));
 }
 
+#[test]
+fn test_render_markdown_supports_tables_and_strikethrough() {
+    let html = render("| a | b |\n|---|---|\n| 1 | 2 |\n\n~~gone~~", Some("text/markdown")).html;
+    assert!(html.contains("<table>"), "{html}");
+    assert!(html.contains("<del>gone</del>"), "{html}");
+}
+
 #[rstest]
 #[case::mixed_case("Text/Markdown")]
 #[case::upper_case("TEXT/MARKDOWN")]

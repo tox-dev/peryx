@@ -1,9 +1,23 @@
 use rstest::rstest;
 
 use crate::{
-    DistributionFilenameError, DistributionKind, distribution_python_tag, distribution_version_segment,
-    parse_distribution_filename,
+    DistributionFilenameError, DistributionKind, distribution_name_segment, distribution_python_tag,
+    distribution_version_segment, parse_distribution_filename,
 };
+
+#[test]
+fn test_distribution_name_segment_reads_the_name_before_the_version_boundary() {
+    for (filename, expected) in [
+        ("python-dateutil-2.8.2.tar.gz", Some("python-dateutil")),
+        ("Flask-1.0-py3-none-any.whl", Some("Flask")),
+        ("proj-0.9-py3-none-any.egg", Some("proj")),
+        ("-1.0-py3-none-any.whl", None),
+        ("-1.0.tar.gz", None),
+        ("README", None),
+    ] {
+        assert_eq!(distribution_name_segment(filename), expected, "{filename}");
+    }
+}
 
 #[test]
 fn test_distribution_version_segment_reads_sdist_version_after_the_last_dash() {
@@ -55,6 +69,12 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
     for (filename, kind, name, version) in [
         ("Flask-1.0-py3-none-any.whl", DistributionKind::Wheel, "Flask", "1.0"),
         ("Flask-1.0-1-py3-none-any.whl", DistributionKind::Wheel, "Flask", "1.0"),
+        (
+            "Flask-1.0-1.0-py3-none-any.whl",
+            DistributionKind::Wheel,
+            "Flask",
+            "1.0",
+        ),
         (
             "zope.interface-7.2-cp313-cp313-macosx_11_0_arm64.whl",
             DistributionKind::Wheel,

@@ -2,10 +2,77 @@ use std::collections::BTreeMap;
 
 use url::Url;
 
+use crate::html::project_from_url;
 use crate::{CoreMetadata, Meta, Provenance, SimpleError, Yanked, parse_detail_html, parse_index_html};
 
 fn base() -> Url {
     Url::parse("https://pypi.org/simple/flask/").unwrap()
+}
+
+/// `link_base` scans tags up to and including the first anchor or link, since a `<base>` declared
+/// after content no longer applies per HTML semantics. A late `<base>` here would resolve every
+/// anchor's URL, including this one before it, against the wrong origin if the scan did not stop.
+#[test]
+fn test_link_base_stops_at_the_first_anchor_or_link_tag() {
+    let html = r#"<a href="pkg-1.0.whl">pkg-1.0.whl</a><base href="https://late.example/simple/">"#;
+
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+
+    assert_eq!(file.url, "https://pypi.org/simple/flask/pkg-1.0.whl");
+}
+
+#[test]
+fn test_fragment_drops_an_unsupported_algorithm() {
+    let html = r#"<a href="pkg-1.0.whl#foo=bar">pkg-1.0.whl</a>"#;
+
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+
+    assert!(file.hashes.is_empty());
+}
+
+/// `has_attr` must match an attribute regardless of case, the way `attr_value` already does, so a
+/// boolean marker like `data-yanked` written in another case is not silently missed.
+#[test]
+fn test_has_attr_matches_case_insensitively() {
+    let html = r#"<a href="pkg-1.0.whl" DATA-YANKED>pkg-1.0.whl</a>"#;
+
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+
+    assert_eq!(file.yanked, Yanked::Yes);
+}
+
+/// A numeric reference's running value wraps on overflow, so a huge reference can wrap back down to
+/// a small, otherwise-valid code point. The `too_big` flag must latch across that wrap: once any
+/// digit pushes the value past the maximum scalar, the reference decodes to the replacement
+/// character even though the final wrapped value looks harmless on its own. `4294967361` is
+/// `2**32 + 65`, so it wraps to `65` ('A') after peaking far above the limit.
+#[test]
+fn test_decode_reference_latches_too_big_across_a_wrapped_overflow() {
+    let html = "<a href=\"a/\">z&#4294967361;z</a>";
+    let parsed = parse_index_html(html, &Url::parse("https://pypi.org/simple/").unwrap()).unwrap();
+
+    assert_eq!(parsed.projects[0].name, "z\u{FFFD}z");
+}
+
+/// `0x10FFFF` (`1114111`) is the highest valid Unicode scalar value, so a reference for exactly that
+/// code point must decode to the character itself, not to the replacement character an off-by-one
+/// boundary would produce.
+#[test]
+fn test_decode_reference_accepts_the_maximum_valid_code_point() {
+    let html = "<a href=\"a/\">z&#1114111;z</a>";
+    let parsed = parse_index_html(html, &Url::parse("https://pypi.org/simple/").unwrap()).unwrap();
+
+    assert_eq!(parsed.projects[0].name, "z\u{10FFFF}z");
+}
+
+/// A hex digit's value must not leak into the neighboring nibble: `%00` combines a zero high nibble
+/// with a zero low nibble, so it must decode to a NUL byte, not to some other byte built from stray
+/// bits either digit contributed.
+#[test]
+fn test_percent_decode_treats_each_hex_digit_independently() {
+    let resolved = Url::parse("https://example.invalid/a%00b").unwrap();
+
+    assert_eq!(project_from_url(&resolved), Some("a\u{0}b".to_owned()));
 }
 
 #[test]

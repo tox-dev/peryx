@@ -75,6 +75,14 @@ fn test_parse_changelog_since_serial_request(#[case] integer_tag: &str) {
     b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><int>1</int></value><value><int>2</int></value></param></params></methodCall>",
     ChangelogRequestError::InvalidShape("changelog_since_serial takes one integer")
 )]
+#[case::two_params_one_with_a_complete_integer_value(
+    b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><int>42</int></value></param><param/></params></methodCall>",
+    ChangelogRequestError::InvalidShape("changelog_since_serial takes one integer")
+)]
+#[case::single_non_integer_value_child(
+    b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><string>x</string></value></param></params></methodCall>",
+    ChangelogRequestError::InvalidShape("changelog_since_serial takes one integer")
+)]
 #[case::invalid_serial(
     b"<methodCall><methodName>changelog_since_serial</methodName><params><param><value><int>x</int></value></param></params></methodCall>",
     ChangelogRequestError::InvalidSerial("x".to_owned())

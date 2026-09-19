@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod archive;
 mod changelog_tests;
 mod conformance_tests;
+mod contact_tests;
 mod description_tests;
 mod fanout_tests;
 mod filename_tests;

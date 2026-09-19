@@ -232,6 +232,42 @@ fn test_migration_rewrites_legacy_policy_subject_keys() {
     );
 }
 
+/// The `"reads" if ... .is_ok()` guard only short-circuits an already-current record: a legacy
+/// record already keyed `reads` (an upstream that stores under the current key but in the old
+/// shape) must still fall through to the rewrite, not be mistaken for one needing no migration.
+#[test]
+fn test_migration_rewrites_a_legacy_shaped_record_already_under_the_reads_key() {
+    let migrated = rewritten(
+        MetadataRecordSet::Analytics,
+        &record(
+            "reads",
+            json!({
+                "files": [{
+                    "route": "repo",
+                    "project": "resource",
+                    "filename": "artifact",
+                    "downloads": 11,
+                    "bytes": 12
+                }]
+            }),
+        ),
+    );
+
+    assert_eq!(migrated.key, "reads");
+    assert_eq!(
+        value(&migrated),
+        json!({
+            "artifacts": [{
+                "repository": "repo",
+                "resource": "resource",
+                "artifact": "artifact",
+                "reads": 11,
+                "bytes": 12
+            }]
+        })
+    );
+}
+
 #[test]
 fn test_migration_rewrites_legacy_read_analytics() {
     let migrated = rewritten(

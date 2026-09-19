@@ -124,10 +124,19 @@ fn import_dir_reports_imported_skipped_rejected_and_existing_files() {
     assert!(first.contains("imported\tnested/demo-1.0-py3-none-any.whl"));
     assert!(first.contains("skipped\tnotes.txt"));
     assert!(first.contains("rejected\tbroken-1.0-py3-none-any.whl"));
+    assert!(
+        first.contains("summary\t\t\t\timported=1 skipped=1 rejected=1"),
+        "{first}"
+    );
 
     let mut second = Vec::new();
     import_dir(&meta, &blobs, "hosted", "root/hosted", &input, &mut second).unwrap();
-    assert!(String::from_utf8(second).unwrap().contains("already present"));
+    let second = String::from_utf8(second).unwrap();
+    assert!(second.contains("already present"));
+    assert!(
+        second.contains("summary\t\t\t\timported=0 skipped=2 rejected=1"),
+        "{second}"
+    );
 }
 
 #[rstest::rstest]
@@ -224,6 +233,10 @@ fn import_dir_reports_invalid_names_and_store_failures() {
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("invalid distribution filename"));
     assert!(output.contains("rejected\tdemo-1.0-py3-none-any.whl"));
+    assert!(
+        output.contains("summary\t\t\t\timported=0 skipped=0 rejected=2"),
+        "{output}"
+    );
 }
 
 #[test]
@@ -240,6 +253,10 @@ fn import_dir_validates_tar_and_zip_sdist_identities() {
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("different project or version"), "{output}");
     assert!(output.contains("imported\tdemo-1.0.zip"));
+    assert!(
+        output.contains("summary\t\t\t\timported=1 skipped=0 rejected=1"),
+        "{output}"
+    );
 }
 
 #[cfg(unix)]

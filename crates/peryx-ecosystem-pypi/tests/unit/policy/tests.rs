@@ -1,6 +1,24 @@
 use peryx_policy::{Policy, PolicyAction, PolicyConfig, PolicyDenial};
 
-use super::{FallbackMode, PackageType, PypiPolicyConfig, PypiPolicyError, RemoteMetadataMode, compile_capabilities};
+use super::{
+    FallbackMode, PackageType, PypiPolicyConfig, PypiPolicyError, RemoteMetadataMode, VersionAdmission,
+    compile_capabilities,
+};
+
+/// `constrains_versions` is a pure shortcut over `admits`, which already answers `true` for every
+/// version once no rule is configured: `apply_version_policy` behaves identically whichever way it
+/// answers, so only a direct call on an admission built both ways can tell "no rule" from "a rule".
+#[test]
+fn test_version_admission_constrains_versions_only_when_a_rule_is_configured() {
+    let unconfigured = VersionAdmission::of(&policy(&PypiPolicyConfig::default()));
+    assert!(!unconfigured.constrains_versions());
+
+    let configured = VersionAdmission::of(&policy(&PypiPolicyConfig {
+        allow_versions: Some(">=1.0".to_owned()),
+        ..PypiPolicyConfig::default()
+    }));
+    assert!(configured.constrains_versions());
+}
 
 #[test]
 fn test_package_type_parse_rejects_an_unknown_value() {
