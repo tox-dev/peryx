@@ -372,4 +372,5 @@ fn write_cache_fsck_reports_a_checkers_own_write_failure() {
     let error = write_cache_fsck(&drivers, &meta, &blobs, &[], &mut FailingWriter).unwrap_err();
 
     assert!(matches!(error, CacheInspectionError::EcosystemFsck(_)), "{error}");
+    std::io::Write::flush(&mut FailingWriter).unwrap();
 }
