@@ -35,4 +35,27 @@ exclude_globs = [
   "crates/peryx-web/src/data/stats.rs",
   "crates/peryx-web/src/data/status.rs",
   "crates/peryx-web/src/data/topology.rs",
+
+  # Page components carry the same ssr/not(ssr)-hydrate split as the loader modules above, but also
+  # carry live, already-tested ssr rendering logic in the same files, so excluding them trades away
+  # future mutation coverage of that unrelated code too. Accepted for now for consistency with the
+  # loader modules rather than leaving this same class of finding as permanent nightly noise; revisit
+  # with a per-function exclusion (`cargo-mutants`' `exclude_re`, unverified against this version) if
+  # that trade-off stops being worth it.
+  "crates/peryx-web/src/pages/analytics.rs",
+  "crates/peryx-web/src/pages/browse.rs",
+  "crates/peryx-web/src/pages/mod.rs",
+  "crates/peryx-web/src/pages/placement.rs",
+  "crates/peryx-web/src/pages/policy_decisions.rs",
+  "crates/peryx-web/src/pages/topology.rs",
+  "crates/peryx-web/src/pages/trash.rs",
+  "crates/peryx-web/src/url.rs",
+
+  # Every function here queries macOS-specific hardware (Apple Silicon core counts, board model) via
+  # `sysctl`, each gated `#[cfg(target_os = "macos")]` with a separate non-macOS body beside it. The
+  # nightly run's mutation matrix builds on Linux, so the macOS bodies never compile into that binary
+  # and no test anywhere in this workspace could reach a mutant in them. The rest of this file (host
+  # info assembly, disk/memory measurement) has no surviving mutant of its own to lose by excluding the
+  # whole file; add it back if that stops holding.
+  "crates/peryx-bench-core/src/machine.rs",
 ]
