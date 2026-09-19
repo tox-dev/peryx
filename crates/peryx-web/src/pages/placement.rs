@@ -3,7 +3,10 @@ use leptos::prelude::*;
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 use crate::data::load_blob_placement;
 use crate::data::load_placements;
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(
+    all(test, feature = "ssr"),
+    all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")
+))]
 use crate::model::{BlobDatacenterPlacement, BlobPlacementView, blob_placement_status_label};
 use crate::model::{PlacementHealth, PlacementRow, PlacementView, format_instant};
 
@@ -274,7 +277,10 @@ fn BlobPlacementDetail(selected: RwSignal<Option<String>>) -> impl IntoView {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(
+    all(test, feature = "ssr"),
+    all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")
+))]
 fn blob_placement_detail(view: &BlobPlacementView) -> AnyView {
     if view.datacenters.is_empty() {
         return view! {
@@ -303,7 +309,10 @@ fn blob_placement_detail(view: &BlobPlacementView) -> AnyView {
     .into_any()
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+#[cfg(any(
+    all(test, feature = "ssr"),
+    all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")
+))]
 fn datacenter_row(placement: &BlobDatacenterPlacement) -> AnyView {
     let status = blob_placement_status_label(placement.status);
     view! {

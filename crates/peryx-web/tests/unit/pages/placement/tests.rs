@@ -8,7 +8,8 @@ use peryx_driver::AppState;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
-use super::{ArtifactPlacements, PlacementBody};
+use super::{ArtifactPlacements, PlacementBody, blob_placement_detail};
+use crate::model::{BlobDatacenterPlacement, BlobPlacementStatus, BlobPlacementView};
 
 #[tokio::test(flavor = "current_thread")]
 async fn artifact_placements_reports_public_access_denial() {
@@ -109,6 +110,53 @@ async fn placement_body_renders_rows_and_pager() {
     .to_html();
     assert!(withheld.contains("need administrator access"), "{withheld}");
     assert!(empty.contains("No artifact placements are recorded yet."), "{empty}");
+}
+
+#[test]
+fn blob_placement_detail_says_when_no_datacenter_holds_the_blob() {
+    let html: String = blob_placement_detail(&BlobPlacementView {
+        digest: "sha256:abc".to_owned(),
+        datacenters: Vec::new(),
+    })
+    .to_html();
+
+    assert!(html.contains("No datacenter holds sha256:abc yet."), "{html}");
+}
+
+#[test]
+fn blob_placement_detail_lists_each_datacenter_with_its_status_and_size() {
+    let html: String = blob_placement_detail(&BlobPlacementView {
+        digest: "sha256:abc".to_owned(),
+        datacenters: vec![
+            BlobDatacenterPlacement {
+                data_center: "east".to_owned(),
+                status: BlobPlacementStatus::Verified,
+                size: Some(42),
+                updated_at: 0,
+            },
+            BlobDatacenterPlacement {
+                data_center: "west".to_owned(),
+                status: BlobPlacementStatus::Pending,
+                size: None,
+                updated_at: 0,
+            },
+        ],
+    })
+    .to_html();
+
+    assert!(html.contains("Datacenters holding sha256:abc"), "{html}");
+    assert!(
+        html.contains(
+            r#"<td>east</td><td><span class="badge health-live">Verified</span></td><td class="num">42</td>"#
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            r#"<td>west</td><td><span class="badge health-unready">Pending</span></td><td class="num">-</td>"#
+        ),
+        "{html}"
+    );
 }
 
 fn initialize_executor() {
