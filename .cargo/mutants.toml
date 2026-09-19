@@ -20,19 +20,27 @@ exclude_globs = [
   # assertions that live elsewhere, and a mutant in one fails the suite that runs it.
   "crates/*/tests/**",
 
-  # These loader modules split each function in two: an `ssr` half that reads `AppState` directly, and
-  # a `not(ssr), hydrate` half that fetches the same data over the network from a running browser. This
-  # workspace's own mutation run enables every feature at once, so `not(ssr)` never holds and the
-  # browser half never compiles into the binary a mutant lands in; no test here could reach it. The
-  # browser half is what `just frontend-test`'s Playwright suite drives against the compiled WASM
-  # bundle, a separate pipeline `cargo mutants` never runs. Excluding the whole file also stops asking
-  # about its `ssr` half, which is unrelated but not cheaply separable at this granularity; say why here
-  # if this needs to be finer, and add the file back if its balance changes.
-  "crates/peryx-web/src/data/browse.rs",
-  "crates/peryx-web/src/data/operations.rs",
-  "crates/peryx-web/src/data/placement.rs",
-  "crates/peryx-web/src/data/search.rs",
-  "crates/peryx-web/src/data/stats.rs",
-  "crates/peryx-web/src/data/status.rs",
-  "crates/peryx-web/src/data/topology.rs",
+]
+
+# A mutant no build the run makes can contain is a second kind of noise. `cargo mutants` does not
+# evaluate `cfg`, so it proposes mutants in code the nightly's native, all-features Linux build
+# compiles out, and no test there could catch them. Each pattern below names functions whose body
+# needs something that build lacks, and nothing else: whole files stay in scope, because the same
+# files hold logic the suite does pin. A function belongs here only if it cannot run natively. Pure
+# logic that merely sits behind such a gate gets `any(test, ...)` on the gate and a test instead.
+exclude_re = [
+  # Browser-only halves of the web loaders: `gloo_net` requests and the status handling written
+  # inline around them, the `EventSource` topology stream, the clipboard, and the query, submit and
+  # paging handlers that start those requests. `just frontend-test` drives these in a real browser.
+  'peryx-web/src/data/.*(replace|in) (fetch_json_required|fetch_json_optional|admin_request|load_analytics|load_trash|load_policy_decisions|subscribe_topology)\b',
+  'peryx-web/src/data/.*delete match arm .* in (load_search|load_placements|load_operations|load_blob_placement)$',
+  'peryx-web/src/data/topology\.rs.*Drop for TopologyStream',
+  'peryx-web/src/pages/.*(replace|in) (submit|submit_query|run_query|run_action|load_analytics|previous_page|next_page|copy_to_clipboard|start_refresh|watch_topology|close_topology_stream|BrowseDocument)\b',
+
+  # Exports the wasm coverage counters, and exists only in the `wasm32` coverage build.
+  'peryx-web/src/lib\.rs.*replace capture_coverage ',
+
+  # Runs the macOS `sysctl` binary. Its parsing lives in `sysctl_with`, which takes the runner as an
+  # argument and is pinned on every platform; the macOS CI job covers the call itself.
+  'peryx-bench-core/src/machine\.rs.*replace sysctl -> ',
 ]

@@ -58,13 +58,18 @@ so it fails when the fault does not arrive, and `-D dead_code` covers harness be
 land before mutation asks the question, and the inventory agrees, with no mutant in that crate surviving a run. Add a
 path back if that stops holding, and say in the config why.
 
-`.cargo/mutants.toml` also excludes seven loader modules under `crates/peryx-web/src/data/`. Each splits into an `ssr`
-half that reads `AppState` directly and a `not(ssr), hydrate` half that fetches the same data from a running browser.
-The nightly run enables every feature at once, so `not(ssr)` never holds and the browser half never compiles into the
-binary a mutant lands in; no test in this repository could reach it. `just frontend-test`'s Playwright suite is what
-drives that half, against the compiled WASM bundle, and `cargo mutants` never runs that pipeline. Excluding the file
-also stops asking about its `ssr` half, which a survivor would still mean something for; say why here if this needs to
-split finer.
+`cargo mutants` does not evaluate `cfg`, so it also proposes mutants in code the nightly's native, all-features Linux
+build compiles out: the browser halves of the web loaders, which need `gloo_net` or `EventSource`, the wasm coverage
+export, and the macOS `sysctl` call. No test in that build can catch those, so `exclude_re` in `.cargo/mutants.toml`
+names them by function. It names functions and never files, because the same files hold logic the suite does pin, and a
+whole-file exclusion discards that with it: excluding the sixteen files these functions live in would have hidden 155
+survivors and thrown away 228 mutants the suite kills.
+
+A function goes on that list only when it cannot run natively. Logic that merely sits behind a browser or platform gate
+does not qualify. Widen its gate to `any(test, ...)` so the native suite compiles it, then pin it with a test, as the
+stats and status document conversions, the URL builders, the pagination guards and `sysctl_with` are. After changing the
+list, diff `cargo mutants --list` against `cargo mutants --list --no-config` and check that every line it removes is one
+you meant.
 
 Excluding paths shortens the matrix rather than the shards. The nightly derives its shard count from the same list it
 mutates, at `mutation-shard-count "$(just mutation-count)" 128`, so the run goes from 148 shards to 140 with each still
