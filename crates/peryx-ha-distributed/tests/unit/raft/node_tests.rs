@@ -97,6 +97,47 @@ async fn test_a_committed_command_returns_its_applied_effect() {
 }
 
 #[tokio::test]
+async fn test_the_default_rpc_handler_stamps_leases_with_the_wall_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    node.submit(OwnershipCommand::AssignHome {
+        authority: AuthorityKey("proj".to_owned()),
+        home: DatacenterId("east".to_owned()),
+        cause: AssignmentCause::FirstPublish,
+    })
+    .await
+    .unwrap();
+    let before_unix = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+
+    let response = forward(
+        node.rpc_handler().as_ref(),
+        OwnershipCommand::BeginEpochWrite {
+            authority: AuthorityKey("proj".to_owned()),
+            epoch: AuthorityEpoch(1),
+            id: "write-1".to_owned(),
+            issued_at_unix: -1_000,
+            expires_at_unix: i64::MAX,
+        },
+    )
+    .await;
+
+    let expires_at_unix = match response {
+        OwnershipResponse::Applied(OwnershipEffect::WriteLeased { expires_at_unix, .. }) => expires_at_unix,
+        other => panic!("expected a granted write lease, got {other:?}"),
+    };
+    assert!(
+        expires_at_unix >= before_unix + peryx_ha::AUTHORITY_WRITE_LEASE_SECS,
+        "the handler's own clock should stamp the wall-clock time, not a small constant: {expires_at_unix}",
+    );
+}
+
+#[tokio::test]
 async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;

@@ -601,6 +601,28 @@ async fn test_topology_stream_last_disconnect_stops_the_sampler() {
     assert_eq!(*samples.borrow(), 1);
 }
 
+/// The reused-channel bug this guards against would answer the second subscriber from the sampler the
+/// first left behind, so its first snapshot would carry the first subscriber's own sample instead of one
+/// freshly captured for it.
+#[tokio::test]
+async fn test_the_last_disconnect_clears_the_sampler_for_the_next_subscriber() {
+    let (_dir, mut state) = app(false, true, NodeRole::Writer).await;
+    let _samples = record_topology_samples(&mut state);
+    let router = peryx_http::router(state);
+
+    let mut first = SseReader::new(stream_from(&router, None).await);
+    let (_, first_snapshot) = first.data_event().await;
+    assert_eq!(first_snapshot["captured_at"], 0);
+    drop(first);
+
+    let (_, second_snapshot) = SseReader::new(stream_from(&router, None).await).data_event().await;
+
+    assert_eq!(
+        second_snapshot["captured_at"], 1,
+        "a fresh subscriber after the last disconnect should get a newly captured sample: {second_snapshot}",
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_topology_stream_coalesces_unchanged_state_into_heartbeats() {
     let (_dir, state) = app(false, true, NodeRole::Writer).await;
