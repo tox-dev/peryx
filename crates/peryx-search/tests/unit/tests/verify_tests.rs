@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use tantivy::collector::Count;
-use tantivy::query::{AllQuery, Query as _};
+use tantivy::query::{AllQuery, EnableScoring, Query as _};
 use tantivy::schema::{FAST, Schema, TantivyDocument};
-use tantivy::{DocAddress, Index, IndexWriter, TantivyError};
+use tantivy::{DocAddress, DocSet as _, Index, IndexWriter, TantivyError};
 
 use crate::verify::{VerifiedQuery, Verifier};
 
@@ -52,6 +52,30 @@ fn test_explanation_rejects_a_document_verification_excludes() {
         .expect_err("the first document does not hold the needle");
 
     assert!(matches!(error, TantivyError::InvalidArgument(_)), "{error}");
+}
+
+/// The verified set filters candidates one document at a time, so its size can only shrink from
+/// what the candidates report; delegating the hint, rather than fixing it to some other value,
+/// keeps that upper bound honest.
+#[test]
+fn test_verified_doc_set_size_hint_delegates_to_the_candidate_set() {
+    let index = indexed(&["alpha", "beta", "gamma"]);
+    let searcher = index.reader().unwrap().searcher();
+    let query = substring_query("a");
+    let weight = query
+        .weight(EnableScoring::disabled_from_schema(searcher.schema()))
+        .unwrap();
+    let segment_reader = searcher.segment_reader(0);
+    let candidate_hint = AllQuery
+        .weight(EnableScoring::disabled_from_schema(searcher.schema()))
+        .unwrap()
+        .scorer(segment_reader, 1.0)
+        .unwrap()
+        .size_hint();
+
+    let scorer = weight.scorer(segment_reader, 1.0).unwrap();
+
+    assert_eq!(scorer.size_hint(), candidate_hint);
 }
 
 #[test]

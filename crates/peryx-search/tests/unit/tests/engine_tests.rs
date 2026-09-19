@@ -10,7 +10,7 @@ use peryx_core::LexiconRegistry;
 use super::Stores;
 use crate::{
     ContentSource, IndexerCtx, RebuildOutcome, RebuildProgress, ResourceUpdate, SEARCH_VIEW, SearchDocument,
-    SearchDocumentProvider, SearchError, SearchIndex, SearchParams,
+    SearchDocumentProvider, SearchError, SearchIndex, SearchParams, document_key,
 };
 
 struct NamedDocs(Arc<Mutex<Vec<String>>>);
@@ -60,6 +60,34 @@ impl SearchDocumentProvider for CountingDocs {
             ctx.meta.next_serial().unwrap();
         }
         Ok(self.names.iter().map(|name| artifact_doc(name, name)).collect())
+    }
+}
+
+/// Counts full and scoped fetches separately, so a test can tell which path a search actually took
+/// instead of only the document count both would produce.
+struct SplitCallDocs {
+    full_calls: Arc<AtomicUsize>,
+    scoped_calls: Arc<AtomicUsize>,
+    names: Vec<&'static str>,
+}
+
+impl SearchDocumentProvider for SplitCallDocs {
+    fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
+        self.full_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(self.names.iter().map(|name| artifact_doc(name, name)).collect())
+    }
+
+    fn resource_update(&self, _ctx: &IndexerCtx<'_>, name: &str) -> Result<ResourceUpdate, SearchError> {
+        self.scoped_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(ResourceUpdate {
+            keys: vec![document_key("root", name)],
+            documents: self
+                .names
+                .iter()
+                .filter(|candidate| **candidate == name)
+                .map(|name| artifact_doc(name, name))
+                .collect(),
+        })
     }
 }
 
@@ -170,6 +198,74 @@ fn test_rebuild_publishes_new_documents_without_an_epoch_bump() {
 
     assert_eq!(outcome, RebuildOutcome::Published { documents: 3 });
     assert_eq!(total(&search, &stores, &lexicons), 3);
+}
+
+/// A rebuild whose epoch still matches its own snapshot starts dirty tracking, so the next
+/// invalidated resource updates through the scoped path rather than a full re-fetch.
+#[test]
+fn test_rebuild_starts_scoped_dirty_tracking_when_the_epoch_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let full_calls = Arc::new(AtomicUsize::new(0));
+    let scoped_calls = Arc::new(AtomicUsize::new(0));
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(SplitCallDocs {
+        full_calls: full_calls.clone(),
+        scoped_calls: scoped_calls.clone(),
+        names: vec!["a", "b"],
+    }));
+    search
+        .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(4).unwrap(), &mut no_cancel)
+        .unwrap();
+    search.invalidate_resource("a");
+    full_calls.store(0, Ordering::Relaxed);
+    scoped_calls.store(0, Ordering::Relaxed);
+
+    assert_eq!(total(&search, &stores, &lexicons), 2);
+
+    assert_eq!(
+        scoped_calls.load(Ordering::Relaxed),
+        1,
+        "the invalidated resource must update through the scoped path"
+    );
+    assert_eq!(
+        full_calls.load(Ordering::Relaxed),
+        0,
+        "a scoped update must not re-fetch every document"
+    );
+}
+
+/// `retire_applied` clears a dirty entry once its generation matches what was just applied; keeping
+/// entries at that boundary, rather than only the ones invalidated again since, would leave an
+/// already-applied resource permanently dirty and re-fetched on every later search.
+#[test]
+fn test_retire_applied_clears_a_resource_at_its_own_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let scoped_calls = Arc::new(AtomicUsize::new(0));
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(SplitCallDocs {
+        full_calls: Arc::new(AtomicUsize::new(0)),
+        scoped_calls: scoped_calls.clone(),
+        names: vec!["a", "b"],
+    }));
+    search
+        .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(4).unwrap(), &mut no_cancel)
+        .unwrap();
+    search.invalidate_resource("a");
+    total(&search, &stores, &lexicons);
+    scoped_calls.store(0, Ordering::Relaxed);
+
+    search.invalidate_resource("b");
+    total(&search, &stores, &lexicons);
+
+    assert_eq!(
+        scoped_calls.load(Ordering::Relaxed),
+        1,
+        "a resource already retired at its own generation must not be re-fetched for an unrelated invalidation"
+    );
 }
 
 #[test]
