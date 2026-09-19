@@ -528,6 +528,65 @@ async fn test_mirror_bounds_a_too_deep_manifest_graph() {
     assert_eq!(manifest_fetches(&server, "library/deep", &oci_digest(&leaf)).await, 0);
 }
 
+/// A graph nested exactly to the depth cap is still within bounds: only one level deeper is refused.
+#[tokio::test]
+async fn test_mirror_completes_a_manifest_graph_at_the_depth_cap() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let layer = b"cap-layer";
+    let leaf = image_manifest(config, layer);
+    let mut body = leaf.clone();
+    let mut digest = oci_digest(&leaf);
+    mount_manifest(&server, "library/cap", &digest, &body, MANIFEST_TYPE).await;
+    for level in 0..32 {
+        body = index_over(&[digest.as_str()], &format!("level-{level}"));
+        digest = oci_digest(&body);
+        mount_manifest(&server, "library/cap", &digest, &body, INDEX_TYPE).await;
+    }
+    mount_blob(&server, "library/cap", config).await;
+    mount_blob(&server, "library/cap", layer).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let by_digest = format!("library/cap@{digest}");
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        std::slice::from_ref(&by_digest),
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert!(!rows.iter().any(|row| row.reason.contains("exceeds depth")), "{rows:?}");
+    assert_eq!(rows.last().unwrap().status, "synced");
+    assert_eq!(manifest_fetches(&server, "library/cap", &oci_digest(&leaf)).await, 1);
+}
+
+/// A graph naming exactly the node cap still mirrors every child: only one node past it is refused.
+#[tokio::test]
+async fn test_mirror_schedules_a_manifest_graph_at_the_node_cap() {
+    let server = MockServer::start().await;
+    let children: Vec<String> = (0..1024).map(|index| format!("sha512:{index:0128x}")).collect();
+    let refs: Vec<&str> = children.iter().map(String::as_str).collect();
+    let root = index_over(&refs, "exact");
+    mount_manifest(&server, "library/exact", "latest", &root, INDEX_TYPE).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/exact:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert!(!rows.iter().any(|row| row.reason.contains("exceeds")), "{rows:?}");
+    assert_eq!(manifest_fetches(&server, "library/exact", &children[1023]).await, 1);
+}
+
 #[tokio::test]
 async fn test_mirror_continues_past_a_missing_child_manifest() {
     let server = MockServer::start().await;

@@ -3,7 +3,7 @@ use std::str::FromStr as _;
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
 use rstest::rstest;
 
-use crate::meta::checkpoint_transfer::{CheckpointCursor, CheckpointInstallError, CheckpointStageError};
+use crate::meta::checkpoint_transfer::{CheckpointCursor, CheckpointInstallError, CheckpointStageError, ROW_TAG};
 use crate::meta::fault::initialized;
 use crate::meta::{CheckpointIdentity, CheckpointManifest, MetaError, MetaStore};
 
@@ -561,4 +561,38 @@ fn test_a_checkpoint_that_encodes_to_nothing_still_installs() {
     assert_eq!(installed, manifest);
     assert_eq!(replica.current_serial().unwrap(), manifest.serial);
     assert_eq!(replica.get_driver_value("stale\u{0}row").unwrap(), None);
+}
+
+/// The offset a malformed error reports must track the exact bytes already decoded, so an operator
+/// diagnosing corruption is pointed at the damaged entry rather than the start of the transfer.
+#[test]
+fn test_a_malformed_offset_counts_the_entries_decoded_before_it() {
+    let first = entry(ROW_TAG, b"key1", b"value1");
+    let second = entry(ROW_TAG, b"key2", b"value2");
+    let expected_offset = (first.len() + second.len()) as u64;
+    let mut frame = first;
+    frame.extend_from_slice(&second);
+    frame.push(b'z');
+    let replica = store();
+    let manifest = CheckpointManifest {
+        identity: identity(),
+        serial: 1,
+        rows: 0,
+        revocations: 0,
+        blobs: 0,
+        bytes: frame.len() as u64,
+        digest: String::new(),
+    };
+    replica.begin_checkpoint_transfer(&manifest).unwrap();
+    replica
+        .stage_checkpoint_chunk(&manifest, 0, &frame, "done")
+        .unwrap()
+        .unwrap();
+
+    let refused = replica.install_staged_checkpoint(CURSOR_KEY, CURSOR_VALUE).unwrap_err();
+
+    assert!(
+        matches!(refused, CheckpointInstallError::Malformed { offset } if offset == expected_offset),
+        "{refused:?}"
+    );
 }

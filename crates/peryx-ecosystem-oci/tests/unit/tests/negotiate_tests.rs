@@ -142,6 +142,7 @@ async fn test_get_serves_the_index_when_a_media_range_covers_it(#[case] accept: 
 #[rstest]
 #[case::explicit_zero("application/vnd.oci.image.index.v1+json;q=0")]
 #[case::exclusion_outranks_wildcard("application/vnd.oci.image.index.v1+json;q=0, */*")]
+#[case::wildcard_subtype_under_another_type("video/*")]
 #[tokio::test]
 async fn test_get_rejects_an_oci_index_when_a_media_range_excludes_it(#[case] accept: &str) {
     let (_dir, app, _) = hosted_index().await;

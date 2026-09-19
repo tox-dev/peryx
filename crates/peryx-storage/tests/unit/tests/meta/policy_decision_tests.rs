@@ -508,6 +508,36 @@ fn test_policy_decision_artifact_batch_uses_current_records() {
     );
 }
 
+/// A current record only serves an artifact scan when its repository AND resource both match the
+/// query, so a record differing in just one of them must not leak into another repository's or
+/// resource's results even though it shares the wanted artifact name.
+#[test]
+fn test_policy_decision_artifact_batch_scopes_to_repository_and_resource() {
+    let (_dir, meta) = store();
+    let mut wanted = decision("project", PolicyDecisionState::Allow, 10);
+    wanted.artifact = Some("wanted.whl");
+    let expected = meta.record_policy_decision(wanted).unwrap();
+    let mut other_repository = decision("project", PolicyDecisionState::Allow, 20);
+    other_repository.repository = "other-repo";
+    other_repository.artifact = Some("wanted.whl");
+    meta.record_policy_decision(other_repository).unwrap();
+    let mut other_resource = decision("other-resource", PolicyDecisionState::Allow, 30);
+    other_resource.artifact = Some("wanted.whl");
+    meta.record_policy_decision(other_resource).unwrap();
+
+    assert_eq!(
+        meta.current_policy_decisions_for_artifacts("private", "project", &["wanted.whl"])
+            .unwrap(),
+        HashMap::from([(
+            "wanted.whl".to_owned(),
+            PolicyDecisionItem {
+                record: expected,
+                fresh: true,
+            },
+        )])
+    );
+}
+
 #[test]
 fn test_policy_decision_artifact_batch_keeps_stale_records() {
     let (_dir, meta) = store();
@@ -556,6 +586,17 @@ fn test_policy_decision_artifact_batch_bounds_count() {
         meta.current_policy_decisions_for_artifacts("private", "project", &["artifact.whl"; 101]),
         Err(PolicyDecisionStoreError::TooManyArtifacts { max: 100 })
     ));
+}
+
+/// A batch at exactly the limit is still a valid request; only crossing it is refused.
+#[test]
+fn test_policy_decision_artifact_batch_accepts_the_limit_exactly() {
+    let (_dir, meta) = store();
+
+    assert!(
+        meta.current_policy_decisions_for_artifacts("private", "project", &["artifact.whl"; 100])
+            .is_ok()
+    );
 }
 
 #[test]

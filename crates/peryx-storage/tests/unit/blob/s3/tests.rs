@@ -8,7 +8,7 @@ use super::{
     BlobError, Digest, MAX_MULTIPART_BYTES, MAX_PART_SIZE, S3Backend, S3Config, S3Error, S3Settings, UploadAcquisition,
     multipart_part_size, read_journal,
 };
-use crate::blob::BlobErrorKind;
+use crate::blob::{BlobBackend, BlobErrorKind};
 
 fn backend(staging: &Path) -> S3Backend {
     S3Backend::new(
@@ -143,4 +143,42 @@ async fn test_read_journal_discards_content_over_the_size_limit() {
 
     assert_eq!(read_journal(&path).await.unwrap(), None);
     assert!(!path.exists());
+}
+
+/// An aborted write must not leave its local stage behind, or a caller that gives up on a
+/// commit slowly fills the staging directory with files nothing will ever clean up.
+#[tokio::test]
+async fn test_abort_removes_the_local_stage() {
+    let staging = tempfile::tempdir().unwrap();
+    let backend = backend(staging.path());
+    let mut write = backend.begin().await.unwrap();
+    write.write_chunk(bytes::Bytes::from_static(b"payload")).await.unwrap();
+    assert_eq!(
+        std::fs::read_dir(staging.path()).unwrap().count(),
+        1,
+        "the stage was written"
+    );
+
+    write.abort().await.unwrap();
+
+    assert_eq!(
+        std::fs::read_dir(staging.path()).unwrap().count(),
+        0,
+        "abort must discard the stage"
+    );
+}
+
+/// `is_empty` distinguishes a real zero-byte object from one that merely finished writing, so a
+/// non-empty stage must not be reported as empty.
+#[tokio::test]
+async fn test_finished_write_with_bytes_is_not_empty() {
+    let staging = tempfile::tempdir().unwrap();
+    let backend = backend(staging.path());
+    let mut write = backend.begin().await.unwrap();
+    write.write_chunk(bytes::Bytes::from_static(b"payload")).await.unwrap();
+
+    let staged = write.finish().await.unwrap();
+
+    assert!(!staged.is_empty());
+    staged.abort().await.unwrap();
 }
