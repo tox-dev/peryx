@@ -4,7 +4,7 @@ use peryx_storage::meta::{ArtifactOrigin as _, ArtifactSource, ByteAvailability}
 
 use super::{
     FILE_PREFIX, FilePublication, FileSource, MetaStore, MetadataClaim, ProvenanceSibling, PypiArtifactOrigin,
-    split_file_source,
+    split_file_source, split_file_source_key,
 };
 use crate::store::PypiStore as _;
 
@@ -29,6 +29,11 @@ fn test_put_and_get_file_url() {
             upstream: None,
         })
     );
+}
+
+#[test]
+fn test_split_file_source_key_rejects_a_key_with_an_empty_segment() {
+    assert_eq!(split_file_source_key("index//sha"), None);
 }
 
 #[test]

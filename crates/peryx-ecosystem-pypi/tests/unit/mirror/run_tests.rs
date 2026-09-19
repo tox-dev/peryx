@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
     DEFAULT_PREFETCH_CONCURRENCY, SyncRun, admission, cached_detail, parse_response_detail, pypi_plan, pypi_sync,
-    pypi_verify, raw_detail, sync_file, sync_metadata, upstream_ceiling, verify_blob,
+    pypi_verify, raw_detail, sync_file, sync_metadata, upstream_ceiling, verify_blob, verify_file, write_refusal,
 };
 use crate::mirror::test_support::{self, cached_index};
 use crate::mirror::{
@@ -223,6 +223,20 @@ async fn plan_reports_included_metadata_and_filtered_files() {
     assert!(output.contains("file\tpypi\tdemo\tdemo-1.0-py3-none-any.whl"));
     assert!(output.contains("metadata\tpypi\tdemo\tdemo-1.0-py3-none-any.whl.metadata"));
     assert!(output.contains("missing sha256"));
+    // Two of the release's three files carry a digest (the wheel and the zip); the third, the
+    // tar.gz without one, is the sole skip.
+    assert!(output.contains("files\t\t\t2\tfiles"), "{output}");
+    assert!(output.contains("skipped\t\t\t1\tskipped"), "{output}");
+}
+
+#[test]
+fn write_refusal_counts_the_skip_it_reports() {
+    let mut rows = Vec::new();
+    let mut counts = PrefetchCounts::default();
+
+    write_refusal(&mut rows, &mut counts, "pypi", "demo", "cached policy: blocked").unwrap();
+
+    assert_eq!(counts.skipped, 1);
 }
 
 async fn mount_catalog_upstream(server: &MockServer) {
@@ -334,6 +348,7 @@ async fn sync_reports_a_missing_project_without_failure() {
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("project not found"));
     assert!(output.contains("packages_seen\t\t\t1\tpackages_seen"));
+    assert!(output.contains("skipped_files\t\t\t1\tskipped_files"), "{output}");
 }
 
 #[tokio::test]
@@ -781,6 +796,38 @@ async fn blob_verification_reports_mismatches_and_backend_errors() {
         );
         assert!(String::from_utf8(output).unwrap().contains(expected));
     }
+}
+
+#[tokio::test]
+async fn verify_file_counts_a_problem_for_each_invalid_check() {
+    let fixture = test_support::state(Vec::new());
+    let target = crate::mirror::Target {
+        index: "pypi".to_owned(),
+        route: "pypi".to_owned(),
+        position: 0,
+        cached_position: 0,
+        cached: "pypi".to_owned(),
+        client: peryx_upstream::UpstreamClient::new("https://example.test/simple/").unwrap(),
+        offline: true,
+        prefetch: config(PrefetchMode::Selected, &[]),
+    };
+    let file = crate::mirror::PrefetchFile {
+        filename: "demo.whl".to_owned(),
+        digest: "bad".to_owned(),
+        url: "https://example.test/demo.whl".to_owned(),
+        size: None,
+        metadata: Some(crate::mirror::PrefetchMetadata {
+            url: "https://example.test/demo.whl.metadata".to_owned(),
+            digest: "bad".to_owned(),
+        }),
+        source: None,
+    };
+
+    let report = verify_file(&fixture.state.serving, &target, "demo", file, &Semaphore::new(1))
+        .await
+        .unwrap();
+
+    assert_eq!(report.counts.problems, 2);
 }
 
 #[tokio::test]

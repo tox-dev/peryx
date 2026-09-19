@@ -464,3 +464,17 @@ async fn test_oidc_exchange_body_is_bounded() {
         StatusCode::PAYLOAD_TOO_LARGE
     );
 }
+
+/// The limit is 40 KiB, well past a real identity token; a body a couple of KiB past a bare few
+/// bytes must still be read rather than rejected for its size.
+#[tokio::test]
+async fn test_oidc_exchange_accepts_a_body_within_the_fixed_limit() {
+    let (_dir, state) = state(true);
+    let body = serde_json::json!({"token": "x".repeat(2 * 1024)}).to_string();
+    assert_ne!(
+        mint_request(state, body, None, "application/x-www-form-urlencoded")
+            .await
+            .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}

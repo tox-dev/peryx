@@ -4,7 +4,7 @@ use peryx_driver::serving::{IndexSummaryDriver as _, IndexSummaryError};
 use peryx_storage::meta::MetaError;
 use rstest::rstest;
 
-use super::MetaStore;
+use super::{MetaStore, order_rank, remove_upload_row};
 use crate::store::{Guard, PromotedRelease, PypiStore as _, UploadMutation};
 
 /// One index's count row, written by every project and upload change.
@@ -35,6 +35,40 @@ fn artifacts(meta: &MetaStore, index: &str, limit: usize) -> Vec<String> {
         .iter()
         .map(|write| write.artifact.clone())
         .collect()
+}
+
+#[test]
+fn test_order_rank_reverses_a_negative_second_consistently_with_a_positive_one() {
+    assert_eq!(order_rank(-1), 0x7FFF_FFFF_FFFF_FFFF);
+    assert_eq!(order_rank(0), 0x8000_0000_0000_0000);
+}
+
+#[test]
+fn test_remove_upload_row_decrements_the_indexs_upload_count() {
+    let (_dir, meta) = store();
+    upload(
+        &meta,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        "1.0",
+        "2026-01-01T00:00:00Z",
+        10,
+    );
+    assert!(meta.get_driver_value(COUNT_KEY).unwrap().is_some());
+    let record_bytes = record("flask-1.0.whl", "1.0", "2026-01-01T00:00:00Z", 10).into_bytes();
+
+    meta.commit_driver_txn(|txn| {
+        remove_upload_row(txn, "hosted", "flask", "flask-1.0.whl", &record_bytes)?;
+        Ok::<_, MetaError>(((), Vec::new()))
+    })
+    .unwrap();
+
+    assert_eq!(
+        meta.get_driver_value(COUNT_KEY).unwrap(),
+        None,
+        "the only upload is gone, so the count row is dropped rather than left at zero"
+    );
 }
 
 #[test]

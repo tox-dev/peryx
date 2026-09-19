@@ -95,6 +95,24 @@ fn test_validate_rejects_duplicate_publisher_ids() {
 }
 
 #[test]
+fn test_validate_rejects_a_matching_name_that_is_not_writable() {
+    let values = publisher();
+    let indexes = [PluginIndexConfig {
+        name: "hosted",
+        ecosystem: crate::ECOSYSTEM,
+        writable: false,
+    }];
+
+    assert_eq!(
+        validate(config(&values, &indexes)),
+        Err(
+            "trusted publisher release: repository must name a writable index with trusted publishing support"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
 fn test_validate_rejects_a_repository_without_a_writable_pypi_index() {
     let values = publisher();
     assert_eq!(
@@ -181,6 +199,66 @@ projects = ["app"]
     );
     assert_eq!(
         validate(config(&values, &[])),
+        Err("auth: trusted publisher fields and project lists must not be empty".to_owned())
+    );
+}
+
+/// Each publisher field is checked independently, so a config with every other field filled in and
+/// only this one blank isolates its own check in the `||` chain from its neighbors.
+#[rstest]
+#[case::issuer(
+    r#"
+[[trusted_publisher]]
+id = "release"
+issuer = ""
+repository = "hosted"
+subject = "*"
+projects = ["app"]
+"#
+)]
+#[case::repository(
+    r#"
+[[trusted_publisher]]
+id = "release"
+issuer = "https://issuer.example"
+repository = ""
+subject = "*"
+projects = ["app"]
+"#
+)]
+#[case::subject(
+    r#"
+[[trusted_publisher]]
+id = "release"
+issuer = "https://issuer.example"
+repository = "hosted"
+subject = ""
+projects = ["app"]
+"#
+)]
+#[case::empty_projects(
+    r#"
+[[trusted_publisher]]
+id = "release"
+issuer = "https://issuer.example"
+repository = "hosted"
+subject = "*"
+projects = []
+"#
+)]
+#[case::blank_project_entry(
+    r#"
+[[trusted_publisher]]
+id = "release"
+issuer = "https://issuer.example"
+repository = "hosted"
+subject = "*"
+projects = [""]
+"#
+)]
+fn test_validate_rejects_each_blank_publisher_field_on_its_own(#[case] source: &str) {
+    assert_eq!(
+        validate(config(&values(source), &[])),
         Err("auth: trusted publisher fields and project lists must not be empty".to_owned())
     );
 }

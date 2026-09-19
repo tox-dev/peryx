@@ -514,3 +514,7 @@ const fn step_number(number: Number, byte: u8) -> NumberStep {
         },
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/stream/validator_tests.rs"]
+mod tests;

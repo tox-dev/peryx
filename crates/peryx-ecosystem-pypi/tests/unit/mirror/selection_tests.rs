@@ -8,17 +8,20 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    ProjectAdmission, admission, all_projects, candidates, content_type_is_json, include_target, logical_lines,
-    parse_selector, refusal, requirement_line, selection, strip_comment, tags_allowed, target, target_upstream,
-    wheel_tags_allowed,
+    ProjectAdmission, admission, all_projects, candidates, content_type_is_json, decision, include_target,
+    logical_lines, parse_selector, refusal, requirement_line, selection, strip_comment, tags_allowed, target,
+    target_upstream, wheel_tags_allowed,
 };
 use crate::mirror::test_support::{self, cached_index, hosted_index};
 use crate::mirror::{
-    ArtifactFilters, FileCandidate, PrefetchConfig, PrefetchMode, PrefetchOptions, ProjectRule, SelectionSource,
+    ArtifactFilters, FileCandidate, PrefetchConfig, PrefetchFile, PrefetchMode, PrefetchOptions, ProjectRule,
+    SelectionSource,
 };
 use crate::policy::{FallbackMode, PackageType};
 use crate::store::PypiStore as _;
-use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, parse_version_specifiers};
+use crate::{
+    CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, parse_distribution_filename, parse_version_specifiers,
+};
 
 fn config(mode: PrefetchMode) -> PrefetchConfig {
     PrefetchConfig {
@@ -554,6 +557,65 @@ fn candidate_reports_version_filters() {
     );
     assert_eq!(include_target("--requirement=demo.txt"), Some("demo.txt"));
     assert_eq!(include_target("--requirement="), None);
+}
+
+#[test]
+fn decision_allows_a_file_exactly_at_the_size_limit() {
+    let mut filters = filters();
+    filters.max_file_size_bytes = Some(10);
+    let prefetch_file = PrefetchFile {
+        filename: "demo-1.0-py3-none-any.whl".to_owned(),
+        digest: "a".repeat(64),
+        url: "https://example.test/demo-1.0-py3-none-any.whl".to_owned(),
+        size: Some(10),
+        metadata: None,
+        source: parse_distribution_filename("demo-1.0-py3-none-any.whl").ok(),
+    };
+
+    assert_eq!(decision(&prefetch_file, None, &filters), Ok(()));
+}
+
+#[test]
+fn target_finds_an_index_by_its_route_when_the_name_differs() {
+    let fixture = test_support::state(vec![Index {
+        route: "custom-route".to_owned(),
+        ..cached_index("https://example.test/simple/", false)
+    }]);
+
+    let target = target(&config(PrefetchMode::Selected), &fixture.state.serving, "custom-route").unwrap();
+
+    assert_eq!(target.cached, "pypi");
+}
+
+#[tokio::test]
+async fn all_projects_reads_the_local_store_when_offline_even_for_a_preview() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"upstream-only"}]}"#,
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .mount(&server)
+        .await;
+    let fixture = test_support::state(vec![cached_index(&format!("{}/simple/", server.uri()), true)]);
+    fixture
+        .state
+        .serving
+        .meta
+        .put_project("pypi", "local", "local")
+        .unwrap();
+    let offline_target = target(&config(PrefetchMode::All), &fixture.state.serving, "pypi").unwrap();
+
+    let projects = all_projects(
+        &fixture.state.serving,
+        &offline_target,
+        SelectionSource::UpstreamPreview,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(projects, ["local"]);
 }
 
 #[test]

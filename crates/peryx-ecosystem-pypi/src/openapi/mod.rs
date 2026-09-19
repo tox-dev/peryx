@@ -144,3 +144,7 @@ fn legacy_json_paths(paths: PathsBuilder, reads: ReadExposure) -> PathsBuilder {
                 .build(),
         )
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/openapi/tests.rs"]
+mod tests;

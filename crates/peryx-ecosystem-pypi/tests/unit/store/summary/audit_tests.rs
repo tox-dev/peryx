@@ -390,6 +390,21 @@ fn test_audit_counts_no_project_whose_key_names_no_project() {
     assert_eq!(audit(&meta, &hosted()), Vec::new());
 }
 
+/// Each scan increments its own field, so a defect that only breaks one of them (say, leaving
+/// `order_rows` stuck at zero) must not hide behind the other scan's genuinely nonzero count.
+#[test]
+fn test_summary_row_counts_counts_both_kinds_of_row_exactly() {
+    let (_dir, meta) = published();
+
+    assert_eq!(
+        crate::store::summary_row_counts(&meta).unwrap(),
+        crate::store::SummaryRowCounts {
+            count_rows: 1,
+            order_rows: 1,
+        }
+    );
+}
+
 /// The count is assembled from two scans, so a failure in either must not come back as a smaller
 /// count: a partial total reads as a real answer and an operator has no way to tell it apart from a
 /// store that genuinely holds fewer rows. Every injection point returns the whole count or an error.

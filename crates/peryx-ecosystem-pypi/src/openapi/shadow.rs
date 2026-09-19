@@ -137,3 +137,7 @@ pub(super) fn shadow_candidates() -> OperationBuilder {
             ),
     )
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/openapi/shadow_tests.rs"]
+mod tests;

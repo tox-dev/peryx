@@ -85,6 +85,40 @@ fn runtime(bindings: Vec<PublisherBinding>, replay_capacity: usize) -> (Signer, 
     (signer, runtime)
 }
 
+#[tokio::test]
+async fn test_exchange_caps_the_minted_ttl_at_the_identitys_remaining_lifetime() {
+    let signer = Signer::new(b"local-key", "peryx");
+    let runtime = OidcRuntime::build(
+        vec![binding()],
+        Arc::new(Verifier {
+            identity: VerifiedOidcIdentity {
+                expires_at: NOW + 100,
+                ..identity()
+            },
+            error: None,
+        }),
+        signer,
+        300,
+        MAX_REPLAY_ENTRIES,
+    )
+    .unwrap();
+
+    let exchanged = runtime.exchange("external-short-lived", NOW).await.unwrap();
+
+    assert_eq!(exchanged.expires_at, NOW + 100);
+}
+
+#[test]
+fn test_consume_replay_purges_an_entry_at_the_moment_it_expires() {
+    let (_signer, runtime) = runtime(vec![binding()], MAX_REPLAY_ENTRIES);
+    runtime.consume_replay("issuer", "token-1", 100, 0).unwrap();
+
+    assert!(
+        runtime.consume_replay("issuer", "token-1", 200, 100).is_ok(),
+        "an entry whose expiry equals `now` has already expired"
+    );
+}
+
 #[test]
 fn test_runtime_reports_configured_audience() {
     let mut binding = binding();

@@ -1,4 +1,9 @@
-use super::{derives_no_view, metadata_artifact_of_key, project_of_key};
+use super::{derives_no_view, metadata_artifact_of_key, project_of_key, split_index_project};
+
+#[test]
+fn test_split_index_project_rejects_an_empty_index_segment() {
+    assert_eq!(split_index_project("/name"), None);
+}
 
 #[test]
 fn test_project_of_key_maps_every_project_scoped_key() {

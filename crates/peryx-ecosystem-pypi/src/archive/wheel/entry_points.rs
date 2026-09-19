@@ -66,3 +66,7 @@ fn is_valid_entry_point_name(value: &str) -> bool {
             .chars()
             .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '.' | '-'))
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/archive/wheel/entry_points_tests.rs"]
+mod tests;

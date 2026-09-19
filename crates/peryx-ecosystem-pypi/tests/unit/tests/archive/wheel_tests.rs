@@ -67,6 +67,49 @@ fn test_validate_wheel_path_rejects_too_many_entries() {
     ));
 }
 
+/// The entry cap only refuses an archive once it is crossed, so exactly `MAX_WHEEL_ENTRIES` members
+/// still reach the dist-info checks instead of being refused for their count.
+#[test]
+fn test_validate_wheel_path_accepts_exactly_the_entry_cap() {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for index in 0..100_000 {
+            zip.start_file(format!("flask-1.0.dist-info/empty-{index}.txt"), options)
+                .unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let file = temp_archive(&buf);
+
+    assert!(matches!(
+        validate_wheel_path("Flask-1.0-py3-none-any.whl", file.path()),
+        Err(ArchiveError::Invalid(message)) if message == "invalid wheel: missing required flask-1.0.dist-info/METADATA"
+    ));
+}
+
+#[test]
+fn test_wheel_metadata_accepts_a_document_exactly_at_the_size_limit() {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("flask-1.0.dist-info/METADATA", options).unwrap();
+        zip.write_all(&vec![
+            b'a';
+            usize::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap()
+        ])
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    assert_eq!(
+        crate::archive::wheel_metadata("Flask-1.0-py3-none-any.whl", &buf).map(|bytes| bytes.len() as u64),
+        Some(crate::archive::MAX_WHEEL_METADATA_BYTES)
+    );
+}
+
 #[test]
 fn test_validate_wheel_path_rejects_member_expanding_past_ratio() {
     let mut bytes = stored_zip(&[("Flask/data.bin", b"payload")]);

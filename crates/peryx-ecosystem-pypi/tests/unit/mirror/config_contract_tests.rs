@@ -1,6 +1,6 @@
 use peryx_driver::serving::MirrorDriver as _;
 
-use super::{mode, table_bool, table_strings, table_u64};
+use super::{PrefetchCounts, mode, table_bool, table_strings, table_u64};
 use crate::PypiServing;
 
 #[rstest::rstest]
@@ -83,6 +83,29 @@ fn configuration_reads_string_lists_and_booleans() {
     assert!(!table_bool(&table, "wheels", true).unwrap());
     assert!(table_strings(&table, "missing").unwrap().is_empty());
     assert!(table_bool(&table, "missing", true).unwrap());
+}
+
+#[test]
+fn configuration_reads_a_size_given_as_a_string() {
+    let table = toml::Table::from_iter([("size".to_owned(), toml::Value::String("42".to_owned()))]);
+
+    assert_eq!(table_u64(&table, "size").unwrap(), Some(42));
+}
+
+#[test]
+fn prefetch_counts_merge_sums_the_files_field() {
+    let mut counts = PrefetchCounts {
+        files: 2,
+        ..PrefetchCounts::default()
+    };
+    let other = PrefetchCounts {
+        files: 3,
+        ..PrefetchCounts::default()
+    };
+
+    counts.merge(&other);
+
+    assert_eq!(counts.files, 5);
 }
 
 #[test]
