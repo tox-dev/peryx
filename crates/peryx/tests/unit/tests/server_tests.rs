@@ -17,7 +17,9 @@ use peryx_storage::meta::{
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
-use wiremock::matchers::{header, method, path};
+#[cfg(unix)]
+use wiremock::matchers::header;
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::{
