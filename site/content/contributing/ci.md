@@ -58,6 +58,14 @@ so it fails when the fault does not arrive, and `-D dead_code` covers harness be
 land before mutation asks the question, and the inventory agrees, with no mutant in that crate surviving a run. Add a
 path back if that stops holding, and say in the config why.
 
+`.cargo/mutants.toml` also excludes seven loader modules under `crates/peryx-web/src/data/`. Each splits into an `ssr`
+half that reads `AppState` directly and a `not(ssr), hydrate` half that fetches the same data from a running browser.
+The nightly run enables every feature at once, so `not(ssr)` never holds and the browser half never compiles into the
+binary a mutant lands in; no test in this repository could reach it. `just frontend-test`'s Playwright suite is what
+drives that half, against the compiled WASM bundle, and `cargo mutants` never runs that pipeline. Excluding the file
+also stops asking about its `ssr` half, which a survivor would still mean something for; say why here if this needs to
+split finer.
+
 Excluding paths shortens the matrix rather than the shards. The nightly derives its shard count from the same list it
 mutates, at `mutation-shard-count "$(just mutation-count)" 128`, so the run goes from 148 shards to 140 with each still
 targeting 128 mutants. A shard takes as long as it did.

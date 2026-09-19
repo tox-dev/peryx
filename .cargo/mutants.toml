@@ -19,4 +19,20 @@ exclude_globs = [
   # Fixture binaries the integration suites drive, such as the S3 multipart fixture. They hold up
   # assertions that live elsewhere, and a mutant in one fails the suite that runs it.
   "crates/*/tests/**",
+
+  # These loader modules split each function in two: an `ssr` half that reads `AppState` directly, and
+  # a `not(ssr), hydrate` half that fetches the same data over the network from a running browser. This
+  # workspace's own mutation run enables every feature at once, so `not(ssr)` never holds and the
+  # browser half never compiles into the binary a mutant lands in; no test here could reach it. The
+  # browser half is what `just frontend-test`'s Playwright suite drives against the compiled WASM
+  # bundle, a separate pipeline `cargo mutants` never runs. Excluding the whole file also stops asking
+  # about its `ssr` half, which is unrelated but not cheaply separable at this granularity; say why here
+  # if this needs to be finer, and add the file back if its balance changes.
+  "crates/peryx-web/src/data/browse.rs",
+  "crates/peryx-web/src/data/operations.rs",
+  "crates/peryx-web/src/data/placement.rs",
+  "crates/peryx-web/src/data/search.rs",
+  "crates/peryx-web/src/data/stats.rs",
+  "crates/peryx-web/src/data/status.rs",
+  "crates/peryx-web/src/data/topology.rs",
 ]
