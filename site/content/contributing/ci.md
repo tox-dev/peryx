@@ -66,6 +66,17 @@ drives that half, against the compiled WASM bundle, and `cargo mutants` never ru
 also stops asking about its `ssr` half, which a survivor would still mean something for; say why here if this needs to
 split finer.
 
+Eight page component and URL-builder modules under `crates/peryx-web/src/pages/` and `src/url.rs` carry the same split,
+but each also carries live `ssr` rendering logic with no other coverage gap of its own, so excluding them costs real
+future coverage the loader modules didn't. They're excluded anyway, for consistency with the loader modules rather than
+leaving this same finding shape as permanent nightly noise; a per-function mechanism would remove that cost if one gets
+built and verified against this workspace's `cargo-mutants` version.
+
+`crates/peryx-bench-core/src/machine.rs` is excluded for a different reason: every function that queries hardware (Apple
+Silicon core counts, board model, `sysctl` reads) is gated `#[cfg(target_os = "macos")]` with a separate non-macOS body
+beside it, and the nightly run builds on Linux, so those bodies never compile into the binary a mutant lands in. The
+rest of the file has no surviving mutant of its own.
+
 Excluding paths shortens the matrix rather than the shards. The nightly derives its shard count from the same list it
 mutates, at `mutation-shard-count "$(just mutation-count)" 128`, so the run goes from 148 shards to 140 with each still
 targeting 128 mutants. A shard takes as long as it did.
