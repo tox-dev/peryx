@@ -938,7 +938,7 @@ pub trait OwnershipAuthority: Send + Sync {
     ///
     /// Returns [`OwnershipError`] when the replicated facts cannot be read.
     async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
-        Ok(Vec::new())
+        Ok(vec![])
     }
 
     /// Records that this member's store holds the audit for `id`. Repeating the acknowledgement after
