@@ -311,7 +311,7 @@ async fn test_overlay_treats_an_empty_upstream_page_as_a_successful_member() {
 }
 
 #[tokio::test]
-async fn test_resolve_detail_surfaces_a_faulted_hosted_metadata_read() {
+async fn test_resolve_detail_surfaces_a_faulted_hosted_read_before_a_cached_collision() {
     let (inner, fault) = backend();
     let meta = MetaStore::open_backend(faulted(&inner, &fault)).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -320,6 +320,17 @@ async fn test_resolve_detail_surfaces_a_faulted_hosted_metadata_read() {
         BlobStorage::filesystem(dir.path().join("blobs")),
         60,
         vec![
+            Index {
+                name: "pypi".to_owned(),
+                route: "pypi".to_owned(),
+                ecosystem: crate::ECOSYSTEM,
+                kind: IndexKind::Cached {
+                    client: UpstreamClient::new("http://127.0.0.1:9/simple/").unwrap(),
+                    offline: true,
+                },
+                policy: Policy::default(),
+                acl: IndexAcl::default(),
+            },
             Index {
                 name: "hosted".to_owned(),
                 route: "hosted".to_owned(),
@@ -333,7 +344,7 @@ async fn test_resolve_detail_surfaces_a_faulted_hosted_metadata_read() {
                 route: "root".to_owned(),
                 ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {
-                    layers: vec![0],
+                    layers: vec![1, 0],
                     write_target: None,
                 },
                 policy: Policy::default(),
@@ -342,15 +353,32 @@ async fn test_resolve_detail_surfaces_a_faulted_hosted_metadata_read() {
         ],
     ));
     put_local_project(&state, "peryxpkg", "peryxpkg-1.0-py3-none-any.whl", b"wheel", "1.0");
+    state
+        .serving
+        .meta
+        .put_index(
+            "pypi/peryxpkg",
+            &CachedIndex {
+                source: None,
+                last_modified: None,
+                etag: None,
+                last_serial: None,
+                fetched_at_unix: 1000,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: None,
+                body: b"{\"meta\":{\"api-version\":\"1.1\"},\"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\"files\":[{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\"size\":5,\"url\":\"https://upstream.invalid/peryxpkg-1.0-py3-none-any.whl\",\"hashes\":{\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}]}".to_vec(),
+            },
+        )
+        .unwrap();
 
     assert!(
-        cache::resolve_detail(&state.serving, state.serving.index_at(1), "peryxpkg", "root")
+        cache::resolve_detail(&state.serving, state.serving.index_at(0), "peryxpkg", "pypi")
             .await
             .unwrap()
             .is_some()
     );
     fault.arm(0);
-    let error = cache::resolve_detail(&state.serving, state.serving.index_at(1), "peryxpkg", "root")
+    let error = cache::resolve_detail(&state.serving, state.serving.index_at(2), "peryxpkg", "root")
         .await
         .unwrap_err();
 

@@ -16,16 +16,24 @@ use peryx_storage::blob::Digest;
 use rstest::{fixture, rstest};
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{get, get_authorized, get_with_origin, seed_administrator};
 use crate::config::{Config, IndexConfig, IndexKind, SecretSource, TokenConfig};
 use crate::server::{build_router, build_state, router_for};
 
 #[fixture]
-fn ui_router() -> (tempfile::TempDir, axum::Router) {
+async fn ui_router() -> (tempfile::TempDir, MockServer, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
-    let router = build_router(&ui_config(&dir, false)).unwrap();
-    (dir, router)
+    let server = ui_upstream().await;
+    let router = build_router(&ui_config_with_upstream(
+        &dir,
+        false,
+        &format!("{}/simple/", server.uri()),
+    ))
+    .unwrap();
+    (dir, server, router)
 }
 
 #[fixture]
@@ -37,6 +45,10 @@ fn filter_router() -> (tempfile::TempDir, axum::Router) {
 }
 
 fn ui_config(dir: &tempfile::TempDir, cached_offline: bool) -> Config {
+    ui_config_with_upstream(dir, cached_offline, "http://127.0.0.1:9/simple/")
+}
+
+fn ui_config_with_upstream(dir: &tempfile::TempDir, cached_offline: bool, upstream: &str) -> Config {
     Config {
         data_dir: dir.path().to_path_buf(),
         indexes: vec![
@@ -51,7 +63,7 @@ fn ui_config(dir: &tempfile::TempDir, cached_offline: bool) -> Config {
                 anonymous_read: None,
                 tokens: Vec::new(),
                 kind: IndexKind::Cached {
-                    routing: crate::tests::single_route("http://127.0.0.1:9/simple/"),
+                    routing: crate::tests::single_route(upstream),
                     upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
                     offline: cached_offline,
                     prefetch: Box::default(),
@@ -87,6 +99,16 @@ fn ui_config(dir: &tempfile::TempDir, cached_offline: bool) -> Config {
         ],
         ..Config::default()
     }
+}
+
+async fn ui_upstream() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/veloxdemo/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    server
 }
 
 fn nested_ui_config(dir: &tempfile::TempDir) -> Config {
@@ -212,24 +234,38 @@ async fn upload_private_fixture(router: &axum::Router) -> String {
     sha256.as_str().to_owned()
 }
 
-async fn ui_router_admin() -> (tempfile::TempDir, axum::Router, String) {
+async fn ui_router_admin() -> (tempfile::TempDir, MockServer, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
-    let state = build_state(&ui_config(&dir, false)).unwrap();
+    let server = ui_upstream().await;
+    let state = build_state(&ui_config_with_upstream(
+        &dir,
+        false,
+        &format!("{}/simple/", server.uri()),
+    ))
+    .unwrap();
     let authorization = seed_administrator(&state).await;
-    (dir, router_for(state, axum::Router::new()), authorization)
+    (dir, server, router_for(state, axum::Router::new()), authorization)
 }
 
 async fn ui_router_admin_stateful() -> (
     tempfile::TempDir,
+    MockServer,
     std::sync::Arc<peryx_driver::AppState>,
     axum::Router,
     String,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let state = build_state(&ui_config(&dir, false)).unwrap();
+    let server = ui_upstream().await;
+    let state = build_state(&ui_config_with_upstream(
+        &dir,
+        false,
+        &format!("{}/simple/", server.uri()),
+    ))
+    .unwrap();
     let authorization = seed_administrator(&state).await;
     (
         dir,
+        server,
         state.clone(),
         router_for(state, axum::Router::new()),
         authorization,
@@ -399,7 +435,7 @@ fn put_filter_files(state: &peryx_driver::AppState) {
 
 #[tokio::test]
 async fn test_ui_dashboard_renders_indexes_and_counters() {
-    let (_dir, router, authorization) = ui_router_admin().await;
+    let (_dir, _server, router, authorization) = ui_router_admin().await;
     let (status, body) = get_authorized(&router, "/", &authorization).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -420,8 +456,10 @@ async fn test_ui_dashboard_renders_indexes_and_counters() {
 
 #[rstest]
 #[tokio::test]
-async fn test_ui_dashboard_withholds_counters_from_anonymous(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
+async fn test_ui_dashboard_withholds_counters_from_anonymous(
+    #[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router),
+) {
+    let (_dir, _server, router) = ui_router;
     let (status, body) = get(&router, "/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("root/pypi"), "{body}");
@@ -432,7 +470,7 @@ async fn test_ui_dashboard_withholds_counters_from_anonymous(ui_router: (tempfil
 #[rstest]
 #[tokio::test]
 async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
-    let (_dir, router, authorization) = ui_router_admin().await;
+    let (_dir, server, router, authorization) = ui_router_admin().await;
     let (status, body) = get_authorized(&router, "/admin/status", &authorization).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Admin status"));
@@ -445,7 +483,7 @@ async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
     assert!(body.contains("No writes recorded yet."));
     assert!(body.contains("token configured"));
     assert!(body.contains("redacted"));
-    assert!(body.contains("http://127.0.0.1:9/simple/"));
+    assert!(body.contains(&format!("{}/simple/", server.uri())));
     assert!(body.contains("upload-enabled"));
     assert!(!body.contains("s3cret"));
     assert!(!body.contains("type=\"password\""));
@@ -454,13 +492,15 @@ async fn test_ui_admin_status_renders_read_only_state_without_secrets() {
 
 #[rstest]
 #[tokio::test]
-async fn test_ui_admin_status_withholds_sensitive_fields_from_anonymous(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
+async fn test_ui_admin_status_withholds_sensitive_fields_from_anonymous(
+    #[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router),
+) {
+    let (_dir, server, router) = ui_router;
     let (status, body) = get(&router, "/admin/status").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Admin status"));
     assert!(body.contains("root/pypi"), "{body}");
-    assert!(!body.contains("http://127.0.0.1:9/simple/"), "{body}");
+    assert!(!body.contains(&server.uri()), "{body}");
     assert!(!body.contains("token configured"), "{body}");
     assert!(!body.contains("redacted"), "{body}");
 }
@@ -468,7 +508,7 @@ async fn test_ui_admin_status_withholds_sensitive_fields_from_anonymous(ui_route
 #[rstest]
 #[tokio::test]
 async fn test_ui_admin_status_lists_counts_and_recent_uploads() {
-    let (_dir, router, authorization) = ui_router_admin().await;
+    let (_dir, _server, router, authorization) = ui_router_admin().await;
     upload_fixture(&router).await;
     let (status, body) = get_authorized(&router, "/admin/status", &authorization).await;
     assert_eq!(status, StatusCode::OK);
@@ -481,8 +521,10 @@ async fn test_ui_admin_status_lists_counts_and_recent_uploads() {
 
 #[rstest]
 #[tokio::test]
-async fn test_ui_browse_lists_projects_after_upload(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
+async fn test_ui_browse_lists_projects_after_upload(
+    #[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router),
+) {
+    let (_dir, _server, router) = ui_router;
     upload_fixture(&router).await;
     let (status, body) = get(&router, "/browse?index=hosted").await;
     assert_eq!(status, StatusCode::OK);
@@ -493,7 +535,8 @@ async fn test_ui_browse_lists_projects_after_upload(ui_router: (tempfile::TempDi
 #[tokio::test]
 async fn test_ui_project_command_uses_trusted_request_origin() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ui_config(&dir, false);
+    let server = ui_upstream().await;
+    let mut config = ui_config_with_upstream(&dir, false, &format!("{}/simple/", server.uri()));
     config.rate_limit.trusted_proxies = vec!["127.0.0.1/32".parse().unwrap()];
     let router = build_router(&config).unwrap();
     upload_fixture(&router).await;
@@ -522,8 +565,8 @@ async fn test_ui_project_command_uses_trusted_request_origin() {
 
 #[rstest]
 #[tokio::test]
-async fn test_ui_browse_empty_index_hint(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
+async fn test_ui_browse_empty_index_hint(#[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router)) {
+    let (_dir, _server, router) = ui_router;
     let (status, body) = get(&router, "/browse?index=hosted").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("No projects observed"));
@@ -1264,8 +1307,8 @@ async fn test_ui_project_page_filters_files(
 
 #[rstest]
 #[tokio::test]
-async fn test_ui_project_page_missing_project(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
+async fn test_ui_project_page_missing_project(#[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router)) {
+    let (_dir, _server, router) = ui_router;
     let (status, body) = get(&router, "/browse?index=hosted&project=ghost").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Nothing matched this browse query."));
@@ -1316,8 +1359,8 @@ async fn test_ui_project_page_hides_contents_for_unsupported_legacy_tar() {
 
 #[rstest]
 #[tokio::test]
-async fn test_ui_archive_listing_and_member(ui_router: (tempfile::TempDir, axum::Router)) {
-    let (_dir, router) = ui_router;
+async fn test_ui_archive_listing_and_member(#[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router)) {
+    let (_dir, _server, router) = ui_router;
     upload_fixture(&router).await;
     let (_, detail) = get(&router, "/hosted/simple/veloxdemo/").await;
     let sha = detail
@@ -1346,9 +1389,9 @@ async fn test_ui_archive_listing_and_member(ui_router: (tempfile::TempDir, axum:
 #[rstest]
 #[tokio::test]
 async fn test_ui_archive_tree_links_nested_archives_and_blocks_binary_preview(
-    ui_router: (tempfile::TempDir, axum::Router),
+    #[future(awt)] ui_router: (tempfile::TempDir, MockServer, axum::Router),
 ) {
-    let (_dir, router) = ui_router;
+    let (_dir, _server, router) = ui_router;
     let mut inner = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut inner));
@@ -1538,7 +1581,7 @@ fn wheel_record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {
 
 #[tokio::test]
 async fn test_ui_stats_drills_from_index_to_files() {
-    let (_dir, state, router, authorization) = ui_router_admin_stateful().await;
+    let (_dir, _server, state, router, authorization) = ui_router_admin_stateful().await;
     upload_fixture(&router).await;
     state.serving.metrics.flush().unwrap();
     let (status, body) = get_authorized(&router, "/stats?index=root%2Fpypi", &authorization).await;
@@ -1561,7 +1604,7 @@ async fn test_ui_stats_drills_from_index_to_files() {
 
 #[tokio::test]
 async fn test_ui_stats_withholds_usage_from_anonymous() {
-    let (_dir, router) = ui_router();
+    let (_dir, _server, router) = ui_router().await;
     upload_fixture(&router).await;
     let (status, body) = get(&router, "/stats?index=root%2Fpypi").await;
     assert_eq!(status, StatusCode::OK);
