@@ -7,7 +7,7 @@ use peryx_plugin_registry::PluginRegistry;
 use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 
-#[cfg(not(unix))]
+#[cfg(any(test, not(unix)))]
 use super::is_empty_dir;
 use super::snapshot::config_snapshot;
 use super::{
@@ -258,44 +258,50 @@ impl BackupTarget {
         sync_parent(&path).context(format!("sync backup parent directory for {}", path.display()))
     }
 
-    #[cfg(unix)]
     fn inspect_target(path: &Path) -> anyhow::Result<()> {
-        use rustix::fs::Dir;
+        #[cfg(unix)]
+        {
+            use rustix::fs::Dir;
 
-        let metadata = match std::fs::symlink_metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error).context(format!("inspect backup path {}", path.display())),
-        };
-        anyhow::ensure!(
-            !metadata.file_type().is_symlink(),
-            "backup path {} is a symbolic link",
-            path.display()
-        );
-        anyhow::ensure!(
-            metadata.is_dir(),
-            "backup path {} exists and is not a directory",
-            path.display()
-        );
-        let dir = open_dir(path)?;
-        anyhow::ensure!(
-            rustix::fs::fstat(&dir)?.st_uid == rustix::process::geteuid().as_raw(),
-            "backup path {} is owned by another user",
-            path.display()
-        );
-        for entry in Dir::read_from(&dir).context(format!("read directory {}", path.display()))? {
-            let entry = entry.context(format!("read directory {}", path.display()))?;
+            let metadata = match std::fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error).context(format!("inspect backup path {}", path.display())),
+            };
             anyhow::ensure!(
-                matches!(entry.file_name().to_bytes(), b"." | b".."),
-                "backup path {} is not empty",
+                !metadata.file_type().is_symlink(),
+                "backup path {} is a symbolic link",
                 path.display()
             );
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "backup path {} exists and is not a directory",
+                path.display()
+            );
+            let dir = open_dir(path)?;
+            anyhow::ensure!(
+                rustix::fs::fstat(&dir)?.st_uid == rustix::process::geteuid().as_raw(),
+                "backup path {} is owned by another user",
+                path.display()
+            );
+            for entry in Dir::read_from(&dir).context(format!("read directory {}", path.display()))? {
+                let entry = entry.context(format!("read directory {}", path.display()))?;
+                anyhow::ensure!(
+                    matches!(entry.file_name().to_bytes(), b"." | b".."),
+                    "backup path {} is not empty",
+                    path.display()
+                );
+            }
+            Ok(())
         }
-        Ok(())
+        #[cfg(not(unix))]
+        {
+            Self::inspect_target_portable(path)
+        }
     }
 
-    #[cfg(not(unix))]
-    fn inspect_target(path: &Path) -> anyhow::Result<()> {
+    #[cfg(any(test, not(unix)))]
+    fn inspect_target_portable(path: &Path) -> anyhow::Result<()> {
         if !path.exists() {
             return Ok(());
         }
@@ -331,37 +337,38 @@ impl BackupTarget {
         .union(rustix::fs::OFlags::NOFOLLOW)
         .union(rustix::fs::OFlags::CLOEXEC);
 
-    #[cfg(unix)]
     fn create_file(&self, path: &Path, access: Access) -> anyhow::Result<File> {
-        use rustix::fs::Mode;
+        #[cfg(unix)]
+        {
+            use rustix::fs::Mode;
 
-        let parent = self.open_parent(path)?;
-        let name = path
-            .file_name()
-            .context(format!("backup member {} has no file name", path.display()))?;
-        let mode = match access {
-            Access::Private => Mode::from_raw_mode(0o600),
-            Access::Shared => Mode::from_raw_mode(0o666),
-        };
-        Ok(File::from(
-            rustix::fs::openat(&parent, name, Self::MEMBER_FLAGS, mode)
-                .context(format!("create backup member {}", path.display()))?,
-        ))
-    }
-
-    #[cfg(not(unix))]
-    fn create_file(&self, path: &Path, access: Access) -> anyhow::Result<File> {
-        let path = self.staging.path().join(path);
-        let parent = path
-            .parent()
-            .context(format!("backup member {} has no parent", path.display()))?;
-        std::fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        let _ = access;
-        options
-            .open(&path)
-            .context(format!("create backup member {}", path.display()))
+            let parent = self.open_parent(path)?;
+            let name = path
+                .file_name()
+                .context(format!("backup member {} has no file name", path.display()))?;
+            let mode = match access {
+                Access::Private => Mode::from_raw_mode(0o600),
+                Access::Shared => Mode::from_raw_mode(0o666),
+            };
+            Ok(File::from(
+                rustix::fs::openat(&parent, name, Self::MEMBER_FLAGS, mode)
+                    .context(format!("create backup member {}", path.display()))?,
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let path = self.staging.path().join(path);
+            let parent = path
+                .parent()
+                .context(format!("backup member {} has no parent", path.display()))?;
+            std::fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            let _ = access;
+            options
+                .open(&path)
+                .context(format!("create backup member {}", path.display()))
+        }
     }
 
     #[cfg(unix)]
@@ -403,17 +410,23 @@ fn open_dir(path: &Path) -> anyhow::Result<File> {
 
 /// Rename replaces an empty directory and refuses a populated one, so the caller-supplied empty target
 /// is handed over in one step while a backup another attempt completed there stays untouched.
-#[cfg(unix)]
 fn rename_into_place(staging: &Path, path: &Path) -> anyhow::Result<()> {
-    std::fs::rename(staging, path).context(format!("publish backup to {}", path.display()))
+    #[cfg(unix)]
+    {
+        std::fs::rename(staging, path).context(format!("publish backup to {}", path.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        rename_over_removed_target(staging, path)
+    }
 }
 
 /// Windows refuses a rename onto an existing directory, so the caller-supplied empty target is removed
 /// first and the staged tree moved to an absent destination. `remove_dir` refuses a directory holding
 /// entries, so a backup another attempt completed there is never cleared; an interruption between the
 /// two steps leaves the target absent, which the next attempt reserves from scratch.
-#[cfg(not(unix))]
-fn rename_into_place(staging: &Path, path: &Path) -> anyhow::Result<()> {
+#[cfg(any(test, not(unix)))]
+fn rename_over_removed_target(staging: &Path, path: &Path) -> anyhow::Result<()> {
     if path.exists() {
         std::fs::remove_dir(path).context(format!("clear reserved backup target {}", path.display()))?;
     }

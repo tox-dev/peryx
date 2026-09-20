@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{BackupTarget, STAGING_PREFIX, staging_parent};
+use rstest::rstest;
+
+use super::{BackupTarget, STAGING_PREFIX, rename_over_removed_target, staging_parent};
 
 #[test]
 fn test_reserve_stages_a_private_sibling_and_leaves_the_target_alone() {
@@ -102,6 +104,95 @@ fn test_publish_swaps_the_staged_tree_into_a_reserved_target() {
             staging.exists(),
         ),
         (b"staged".to_vec(), false)
+    );
+}
+
+#[rstest]
+#[case::missing(false)]
+#[case::empty_directory(true)]
+fn test_inspect_target_portable_accepts_a_free_target(#[case] exists: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("backup");
+    if exists {
+        std::fs::create_dir(&path).unwrap();
+    }
+
+    BackupTarget::inspect_target_portable(&path).unwrap();
+}
+
+#[test]
+fn test_inspect_target_portable_refuses_a_regular_file() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("backup");
+    std::fs::write(&path, b"occupied").unwrap();
+
+    let error = BackupTarget::inspect_target_portable(&path).unwrap_err();
+
+    assert_eq!(
+        format!("{error:#}"),
+        format!("backup path {} exists and is not a directory", path.display())
+    );
+}
+
+#[test]
+fn test_inspect_target_portable_refuses_a_populated_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("backup");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(path.join("manifest.json"), b"published").unwrap();
+
+    let error = BackupTarget::inspect_target_portable(&path).unwrap_err();
+
+    assert_eq!(
+        format!("{error:#}"),
+        format!("backup path {} is not empty", path.display())
+    );
+}
+
+#[rstest]
+#[case::empty_target(true)]
+#[case::absent_target(false)]
+fn test_rename_over_removed_target_publishes_the_staged_tree(#[case] exists: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("backup");
+    if exists {
+        std::fs::create_dir(&path).unwrap();
+    }
+    let staging = root.path().join("staging");
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::write(staging.join("manifest.json"), b"staged").unwrap();
+
+    rename_over_removed_target(&staging, &path).unwrap();
+
+    assert_eq!(
+        (std::fs::read(path.join("manifest.json")).unwrap(), staging.exists()),
+        (b"staged".to_vec(), false)
+    );
+}
+
+#[test]
+fn test_rename_over_removed_target_keeps_a_populated_target() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("backup");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(path.join("manifest.json"), b"published").unwrap();
+    let staging = root.path().join("staging");
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::write(staging.join("manifest.json"), b"staged").unwrap();
+
+    let error = rename_over_removed_target(&staging, &path).unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string(),
+            std::fs::read(path.join("manifest.json")).unwrap(),
+            std::fs::read(staging.join("manifest.json")).unwrap(),
+        ),
+        (
+            format!("clear reserved backup target {}", path.display()),
+            b"published".to_vec(),
+            b"staged".to_vec(),
+        )
     );
 }
 

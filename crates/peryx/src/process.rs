@@ -27,38 +27,40 @@ struct ShutdownSignals {
     ctrl_c: tokio::signal::windows::CtrlC,
 }
 
-#[cfg(unix)]
 impl ShutdownSignals {
     fn new() -> std::io::Result<Self> {
-        Ok(Self {
-            interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
-            terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
-        })
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+                terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                ctrl_c: tokio::signal::windows::ctrl_c()?,
+            })
+        }
     }
 
     async fn cancel(mut self, cancellation: tokio_util::sync::CancellationToken) {
-        let signal = tokio::select! {
-            _ = self.interrupt.recv() => nix::sys::signal::Signal::SIGINT,
-            _ = self.terminate.recv() => nix::sys::signal::Signal::SIGTERM,
-        };
-        restore_default_shutdown_signals(signal);
-        cancellation.cancel();
-        tracing::info!(signal = signal.as_str(), "shutdown signal received");
-    }
-}
-
-#[cfg(windows)]
-impl ShutdownSignals {
-    fn new() -> std::io::Result<Self> {
-        Ok(Self {
-            ctrl_c: tokio::signal::windows::ctrl_c()?,
-        })
-    }
-
-    async fn cancel(mut self, cancellation: tokio_util::sync::CancellationToken) {
-        self.ctrl_c.recv().await;
-        cancellation.cancel();
-        tracing::info!(signal = "Ctrl-C", "shutdown signal received");
+        #[cfg(unix)]
+        {
+            let signal = tokio::select! {
+                _ = self.interrupt.recv() => nix::sys::signal::Signal::SIGINT,
+                _ = self.terminate.recv() => nix::sys::signal::Signal::SIGTERM,
+            };
+            restore_default_shutdown_signals(signal);
+            cancellation.cancel();
+            tracing::info!(signal = signal.as_str(), "shutdown signal received");
+        }
+        #[cfg(windows)]
+        {
+            self.ctrl_c.recv().await;
+            cancellation.cancel();
+            tracing::info!(signal = "Ctrl-C", "shutdown signal received");
+        }
     }
 }
 
@@ -149,29 +151,32 @@ fn logging_layer(log: &LogConfig) -> anyhow::Result<(BoxedLayer, Option<WorkerGu
     Ok((layer.with_filter(filter).boxed(), guard))
 }
 
-#[cfg(target_os = "linux")]
 fn journald_layer(_format: LogFormat) -> anyhow::Result<BoxedLayer> {
-    Ok(tracing_journald::layer()
-        .context("connect to the systemd journal")?
-        .boxed())
+    #[cfg(target_os = "linux")]
+    {
+        Ok(tracing_journald::layer()
+            .context("connect to the systemd journal")?
+            .boxed())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        anyhow::bail!("the journald log sink is only available on Linux")
+    }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn journald_layer(_format: LogFormat) -> anyhow::Result<BoxedLayer> {
-    anyhow::bail!("the journald log sink is only available on Linux")
-}
-
-#[cfg(unix)]
 fn syslog_layer(format: LogFormat) -> anyhow::Result<BoxedLayer> {
-    let identity = std::ffi::CString::new("peryx").expect("static identity has no NUL");
-    let (options, facility) = Default::default();
-    let syslog = syslog_tracing::Syslog::new(identity, options, facility).context("open syslog")?;
-    Ok(fmt_layer(format, syslog))
-}
-
-#[cfg(not(unix))]
-fn syslog_layer(_format: LogFormat) -> anyhow::Result<BoxedLayer> {
-    anyhow::bail!("the syslog log sink requires a Unix platform")
+    #[cfg(unix)]
+    {
+        let identity = std::ffi::CString::new("peryx").expect("static identity has no NUL");
+        let (options, facility) = Default::default();
+        let syslog = syslog_tracing::Syslog::new(identity, options, facility).context("open syslog")?;
+        Ok(fmt_layer(format, syslog))
+    }
+    #[cfg(not(unix))]
+    {
+        _ = format;
+        anyhow::bail!("the syslog log sink requires a Unix platform")
+    }
 }
 
 pub(crate) async fn prepare_distributed_availability(
@@ -900,25 +905,33 @@ fn public_tcp_listener(
     Ok(listener)
 }
 
-#[cfg(unix)]
 fn inherited_tcp_listener(
     variable: &'static str,
     expected: std::net::SocketAddr,
 ) -> anyhow::Result<Option<std::net::TcpListener>> {
-    let Some(descriptor) = std::env::var_os(variable) else {
-        return Ok(None);
-    };
-    let descriptor = descriptor
-        .to_str()
-        .context(format!("{variable} is not valid UTF-8"))?
-        .parse::<std::os::fd::RawFd>()
-        .context(format!("parse listener descriptor from {variable}"))?;
-    inherited_listener_from_descriptor(
-        duplicate_inherited_descriptor(descriptor, variable)?,
-        expected,
-        variable,
-    )
-    .map(Some)
+    #[cfg(unix)]
+    {
+        let Some(descriptor) = std::env::var_os(variable) else {
+            return Ok(None);
+        };
+        let descriptor = descriptor
+            .to_str()
+            .context(format!("{variable} is not valid UTF-8"))?
+            .parse::<std::os::fd::RawFd>()
+            .context(format!("parse listener descriptor from {variable}"))?;
+        inherited_listener_from_descriptor(
+            duplicate_inherited_descriptor(descriptor, variable)?,
+            expected,
+            variable,
+        )
+        .map(Some)
+    }
+    #[cfg(not(unix))]
+    {
+        _ = variable;
+        _ = expected;
+        Ok(None)
+    }
 }
 
 #[cfg(unix)]
@@ -957,14 +970,6 @@ fn inherited_listener_from_descriptor(
         "listener descriptor from {variable} is bound to {actual}, expected {expected}"
     );
     Ok(listener)
-}
-
-#[cfg(not(unix))]
-fn inherited_tcp_listener(
-    _variable: &'static str,
-    _expected: std::net::SocketAddr,
-) -> anyhow::Result<Option<std::net::TcpListener>> {
-    Ok(None)
 }
 
 fn join_acme_task(result: Result<anyhow::Result<()>, tokio::task::JoinError>) -> anyhow::Result<()> {
