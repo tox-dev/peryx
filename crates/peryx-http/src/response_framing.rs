@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use bytes::Bytes;
-use http_body::{Frame, SizeHint};
+use http_body::Frame;
 
 /// Send no `Content-Length` on a `304`, whatever the handler and the framework would have put there.
 ///
@@ -35,6 +35,7 @@ pub fn frame_not_modified(response: &mut Response) {
 }
 
 /// A body that is over and admits to no length, so nothing downstream infers one from it.
+/// `size_hint` stays the trait's own, which bounds nothing.
 struct Ended;
 
 impl http_body::Body for Ended {
@@ -47,9 +48,5 @@ impl http_body::Body for Ended {
 
     fn is_end_stream(&self) -> bool {
         true
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
     }
 }

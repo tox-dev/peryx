@@ -116,7 +116,7 @@ fn parse_if_match_field(
     versions: &mut BTreeSet<u64>,
 ) -> Result<(), IfMatchError> {
     let mut index = 0;
-    while index < field.len() {
+    loop {
         while field.get(index).is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
             index += 1;
         }
@@ -161,13 +161,10 @@ fn parse_if_match_field(
         while field.get(index).is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
             index += 1;
         }
-        if index == field.len() {
-            break;
-        }
-        if field[index] != b',' {
+        // The next pass consumes the separator the way it consumes an empty list element.
+        if field.get(index).is_some_and(|byte| *byte != b',') {
             return Err(IfMatchError::Malformed);
         }
-        index += 1;
     }
     Ok(())
 }

@@ -318,10 +318,7 @@ fn analytics_routes() -> RouteSet {
             admin_read(RouteMethod::Get, "/+policy/decisions"),
             get(handlers::policy_decisions),
         )
-        .route(
-            admin_read(RouteMethod::Post, "/+query"),
-            post(handlers::pql_query).layer(DefaultBodyLimit::max(16 * 1024)),
-        )
+        .route(admin_read(RouteMethod::Post, "/+query"), post(handlers::pql_query))
         .route(admin_read(RouteMethod::Get, "/+quota"), get(handlers::quota_summary))
         .route(
             admin_read(RouteMethod::Get, "/+quota/repository"),
