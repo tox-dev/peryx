@@ -42,6 +42,10 @@ exclude_re = [
   # type-checked in this build, so it would read as missed.
   'peryx-web/src/pages/mod\.rs.*replace reactive_value -> S::Value with Default::default\(\)',
 
+  # `impl From<T> for Poll<T>` is `Poll::Ready`, so this replacement is the value `Ended::poll_frame`
+  # already returns. No test can tell the two apart; the mutants that return anything else are caught.
+  'peryx-http/src/response_framing\.rs.*Ended>::poll_frame .* with Poll::from\(None\)$',
+
   # Exports the wasm coverage counters, and exists only in the `wasm32` coverage build.
   'peryx-web/src/lib\.rs.*replace capture_coverage ',
 

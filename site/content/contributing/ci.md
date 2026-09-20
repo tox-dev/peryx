@@ -55,9 +55,11 @@ survivors and thrown away 228 mutants the suite kills.
 
 A function goes on that list only when it cannot run natively. Logic that merely sits behind a browser or platform gate
 does not qualify. Widen its gate to `any(test, ...)` so the native suite compiles it, then pin it with a test, as the
-stats and status document conversions, the URL builders, the page query and paging handlers and `sysctl_with` are. After
-changing the list, diff `cargo mutants --list` against `cargo mutants --list --no-config` and check that every line it
-removes is one you meant.
+stats and status document conversions, the URL builders, the page query and paging handlers and `sysctl_with` are. The
+list also holds one mutant that is the original under another spelling: `Poll::from(None)` in `Ended::poll_frame`, where
+`From<T> for Poll<T>` is `Poll::Ready`. An entry of that kind names the single replacement and states the proof beside
+it, and only when the code has no simpler spelling that removes the mutant. After changing the list, diff
+`cargo mutants --list` against `cargo mutants --list --no-config` and check that every line it removes is one you meant.
 
 Excluding paths shortens the matrix rather than the shards. The nightly derives its shard count from the same list it
 mutates, at `mutation-shard-count "$(just mutation-count)" 128`, so the run goes from 148 shards to 140 with each still
