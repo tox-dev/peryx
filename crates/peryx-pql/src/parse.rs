@@ -187,8 +187,9 @@ pub(crate) fn timestamp_seconds(text: &str) -> Option<i64> {
 }
 
 fn lex_param(text: &str, index: usize, tokens: &mut Vec<Token>) -> Result<usize, PqlError> {
-    let end = token_end(text, index + 1);
-    let name = &text[index + 1..end];
+    let start = index + 1;
+    let end = token_end(text, start);
+    let name = &text[start..end];
     if name.is_empty() || !name.bytes().all(is_ident_continue) {
         return Err(PqlError::Parse("invalid parameter name".to_owned()));
     }
