@@ -2,9 +2,12 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use rstest::rstest;
+
 use super::stage::STAGE_MAX_AGE;
 use super::store::stage_file;
 use super::{BlobErrorKind, BlobStorage, BlobStore, Digest, S3Config, S3Settings, StageUsage};
+use crate::tests::capture::Captured;
 
 fn store() -> (tempfile::TempDir, BlobStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -21,12 +24,15 @@ fn stage(directory: &Path, bytes: &[u8]) -> PathBuf {
 
 /// Backdating past the age bound is what makes a stage look abandoned rather than in flight.
 fn age(path: &Path) {
-    let aged = SystemTime::now() - STAGE_MAX_AGE - Duration::from_secs(1);
+    modified_at(path, SystemTime::now() - STAGE_MAX_AGE - Duration::from_secs(1));
+}
+
+fn modified_at(path: &Path, modified: SystemTime) {
     std::fs::File::options()
         .write(true)
         .open(path)
         .unwrap()
-        .set_times(std::fs::FileTimes::new().set_modified(aged))
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
         .unwrap();
 }
 
@@ -75,6 +81,19 @@ fn test_sweep_keeps_a_stage_younger_than_the_age_bound() {
 
     assert_eq!(store.sweep_stages().unwrap(), 0);
     assert!(path.exists());
+}
+
+/// Whole seconds survive every filesystem's timestamp resolution, so the age is the bound and not a
+/// rounding of it.
+#[test]
+fn test_sweep_removes_a_stage_that_has_reached_the_age_bound() {
+    let (_dir, store) = store();
+    let path = stage(&store.staging_dir(), b"interrupted");
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    modified_at(&path, now - STAGE_MAX_AGE);
+
+    assert_eq!(store.sweep_stages_at(now).unwrap(), 1);
+    assert!(!path.exists());
 }
 
 #[test]
@@ -202,6 +221,29 @@ async fn test_startup_recovery_sweeps_an_abandoned_filesystem_stage() {
 
     assert_eq!(storage.recover_incomplete_uploads().await.unwrap(), 1);
     assert!(!path.exists());
+}
+
+#[rstest]
+#[case::nothing_swept(0, 0)]
+#[case::a_stage_swept(1, 1)]
+#[tokio::test]
+async fn test_startup_recovery_reports_a_sweep_only_when_it_removed_stages(
+    #[case] abandoned: usize,
+    #[case] reports: usize,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlobStorage::filesystem(dir.path());
+    for _ in 0..abandoned {
+        abandoned_stage(dir.path(), b"interrupted");
+    }
+    let captured = Captured::install();
+
+    assert_eq!(storage.recover_incomplete_uploads().await.unwrap(), abandoned);
+
+    assert_eq!(
+        captured.output().matches("swept abandoned blob stages").count(),
+        reports
+    );
 }
 
 #[tokio::test]

@@ -168,6 +168,25 @@ async fn test_abort_removes_the_local_stage() {
     );
 }
 
+/// Dropping the write also removes its stage, so only the reported failure shows the abort ran.
+#[tokio::test]
+async fn test_abort_reports_stage_removal_failure() {
+    let staging = tempfile::tempdir().unwrap();
+    let write = backend(staging.path()).begin().await.unwrap();
+    let path = std::fs::read_dir(staging.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let error = write.abort().await.unwrap_err();
+
+    assert_eq!(error.kind(), BlobErrorKind::Io);
+}
+
 /// `is_empty` distinguishes a real zero-byte object from one that merely finished writing, so a
 /// non-empty stage must not be reported as empty.
 #[tokio::test]

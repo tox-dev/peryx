@@ -20,6 +20,7 @@ use super::super::S3Backend;
 use super::super::config::S3Settings;
 use super::{BehaviorVersion, Builder, Client, Region, S3Client, S3Config, S3Error, S3Get, S3Part};
 use crate::blob::{BlobBackend, BlobStore, Digest};
+use crate::tests::capture::Captured;
 
 const CHECKSUM: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
@@ -1095,5 +1096,35 @@ async fn test_upload_parts_reports_the_first_failure_not_the_last() {
         std::error::Error::source(&error).unwrap().to_string(),
         "bucket not found",
         "the first failure (part 2) must win over the later one (part 1)"
+    );
+}
+
+/// The journal directory exists in both cases, so the quiet one reaches the report rather than the
+/// early return for a store that never journaled.
+#[rstest]
+#[case::nothing_aborted(&[], 0)]
+#[case::an_upload_aborted(&["upload-1"], 1)]
+#[tokio::test]
+async fn test_recovery_reports_aborted_uploads_only_when_it_aborted_some(
+    #[case] journaled: &[&str],
+    #[case] reports: usize,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = multipart_backend(dir.path(), base_settings(), |_| multipart_ok_response());
+    let journal = backend.multipart_journal(&Digest::of(b"package"));
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    for upload_id in journaled {
+        std::fs::write(&journal, upload_id).unwrap();
+    }
+    let captured = Captured::install();
+
+    assert_eq!(backend.recover_multipart_uploads().await.unwrap(), journaled.len());
+
+    assert_eq!(
+        captured
+            .output()
+            .matches("aborted abandoned s3 multipart uploads")
+            .count(),
+        reports
     );
 }

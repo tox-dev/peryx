@@ -325,7 +325,14 @@ impl BlobStore {
     /// # Errors
     /// Returns [`super::BlobErrorKind::Io`] when the store cannot be walked.
     pub(crate) fn sweep_stages(&self) -> Result<usize, BlobError> {
-        let now = std::time::SystemTime::now();
+        self.sweep_stages_at(std::time::SystemTime::now())
+    }
+
+    /// A stage that has reached [`STAGE_MAX_AGE`] at `now` counts as abandoned.
+    ///
+    /// # Errors
+    /// Returns [`super::BlobErrorKind::Io`] when the store cannot be walked.
+    pub(super) fn sweep_stages_at(&self, now: std::time::SystemTime) -> Result<usize, BlobError> {
         let mut swept = 0;
         self.visit_stages(&mut |path, metadata| {
             if self.owns(path) || now.duration_since(metadata.modified()?).unwrap_or_default() < STAGE_MAX_AGE {

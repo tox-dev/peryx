@@ -138,7 +138,6 @@ pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> 
     let records = txn.open_table(DIGEST_REVOCATION)?;
     let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
     let mut active: u64 = 0;
-    let mut rows: u64 = 0;
     let mut indexed = true;
     for entry in records.iter()? {
         let (key, value) = entry?;
@@ -146,7 +145,6 @@ pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> 
         if record.state == DigestRevocationState::Active {
             active += 1;
         }
-        rows += 1;
         if index
             .get(index_key(record.state.status(), key.value()).as_str())?
             .is_none()
@@ -154,7 +152,7 @@ pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> 
             indexed = false;
         }
     }
-    if !indexed || index.len()? != rows {
+    if !indexed || index.len()? != records.len()? {
         while index.pop_first()?.is_some() {}
         for entry in records.iter()? {
             let (key, value) = entry?;
