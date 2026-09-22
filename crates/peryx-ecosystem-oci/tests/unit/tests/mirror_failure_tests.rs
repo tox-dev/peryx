@@ -252,14 +252,22 @@ async fn test_cancelled_mirror_retries_a_blob_with_the_same_state(#[case] during
     )
     .await
     .expect("mirror manifest peer did not complete");
-    let (mut stalled, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-        .await
-        .expect("cancelled mirror blob peer did not connect")
-        .unwrap();
-    let path = tokio::time::timeout(Duration::from_secs(5), read_path(&mut stalled))
-        .await
-        .expect("cancelled mirror blob peer did not send headers");
-    let body = &content[&path].body;
+    // The run pulls both blobs at once. Taking the sibling's request too leaves nothing from the
+    // cancelled run in the backlog, where the recovery run would accept a connection the abort closed
+    // before it wrote a byte.
+    let mut in_flight = Vec::new();
+    for _ in [&config, &layer] {
+        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("cancelled mirror blob peer did not connect")
+            .unwrap();
+        let path = tokio::time::timeout(Duration::from_secs(5), read_path(&mut connection))
+            .await
+            .expect("cancelled mirror blob peer did not send headers");
+        in_flight.push((connection, path));
+    }
+    let (stalled, path) = &mut in_flight[0];
+    let body = &content[path.as_str()].body;
     if during_body {
         stalled
             .write_all(
@@ -288,7 +296,7 @@ async fn test_cancelled_mirror_retries_a_blob_with_the_same_state(#[case] during
             .unwrap(),
         None
     );
-    drop(stalled);
+    drop(in_flight);
 
     let mut peers = tokio::task::JoinSet::new();
     let outcome = tokio::time::timeout(
