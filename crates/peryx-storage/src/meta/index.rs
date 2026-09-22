@@ -833,7 +833,7 @@ impl DriverTxn<'_> {
             #[cfg(any(test, feature = "fault-injection"))]
             if self
                 .prefix_scan_fault
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |remaining| match remaining {
