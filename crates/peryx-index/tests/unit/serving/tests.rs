@@ -180,6 +180,23 @@ fn test_invalidation_handles_seen_and_unseen_resources() {
 }
 
 #[test]
+fn test_invalidate_all_retires_every_ticket() {
+    let cache = ServingCache::new(1024, 60);
+    let old = [
+        cache.representation_key("route", "first", "json"),
+        cache.representation_key("independent", "second", "json"),
+    ];
+
+    cache.invalidate_all();
+
+    let fresh = [
+        cache.representation_key("route", "first", "json"),
+        cache.representation_key("independent", "second", "json"),
+    ];
+    assert!(old.iter().zip(&fresh).all(|(old, fresh)| old != fresh));
+}
+
+#[test]
 fn test_concurrent_invalidations_remove_one_ticket() {
     let cache = ServingCache::new(1024, 60);
     let old = cache.representation_key("route", "resource", "json");
