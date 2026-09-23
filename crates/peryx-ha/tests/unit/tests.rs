@@ -81,18 +81,20 @@ fn artifact_placement_health_totals_each_availability_class() {
 }
 
 #[rstest]
-#[case::hosted(ArtifactSource::Hosted, "hosted", false, ByteAvailability::Unavailable)]
-#[case::proxy(ArtifactSource::Proxy, "proxy", true, ByteAvailability::RemoteOnly)]
-#[case::generated(ArtifactSource::Generated, "generated", false, ByteAvailability::Unavailable)]
-#[case::unknown(ArtifactSource::Unknown, "unknown", false, ByteAvailability::Unavailable)]
+#[case::hosted(ArtifactSource::Hosted, "hosted", false, false, ByteAvailability::Unavailable)]
+#[case::proxy(ArtifactSource::Proxy, "proxy", true, false, ByteAvailability::RemoteOnly)]
+#[case::generated(ArtifactSource::Generated, "generated", false, false, ByteAvailability::Unavailable)]
+#[case::unknown(ArtifactSource::Unknown, "unknown", false, true, ByteAvailability::Unavailable)]
 fn artifact_source_projects_absent_bytes(
     #[case] source: ArtifactSource,
     #[case] label: &str,
     #[case] has_upstream: bool,
+    #[case] is_unknown: bool,
     #[case] availability: ByteAvailability,
 ) {
     assert_eq!(source.as_str(), label);
     assert_eq!(source.has_upstream(), has_upstream);
+    assert_eq!(source.is_unknown(), is_unknown);
     assert_eq!(
         ArtifactPlacement::record(source, false),
         ArtifactPlacement { source, availability }
