@@ -3,11 +3,6 @@ name: Prepare release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Version to release; empty derives it from the pending change files
-        required: false
-        default: ""
 
 permissions: {}
 
@@ -20,15 +15,22 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # The token pushes past the main ruleset, and a tag pushed with GITHUB_TOKEN would not start release.yml.
     environment: release-auth
     permissions:
       contents: read
     steps:
+      # The peryx-release app bypasses the main ruleset, and a tag pushed with GITHUB_TOKEN would not start
+      # release.yml. Its token expires with the job.
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PAT }}
+          token: ${{ steps.token.outputs.token }}
           persist-credentials: true # zizmor: ignore[artipacked] knope pushes the release commit and tag
       - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
@@ -36,8 +38,22 @@ jobs:
           install_args: --locked github:knope-dev/knope prek uv
           cache: false
       - run: |
-          git config user.name "${GITHUB_ACTOR}"
-          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
-      - run: knope prepare-release --verbose ${VERSION:+--override-version "$VERSION"}
+          git config user.name "peryx-release[bot]"
+          git config user.email "${APP_USER_ID}+peryx-release[bot]@users.noreply.github.com"
         env:
-          VERSION: ${{ inputs.version }}
+          APP_USER_ID: ${{ vars.RELEASE_APP_USER_ID }}
+      # A version override makes knope release even without change files, which would ship empty notes.
+      - run: |
+          if ! compgen -G ".changeset/*.md" > /dev/null; then
+            echo "::error::no change files under .changeset; nothing to release"
+            exit 1
+          fi
+      # CalVer YYYY.MDD.N: the UTC date, then a counter that allows several releases on one day.
+      - id: version
+        run: |
+          day="$(date -u +%Y).$(date -u +%-m%d)"
+          last=$(git tag --list "v${day}.*" | sed "s/^v${day}\.//" | sort -n | tail -n 1)
+          echo "version=${day}.$((${last:--1} + 1))" >> "$GITHUB_OUTPUT"
+      - run: knope prepare-release --verbose --override-version "$VERSION"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
