@@ -37,8 +37,8 @@ the hosted fields, while the upstream promises the PEP 700 fields.
 
 A JSON page that declares `1.1` or newer and then omits the `versions` array, or leaves any file without a `size`,
 breaks its own contract. peryx does not repair it and does not quietly lower its version: it rejects the response, so
-the previously published generation stays serviceable and the client keeps reading the page it already had. `versions`
-is a set, so a repeated version string is rejected the same way, at every version that carries the field.
+the previously stored page stays serviceable and the client keeps reading the page it already had. `versions` is a set,
+so a repeated version string is rejected the same way, at every version that carries the field.
 
 `1.4` is peryx's own ceiling: the highest version it implements. The threshold that decides between the ceiling and the
 base is [PEP 700](https://peps.python.org/pep-0700/)'s, minor version `1`. Above it, every guarantee through `1.4` is

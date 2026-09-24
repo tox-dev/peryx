@@ -77,6 +77,22 @@ fn app_with_routes(
     (dir, Arc::new(app))
 }
 
+/// An app whose clock reads `now`, so a test can move past a page's freshness window.
+fn app_at(indexes: Vec<Index>, now: Arc<std::sync::atomic::AtomicI64>) -> (tempfile::TempDir, Arc<AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let mut app = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        indexes,
+        Arc::new(move || now.load(std::sync::atomic::Ordering::SeqCst)),
+    );
+    crate::tests::install(&mut app);
+    (dir, Arc::new(app))
+}
+
 fn app_with_store(meta: MetaStore, indexes: Vec<Index>) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
@@ -702,11 +718,15 @@ async fn test_public_job_revalidates_root_and_project_generations_and_tolerates_
         .mount(&server)
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
-    let (_dir, app) = app(vec![index(
-        "revalidation",
-        crate::ECOSYSTEM,
-        IndexKind::Cached { client, offline: false },
-    )]);
+    let now = Arc::new(std::sync::atomic::AtomicI64::new(1_000));
+    let (_dir, app) = app_at(
+        vec![index(
+            "revalidation",
+            crate::ECOSYSTEM,
+            IndexKind::Cached { client, offline: false },
+        )],
+        now.clone(),
+    );
 
     assert_eq!(
         run(&app, parameters("revalidation", 2, 2)).await.unwrap(),
@@ -716,6 +736,8 @@ async fn test_public_job_revalidates_root_and_project_generations_and_tolerates_
             ..JobReport::default()
         }
     );
+    // Within their freshness windows the page and the negative answer would stand in for a request.
+    now.fetch_add(3_600, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
         run(&app, parameters("revalidation", 2, 2)).await.unwrap(),
         JobReport {
@@ -791,7 +813,8 @@ struct HeldUpstream {
 const HELD_ROOT: &str = r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"flask"}]}"#;
 const HELD_FLASK: &str = r#"{"meta":{"api-version":"1.4"},"versions":[],"name":"flask","files":[]}"#;
 
-/// Serves the root and `flask` at once, except `held_path`, which answers `held_body` only once released. Each
+/// Serves the root and `flask` at once, except the first request for `held_path`, which answers `held_body`
+/// only once released; later requests for it answer at once. Each
 /// connection runs on its own task, so the held request never blocks the others.
 async fn held_upstream(held_path: &'static str, held_body: &'static str) -> HeldUpstream {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -818,9 +841,10 @@ async fn held_upstream(held_path: &'static str, held_body: &'static str) -> Held
                 let body = if request.contains(&format!("GET {held_path} ")) {
                     counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let pending = hold.lock().await.take();
-                    let (entered, release) = pending.expect("the held path is requested once");
-                    entered.send(()).unwrap();
-                    release.await.unwrap();
+                    if let Some((entered, release)) = pending {
+                        entered.send(()).unwrap();
+                        release.await.unwrap();
+                    }
                     held_body
                 } else if request.contains("GET /simple/flask/ ") {
                     HELD_FLASK
@@ -859,23 +883,14 @@ fn held_app(upstream: &HeldUpstream) -> (tempfile::TempDir, Arc<AppState>) {
     )])
 }
 
-type ProjectSync = crate::Synced<Result<crate::cache::ProjectSyncOutcome, Arc<crate::cache::ProjectSyncError>>>;
-
-/// Leads the `flask` project flight on `app`, as a caller outside the job would.
-fn lead_flask(app: &Arc<AppState>, upstream: &HeldUpstream) -> tokio::task::JoinHandle<ProjectSync> {
+/// Resolves `flask` on `app` the way a request does, leading the page fetch.
+fn request_flask(app: &Arc<AppState>) -> tokio::task::JoinHandle<Result<Option<crate::ProjectDetail>, String>> {
     let app = app.clone();
-    let client = upstream.client.clone();
     tokio::spawn(async move {
-        crate::cache::sync_project_files(
-            &client,
-            &app.serving.cache.inflight,
-            &app.serving.meta,
-            "held",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
+        let index = app.serving.index_at(0);
+        crate::cache::resolve_detail(&app.serving, index, "flask", &index.route)
+            .await
+            .map_err(|err| err.to_string())
     })
 }
 
@@ -890,29 +905,39 @@ async fn job_joining(app: &Arc<AppState>, key: &str) -> tokio::task::JoinHandle<
     job
 }
 
-/// The job joins a project flight another caller leads, so it does not count that publication again.
+/// A request fetching a project's page and the job syncing it make one upstream request: the job queues on
+/// the page's flight and finds the page the request stored. The request caused that change, so the job counts
+/// only its root.
 #[tokio::test]
-async fn test_public_job_does_not_count_a_publication_it_joined() {
+async fn test_public_job_shares_a_page_fetch_with_a_request() {
     let upstream = held_upstream("/simple/flask/", HELD_FLASK).await;
     let (_dir, app) = held_app(&upstream);
-    let leader = lead_flask(&app, &upstream);
-    let HeldUpstream { entered, release, .. } = upstream;
+    let request = request_flask(&app);
+    let HeldUpstream {
+        entered,
+        release,
+        held_requests,
+        ..
+    } = upstream;
     entered.await.unwrap();
-    let job = job_joining(&app, "pypi\0project\0held\0flask").await;
+    let job = job_joining(&app, "held/flask").await;
 
     release.send(()).unwrap();
 
-    assert!(matches!(
-        leader.await.unwrap(),
-        crate::Synced::Led(Ok(crate::cache::ProjectSyncOutcome::Published { files: 0 }))
-    ));
+    assert!(request.await.unwrap().unwrap().is_some());
     assert_eq!(
-        job.await.unwrap().unwrap(),
-        JobReport {
-            processed: 1,
-            changed: 1,
-            ..JobReport::default()
-        }
+        (
+            job.await.unwrap().unwrap(),
+            held_requests.load(std::sync::atomic::Ordering::SeqCst)
+        ),
+        (
+            JobReport {
+                processed: 1,
+                changed: 1,
+                ..JobReport::default()
+            },
+            1
+        )
     );
 }
 
@@ -955,12 +980,13 @@ async fn test_public_job_does_not_count_a_root_it_joined() {
     );
 }
 
-/// A failed refresh reaches the job that joined it as that same failure, from one upstream request.
+/// A request whose page fetch fails stores nothing, so the job queued behind it fetches again and reports its
+/// own failure rather than a success it never observed (#1302).
 #[tokio::test]
-async fn test_public_job_fails_with_the_project_flight_it_joined() {
+async fn test_public_job_refetches_after_a_request_fetch_failed() {
     let upstream = held_upstream("/simple/flask/", "not json").await;
     let (_dir, app) = held_app(&upstream);
-    let leader = lead_flask(&app, &upstream);
+    let request = request_flask(&app);
     let HeldUpstream {
         entered,
         release,
@@ -968,20 +994,17 @@ async fn test_public_job_fails_with_the_project_flight_it_joined() {
         ..
     } = upstream;
     entered.await.unwrap();
-    let job = job_joining(&app, "pypi\0project\0held\0flask").await;
+    let job = job_joining(&app, "held/flask").await;
 
     release.send(()).unwrap();
 
-    let crate::Synced::Led(Err(error)) = leader.await.unwrap() else {
-        panic!("the leader's refresh fails");
-    };
-    let failure = job.await.unwrap().unwrap_err();
+    assert!(request.await.unwrap().is_err());
     assert_eq!(
         (
-            failure.contains("flask") && failure.contains(&error.to_string()),
+            job.await.unwrap().unwrap_err().contains("flask"),
             held_requests.load(std::sync::atomic::Ordering::SeqCst)
         ),
-        (true, 1)
+        (true, 2)
     );
 }
 
@@ -1042,7 +1065,7 @@ async fn test_public_job_continues_after_a_project_failure(#[case] concurrency: 
 
     assert!(error.starts_with("project_sync: 1 project sync failures; project \"broken\":"));
     assert!(
-        crate::store::active_project_generation(&app.serving.meta, "continue-after-failure", "healthy")
+        crate::store::get_index(&app.serving.meta, "continue-after-failure/healthy")
             .unwrap()
             .is_some()
     );
@@ -1360,7 +1383,7 @@ async fn test_cancellation_drops_an_inflight_project_without_partial_publication
             .is_some()
     );
     assert!(
-        crate::store::active_project_generation(&app.serving.meta, "cancel-project", "flask")
+        crate::store::get_index(&app.serving.meta, "cancel-project/flask")
             .unwrap()
             .is_none()
     );

@@ -163,49 +163,38 @@ strings, and fragments from persisted source and final URLs.
 
 ### Sync project file metadata
 
-Name discovery populates the root. A project-detail sync fetches its HTML or JSON Simple response and records remote
-file metadata without downloading distribution bytes. The mirror records each file's identity, hash, and size before
-fetching the artifact.
+Name discovery populates the root. A project refresh fetches each project's page through the same cached fetch a request
+uses, so the mirror records each file's identity, hash, and size before fetching the artifact, and without downloading
+distribution bytes.
 
-Each admitted file records its filename, hashes, size, upload time, yank state, metadata-sibling link, provenance link,
-and upstream URL, parsed from the
+Storing a project page records, for each file, its filename, hashes, size, upload time, yank state, metadata-sibling
+link, provenance link, and upstream URL, parsed from the
 [PyPA Simple Repository API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) with the
 per-file [PEP 700](https://peps.python.org/pep-0700/) `size` and `upload-time`,
 [PEP 592](https://peps.python.org/pep-0592/) yanks, [PEP 658](https://peps.python.org/pep-0658/) metadata siblings, and
-[PEP 740](https://peps.python.org/pep-0740/) provenance. The generation around them retains the source index that
-produced it, the `ETag`/`Last-Modified`/last-serial validators, the observation time, and a monotonic generation number.
-HTML and JSON responses parse into the same fields, so an upstream serving either form yields identical records.
+[PEP 740](https://peps.python.org/pep-0740/) provenance. peryx stores HTML and JSON responses as the same JSON page, so
+an upstream serving either form yields identical records. peryx applies the repository policy before registering a file,
+so denied files do not reach installers, and skips a file without a `sha256` because it cannot content-address it.
+Registration records the digest-keyed download source and metadata sibling; until a cache miss fetches the bytes by
+digest, the file remains upstream.
 
-peryx applies the repository policy before admitting a file, so denied files do not reach installers. It also skips a
-file without a `sha256` because it cannot content-address that file. Admission registers the digest-keyed download
-source and metadata sibling. Until a cache miss fetches the bytes by digest, the metadata describes a file that remains
-upstream.
+A refresh requests the page only when it is past its freshness window, sending `If-None-Match` when the page carried an
+`ETag` and `If-Modified-Since` when only `Last-Modified` is available, as
+[HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) describes. A `304 Not Modified` keeps
+the page and advances its freshness. A `404` retires the page. A validator goes to the one configured source that
+produced the stored page, so a routed fallback is called unconditionally and a `304` from any other source is refused.
+An upstream failure fails the refresh even when a request could still serve the stale page, because the job's report
+would otherwise count a page upstream never confirmed. A failed fetch or a page peryx refuses leaves the stored page in
+place. The redirect policy permits at most ten redirects.
 
-peryx writes the detail transfer to a bounded temporary file before creating staging rows, so the upstream request holds
-no metadata transaction open. The parser streams the file array and commits batches of 10,000 records into a staging
-generation; a generated project with one million files does not occupy memory or one transaction. After reaching a valid
-end of document, peryx publishes the generation with one pointer change and sweeps the displaced generation in bounded
-batches. A truncated transfer, malformed document, unsupported Simple API major, or failed publication leaves the
-previous generation active. The same retain-on-failure discipline appears in
-[bandersnatch](https://github.com/pypa/bandersnatch/blob/main/src/bandersnatch/mirror.py) applies to per-release
-metadata, and the reason [devpi](https://github.com/devpi/devpi/blob/main/server/devpi_server/mirror.py) keeps its last
-good project serial when a refresh errors.
-
-Peryx sends `If-None-Match` on the next sync when the active generation carried an `ETag`, and `If-Modified-Since` when
-only `Last-Modified` is available. A `304 Not Modified` reuses that generation without moving an artifact. Peryx
-advances the observation time and merges validators present on the response, as
-[HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) requires. A `404` leaves the prior
-generation in place. Cached project pages revalidate the same way, recording the source that answered alongside the
-validators. Both paths address a validator to the one configured source that produced the stored response, so a routed
-fallback is called unconditionally and a `304` from any other source is refused. Peryx limits a detail response to 256
-MiB and 2,000,000 files. The redirect policy permits at most ten redirects, and concurrent syncs of one project inside a
-process share a lock and fetch. Peryx strips user information, query strings, and fragments from persisted source and
-final URLs.
+A refresh and a request for one project share the page's single flight inside a process, so they make one upstream
+request: whichever runs second finds the page the first stored. The job counts a project as changed only when its own
+fetch stored a different page.
 
 ### Schedule bounded metadata refreshes
 
-A catalog job combines the atomic root and project-generation paths without downloading artifact bytes. Schedule it on
-an online cached index when installers should find project metadata before their first request:
+A catalog job combines the atomic root sync and the project page refresh without downloading artifact bytes. Schedule it
+on an online cached index when installers should find project metadata before their first request:
 
 ```toml
 [[jobs.schedule]]
@@ -224,11 +213,14 @@ peryx job run run --config peryx.toml --target corp --item-limit 10000 --concurr
 ```
 
 peryx publishes the root before project work begins. Cancellation or timeout stops new project requests and drops
-in-flight transfers; completed generations remain available. For a one-off run, `--target` selects the index route and
+in-flight transfers; pages already stored remain available. For a one-off run, `--target` selects the index route and
 `--item-limit` bounds projects in canonical-name order. The schedule table names those settings `repository` and
 `max_projects`. The job bounds concurrent metadata requests apart from the node's job-worker limit and emits at most 100
-progress updates. Named multi-source routes use their fallback rules unless `source` selects one configured upstream.
-Set an interval longer than a typical run and schedule it outside peak request periods.
+progress updates. `source` selects the configured upstream the root catalog comes from; project pages always follow the
+index's routing, so the job refreshes the page peryx serves. Set an interval longer than a typical run and schedule it
+outside peak request periods. Pages the job stores are ordinary cached pages, so a scheduled stale-page sweep also
+revalidates them once they pass their freshness window, with one conditional request per page. For a large catalog, the
+job's own interval may be the only refresh you need.
 
 ## HTML upstreams
 

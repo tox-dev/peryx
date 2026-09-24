@@ -431,20 +431,6 @@ fn preserved_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, Strin
         Ok::<(), String>(())
     })
     .map_err(crate::error_message)?;
-    // A project a catalog sync populated keeps its files in generation rows and no cached page body,
-    // so the scan above never sees what it advertises. Reading only the pages would let a purge take
-    // the source row such a project still needs for a cold download.
-    let owned = format!("{target_key}/");
-    meta.scan_project_file_records(|key, bytes| {
-        if key.starts_with(&owned) {
-            return Ok(());
-        }
-        let file = serde_json::from_slice::<crate::File>(bytes)
-            .map_err(|err| format!("corrupt project file row {key}: {err}"))?;
-        add_file_refs(&mut refs, &file);
-        Ok::<(), String>(())
-    })
-    .map_err(crate::error_message)?;
     Ok(refs)
 }
 

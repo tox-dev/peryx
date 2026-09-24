@@ -334,9 +334,8 @@ impl SimpleStatus for SimpleHead {
     }
 }
 
-/// The ceiling for a buffered Simple page. A project page and the root index both persist under a
-/// 256 MiB sync cap (`MAX_PROJECT_BYTES` and `MAX_CATALOG_BYTES`), so a live buffered read holds the
-/// same ceiling: past it the upstream is broken or hostile, not serving a real page.
+/// The ceiling for a buffered Simple page, matching the root index's 256 MiB sync cap
+/// (`MAX_CATALOG_BYTES`): past it the upstream is broken or hostile, not serving a real page.
 const MAX_SIMPLE_PAGE_BYTES: usize = 256 * 1024 * 1024;
 
 /// Read a Simple-page body into memory under `limit`, counting the bytes as they stream so a chunked

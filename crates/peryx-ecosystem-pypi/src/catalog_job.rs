@@ -14,9 +14,9 @@ use peryx_driver::serving::JobConfig;
 use peryx_events::metrics::{MetricFamily, MetricKind, Metrics};
 use peryx_index::IndexKind;
 use peryx_storage::meta::{JobKind, MetaError};
-use peryx_upstream::UpstreamError;
+use peryx_upstream::{UpstreamClient, UpstreamError};
 
-use crate::cache::{ProjectSyncError, ProjectSyncOutcome, sync_project_files};
+use crate::cache::{ProjectSyncError, ProjectSyncOutcome, refresh_project_page};
 use crate::catalog::{CatalogSyncError, CatalogSyncOutcome, sync_catalog};
 use crate::store::list_catalog_projects;
 use crate::{SimpleClientExt, Synced};
@@ -342,7 +342,6 @@ impl NodeJob for CatalogSyncJob {
                 format!("repository {:?} is not an online cached repository", index.name),
             ));
         };
-        let policy = index.policy.clone();
         let repository = index.name.clone();
         let timeout = self.parameters.timeout;
         let result = match &self.parameters.source {
@@ -363,9 +362,9 @@ impl NodeJob for CatalogSyncJob {
                     timeout,
                     sync_projects(
                         source.client(),
+                        client,
                         ctx,
                         &repository,
-                        &policy,
                         &self.parameters,
                         source.client().base_url(),
                     ),
@@ -376,14 +375,14 @@ impl NodeJob for CatalogSyncJob {
                 Some(router) => {
                     tokio::time::timeout(
                         timeout,
-                        sync_projects(router, ctx, &repository, &policy, &self.parameters, client.base_url()),
+                        sync_projects(router, client, ctx, &repository, &self.parameters, client.base_url()),
                     )
                     .await
                 }
                 None => {
                     tokio::time::timeout(
                         timeout,
-                        sync_projects(client, ctx, &repository, &policy, &self.parameters, client.base_url()),
+                        sync_projects(client, client, ctx, &repository, &self.parameters, client.base_url()),
                     )
                     .await
                 }
@@ -479,11 +478,13 @@ fn unsigned_setting(settings: &toml::Table, field: &str) -> Result<Option<u64>, 
         .transpose()
 }
 
+/// Sync the root catalog through `root_client`, which a pinned `source` selects, then refresh each project's
+/// page through the routed fetch requests use, so the job refreshes the page peryx serves.
 async fn sync_projects<C: SimpleClientExt + Sync>(
-    client: &C,
+    root_client: &C,
+    pages: &UpstreamClient,
     ctx: &JobContext,
     repository: &str,
-    policy: &peryx_policy::Policy,
     parameters: &CatalogSyncParameters,
     fallback_source: &str,
 ) -> Result<JobRunOutcome, JobFailure> {
@@ -493,7 +494,7 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
     let root = tokio::select! {
         biased;
         () = ctx.cancelled() => return Ok(JobRunOutcome::cancelled(JobReport::default())),
-        root = sync_catalog(client, inflight, meta, repository, fallback_source) => root,
+        root = sync_catalog(root_client, inflight, meta, repository, fallback_source) => root,
     };
     record_catalog_sync(&ctx.state().metrics, repository, &root);
     let root_changed = match root {
@@ -507,8 +508,7 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
     let progress_interval = total.div_ceil(MAX_PROGRESS_UPDATES).max(1);
     let mut outcomes = stream::iter(projects.into_iter().enumerate())
         .map(|(ordinal, project)| async move {
-            let outcome =
-                sync_project_files(client, inflight, meta, repository, policy, &project, fallback_source).await;
+            let outcome = refresh_project_page(state, repository, &project, pages).await;
             (ordinal, project, outcome)
         })
         .buffer_unordered(parameters.concurrency.get());
@@ -537,10 +537,9 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
         };
         report.processed += 1;
         match outcome {
-            Synced::Led(Ok(ProjectSyncOutcome::Published { .. })) => report.changed += 1,
-            Synced::Led(Ok(ProjectSyncOutcome::NotModified { .. } | ProjectSyncOutcome::Missing))
-            | Synced::Joined(Ok(_)) => {}
-            Synced::Led(Err(error)) | Synced::Joined(Err(error)) => {
+            Ok(ProjectSyncOutcome::Changed) => report.changed += 1,
+            Ok(ProjectSyncOutcome::Unchanged | ProjectSyncOutcome::Missing | ProjectSyncOutcome::Denied) => {}
+            Err(error) => {
                 let Some(error) = recoverable_project_error(&error) else {
                     return Err(project_error(&error));
                 };
@@ -600,12 +599,10 @@ fn truncate_utf8(text: String, maximum: usize) -> String {
 
 fn recoverable_project_error(error: &ProjectSyncError) -> Option<JobFailure> {
     match error {
-        ProjectSyncError::Upstream(_)
-        | ProjectSyncError::Status(_)
-        | ProjectSyncError::Simple(_)
-        | ProjectSyncError::TooLarge
-        | ProjectSyncError::TooManyFiles => Some(project_error(error)),
-        ProjectSyncError::Store(_) | ProjectSyncError::Io(_) => None,
+        ProjectSyncError::Upstream(_) | ProjectSyncError::Status(_) | ProjectSyncError::Page(_) => {
+            Some(project_error(error))
+        }
+        ProjectSyncError::Store(_) | ProjectSyncError::Internal(_) => None,
     }
 }
 

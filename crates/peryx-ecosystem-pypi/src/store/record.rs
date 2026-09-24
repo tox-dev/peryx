@@ -107,52 +107,6 @@ impl UpstreamAttestation {
     }
 }
 
-/// One completely parsed remote project-detail generation: its provenance, its revalidation
-/// validators, and the counts that let a later sweep reason about it without reading the file rows.
-///
-/// The per-file metadata rows a generation owns live under a generation-scoped key prefix; this
-/// record is the small pointer a reader loads to find the active generation and revalidate it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectGeneration {
-    pub generation: u64,
-    /// The configured cached-index name that produced this generation.
-    pub source: String,
-    /// The redacted final URL the detail page was fetched from.
-    pub url: String,
-    /// The response format the generation was parsed from: `"json"` or `"html"`.
-    pub format: String,
-    pub etag: Option<String>,
-    pub last_modified: Option<String>,
-    pub last_serial: Option<u64>,
-    /// When the detail page was last observed (a `200` parse or a `304` revalidation).
-    pub fetched_at_unix: i64,
-    /// The response byte length the generation was parsed from.
-    pub bytes: u64,
-    /// The number of policy-admitted file rows the generation holds.
-    pub files: u64,
-    /// The PEP 700 `versions` list, retained so a reader need not scan the file rows to list them.
-    #[serde(default)]
-    pub versions: Vec<String>,
-    #[serde(default)]
-    pub project_status: Option<String>,
-    #[serde(default)]
-    pub project_status_reason: Option<String>,
-}
-
-/// Publication state for one cached index project's remote file-metadata generations.
-///
-/// `active` is the generation a reader serves; `staging` is a reservation an in-progress sync holds;
-/// `retired` is the generation a publication just displaced, kept until its rows are swept. The shape
-/// mirrors the root catalog's [`CatalogState`](super::CatalogState) so both durable syncs recover the
-/// same way after an interrupted run.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectMetaState {
-    pub active: Option<ProjectGeneration>,
-    pub staging: Option<u64>,
-    pub retired: Option<u64>,
-    pub next_generation: u64,
-}
-
 /// The freshness fields a `304 Not Modified` advances: the fetch time and the granted lifetime.
 ///
 /// A revalidation leaves the page body untouched, so these live in their own small row that a `304`

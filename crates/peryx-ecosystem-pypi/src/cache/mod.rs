@@ -17,6 +17,7 @@ mod fetch;
 mod metadata;
 mod mutate;
 mod page_stream;
+mod project_sync;
 mod provenance;
 mod purge;
 mod resolve;
@@ -25,10 +26,7 @@ mod shadow;
 pub(crate) use download::download_dimensions;
 pub(crate) use download::file_path_with_size;
 pub use download::{FileOutcome, FileProbe, file_path, probe_file, stream_file};
-pub use fetch::{
-    MAX_PROJECT_BYTES, MAX_PROJECT_FILES, ProjectSyncError, ProjectSyncOutcome, RefreshSummary, refresh_stale_pages,
-    sync_project_files,
-};
+pub use fetch::{RefreshSummary, refresh_stale_pages};
 pub(crate) use metadata::publishes_file;
 pub use metadata::{metadata_bytes, metadata_bytes_for_project, registered_file_size, winning_file_source};
 pub(crate) use mutate::{
@@ -38,6 +36,7 @@ pub use mutate::{
     TrashContext, download_status, project_status, promote_release, remove_files, restore_files, set_yanked,
 };
 pub use page_stream::{PageOutcome, materialize_detail, stream_detail};
+pub use project_sync::{ProjectSyncError, ProjectSyncOutcome, refresh_project_page};
 pub use provenance::{ProvenanceBody, provenance_bytes};
 pub use purge::purge_served_project;
 pub(crate) use resolve::local_detail;

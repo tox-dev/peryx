@@ -93,12 +93,9 @@ async fn test_cancelled_waiter_retires_its_registration() {
     drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
 }
 
-/// Leads `key` on an idle gate, panicking if the gate answered with an outcome instead.
+/// Leads the flight for `key` on an idle gate.
 async fn lead(inflight: &Inflight, key: &str) -> super::FlightGuard {
-    match flight_gate(inflight, key).lock_or_join::<u32>().await {
-        Turn::Lead(guard) => guard,
-        Turn::Joined(outcome) => panic!("an idle gate answered with {outcome}"),
-    }
+    flight_gate(inflight, key).lock_owned().await
 }
 
 /// Polls `waiter` once so it records the completions it saw and queues behind the current flight.

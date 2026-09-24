@@ -371,7 +371,7 @@ async fn test_upstream_attestation_direct_mode_preserves_the_source_url() {
 }
 
 #[tokio::test]
-async fn test_removed_upstream_attestation_does_not_survive_a_new_project_generation() {
+async fn test_removed_upstream_attestation_does_not_survive_a_new_project_page() {
     let harness = upstream_harness(RemoteMetadataMode::Proxy).await;
     let digest = "11".repeat(32);
     upstream_page(&harness, &digest, "application/json").await;

@@ -1,55 +1,68 @@
-use std::io::{Read, Seek as _, Write};
 use std::sync::Arc;
 
-use crate::Synced;
-use crate::catalog::redact_url;
 use crate::policy::PypiPolicy as _;
-use crate::simple::{DetailSink, File, StreamDetailError, absolutize, stream_detail_json};
+use crate::simple::absolutize;
+use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
-use crate::store::{
-    CachedIndex, ProjectGeneration, abort_project_generation, active_project_generation, begin_project_generation,
-    publish_project_generation, put_project_files, recover_project_generations, refresh_project_generation,
-};
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Observation;
-use peryx_index::serving::Inflight;
 use peryx_index::{Index, IndexKind};
-use peryx_policy::{Policy, PolicyAction};
-use peryx_storage::meta::{MetaError, MetaStore};
+use peryx_policy::PolicyAction;
 use peryx_upstream::UpstreamClient;
-use peryx_upstream::UpstreamError;
-use time::OffsetDateTime;
 use url::Url;
 
-use crate::simple_client::{CachedValidators, SimpleClientExt as _, SimpleHead, SimpleResponse};
+use crate::simple_client::{CachedValidators, SimpleClientExt as _, SimpleResponse};
 
 use super::{
     CacheError, NEGATIVE_TTL_SECS, cached_record, flight_gate, is_json, mirror_route, project_negative_key,
     release_flight, release_then, upstream_permit,
 };
 
-pub(super) async fn fetch_and_store(
+/// What one conditional upstream fetch did to a project's cached page.
+pub(super) enum PageFetch {
+    /// A `200` stored a body; `changed` when it differs from the one peryx held, or there was none.
+    Stored { record: CachedIndex, changed: bool },
+    /// A `304` confirmed the stored body and advanced its freshness.
+    Revalidated(CachedIndex),
+    /// A `404` retired the project.
+    Missing,
+    /// Upstream answered with a failure or not at all; `stale` is the stored page still inside its stale
+    /// bound, and `status` the failing response's status when there was one.
+    Failed {
+        error: CacheError,
+        status: Option<u16>,
+        stale: Option<CachedIndex>,
+    },
+}
+
+/// Fetch `project`'s page conditionally and apply the answer to the page cache. The caller holds the
+/// page's flight.
+///
+/// # Errors
+/// Returns [`CacheError`] when policy denies caching the project or the store fails; upstream failures
+/// are [`PageFetch::Failed`].
+pub(super) async fn fetch_page(
     state: &ServingState,
     key: &str,
     name: &str,
     project: &str,
     client: &UpstreamClient,
-) -> Result<Option<CachedIndex>, CacheError> {
+) -> Result<PageFetch, CacheError> {
     mirror_policy(state, name).check_resource(PolicyAction::Cached, project)?;
     let now = (state.clock)();
     let cached = cached_record(state, key)?;
-    let route = mirror_route(state, name);
-    let event_project = project.to_owned();
     let _permit = upstream_permit(state, name).await?;
     let validators = cached_validators(cached.as_ref());
     let response = match state.upstream_routes.get(name) {
         Some(router) => router.fetch_project(project, validators).await,
         None => client.fetch_project(project, validators).await,
     };
-    match response {
+    let servable = |cached: Option<CachedIndex>| cached.filter(|record| super::servable_stale(state, record));
+    Ok(match response {
         Ok(response) if response.status == 200 => {
-            cache_project_response(state, key, name, project, now, cached.as_ref(), &response).map(Some)
+            let (record, changed) = cache_project_response(state, key, name, project, now, cached.as_ref(), &response)?;
+            PageFetch::Stored { record, changed }
         }
         Ok(response) if response.status == 304 => {
             let mut record = revalidated(cached, response.source.as_deref())?;
@@ -59,75 +72,74 @@ pub(super) async fn fetch_and_store(
                 .meta
                 .touch_index_freshness(key, record.fetched_at_unix, record.fresh_secs)?;
             state.metrics.record(Observation::Refresh {
-                repository: route,
-                resource: event_project,
+                repository: mirror_route(state, name),
+                resource: project.to_owned(),
                 changed: false,
+            });
+            PageFetch::Revalidated(record)
+        }
+        Ok(response) if response.status == 404 => {
+            state.meta.retire_cached_project(key, name, project)?;
+            super::invalidate_project(state, name, project);
+            state.remember_negative(project_negative_key(key), NEGATIVE_TTL_SECS);
+            PageFetch::Missing
+        }
+        Ok(response) if response.status == 429 => PageFetch::Failed {
+            error: CacheError::UpstreamRateLimited {
+                retry_after: response.retry_after,
+            },
+            status: Some(429),
+            stale: servable(cached),
+        },
+        Ok(response) => PageFetch::Failed {
+            error: CacheError::Unavailable,
+            status: Some(response.status),
+            stale: servable(cached),
+        },
+        Err(err) => PageFetch::Failed {
+            error: CacheError::Upstream(err),
+            status: None,
+            stale: servable(cached),
+        },
+    })
+}
+
+/// Fetch `project`'s page for a request, serving a stored page inside its stale bound when upstream
+/// fails. Past `max_stale_secs` a stale page stops being an answer, so the upstream failure surfaces
+/// rather than papering over an outage with data of unbounded age.
+pub(super) async fn fetch_and_store(
+    state: &ServingState,
+    key: &str,
+    name: &str,
+    project: &str,
+    client: &UpstreamClient,
+) -> Result<Option<CachedIndex>, CacheError> {
+    match fetch_page(state, key, name, project, client).await? {
+        PageFetch::Stored { record, .. } | PageFetch::Revalidated(record) => Ok(Some(record)),
+        PageFetch::Missing => Ok(None),
+        PageFetch::Failed {
+            status,
+            stale: Some(record),
+            ..
+        } => {
+            if let Some(status) = status {
+                tracing::warn!(%key, status, "upstream errored; serving stale page");
+            } else {
+                tracing::warn!(%key, "upstream unreachable; serving stale page");
+            }
+            state.metrics.record(Observation::StaleServed {
+                repository: mirror_route(state, name),
+                resource: project.to_owned(),
             });
             Ok(Some(record))
         }
-        Ok(response) if response.status == 404 => state
-            .meta
-            .retire_cached_project(key, name, project)
-            .map_err(CacheError::from)
-            .map(|()| {
-                super::invalidate_project(state, name, project);
-                state.remember_negative(project_negative_key(key), NEGATIVE_TTL_SECS);
-                None
-            }),
-        Ok(response)
-            if response.status == 429
-                && cached
-                    .as_ref()
-                    .is_none_or(|record| !super::servable_stale(state, record)) =>
-        {
+        PageFetch::Failed { error, stale: None, .. } => {
             state.metrics.record(Observation::UpstreamError {
-                repository: route,
-                resource: event_project,
+                repository: mirror_route(state, name),
+                resource: project.to_owned(),
             });
-            Err(CacheError::UpstreamRateLimited {
-                retry_after: response.retry_after,
-            })
+            Err(error)
         }
-        // Past `max_stale_secs` a stale page stops being an answer, so drop it and let the upstream
-        // failure surface rather than papering over an outage with data of unbounded age.
-        Ok(response) => cached
-            .filter(|record| super::servable_stale(state, record))
-            .map_or_else(
-                || {
-                    state.metrics.record(Observation::UpstreamError {
-                        repository: route.clone(),
-                        resource: event_project.clone(),
-                    });
-                    Err(CacheError::Unavailable)
-                },
-                |record| {
-                    tracing::warn!(%key, status = response.status, "upstream errored; serving stale page");
-                    state.metrics.record(Observation::StaleServed {
-                        repository: route.clone(),
-                        resource: event_project.clone(),
-                    });
-                    Ok(Some(record))
-                },
-            ),
-        Err(err) => cached
-            .filter(|record| super::servable_stale(state, record))
-            .map_or_else(
-                || {
-                    state.metrics.record(Observation::UpstreamError {
-                        repository: route.clone(),
-                        resource: event_project.clone(),
-                    });
-                    Err(CacheError::Upstream(err))
-                },
-                |record| {
-                    tracing::warn!(%key, "upstream unreachable; serving stale page");
-                    state.metrics.record(Observation::StaleServed {
-                        repository: route.clone(),
-                        resource: event_project.clone(),
-                    });
-                    Ok(Some(record))
-                },
-            ),
     }
 }
 
@@ -151,6 +163,8 @@ pub(super) fn cached_validators(cached: Option<&CachedIndex>) -> CachedValidator
     }
 }
 
+/// Store `response` as `project`'s page, returning the record and whether its body differs from `previous`, or
+/// there was none.
 fn cache_project_response(
     state: &ServingState,
     key: &str,
@@ -159,7 +173,7 @@ fn cache_project_response(
     now: i64,
     previous: Option<&CachedIndex>,
     response: &SimpleResponse,
-) -> Result<CachedIndex, CacheError> {
+) -> Result<(CachedIndex, bool), CacheError> {
     let record = CachedIndex {
         source: response.source.clone(),
         etag: response.etag.clone(),
@@ -170,8 +184,8 @@ fn cache_project_response(
         fresh_secs: response.max_age,
         body: canonical_raw(project, response)?,
     };
-    if let Some(previous) = previous {
-        let changed = previous.body != record.body;
+    let changed = previous.is_none_or(|previous| previous.body != record.body);
+    if previous.is_some() {
         if changed {
             tracing::info!(%key, "upstream page changed");
         }
@@ -182,7 +196,7 @@ fn cache_project_response(
         });
     }
     persist_page_from(state, key, name, project, &record, response.source.as_deref())?;
-    Ok(record)
+    Ok((record, changed))
 }
 
 fn mirror_policy<'a>(state: &'a ServingState, name: &str) -> &'a peryx_policy::Policy {
@@ -415,384 +429,6 @@ pub(super) fn persist_page_from(
     Ok(())
 }
 
-/// The largest project detail response peryx accepts.
-///
-/// A very large generated project's JSON stays well under it; the cap only stops an upstream or
-/// decompressor from writing unbounded bytes into local storage.
-pub const MAX_PROJECT_BYTES: u64 = 256 * 1024 * 1024;
-/// The most files one project generation admits, bounding both the parse and the row count a
-/// million-file generated project produces.
-pub const MAX_PROJECT_FILES: u64 = 2_000_000;
-/// Files committed per staging transaction, bounding one commit for a project with a huge file list.
-const PROJECT_FILE_BATCH: usize = 10_000;
-
-/// The result of synchronizing one project's remote file metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectSyncOutcome {
-    /// A `200` parsed into a freshly published generation holding `files` admitted files.
-    Published { files: u64 },
-    /// A `304` reused the active generation, whose `files` rows are untouched.
-    NotModified { files: u64 },
-    /// The project does not exist upstream; any prior generation is left in place.
-    Missing,
-}
-
-/// A remote project detail could not be fetched, parsed, or published.
-#[derive(Debug, thiserror::Error)]
-pub enum ProjectSyncError {
-    #[error(transparent)]
-    Upstream(#[from] UpstreamError),
-    #[error(transparent)]
-    Store(#[from] MetaError),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Simple(#[from] crate::SimpleError),
-    #[error("upstream project detail returned {0}")]
-    Status(u16),
-    #[error("upstream project detail exceeds the {MAX_PROJECT_BYTES}-byte limit")]
-    TooLarge,
-    #[error("upstream project detail exceeds the {MAX_PROJECT_FILES}-file limit")]
-    TooManyFiles,
-}
-
-impl From<StreamDetailError<Self>> for ProjectSyncError {
-    fn from(error: StreamDetailError<Self>) -> Self {
-        match error {
-            StreamDetailError::Simple(error) => Self::Simple(error),
-            StreamDetailError::Reader(error) => Self::Io(error),
-            StreamDetailError::Sink(error) => error,
-        }
-    }
-}
-
-/// Fetch and atomically publish one project's remote file-metadata generation on `index`.
-///
-/// The detail page is fetched conditionally: a `304` refreshes the active generation's validators in
-/// place, a `404` leaves any prior generation serviceable, and a `200` streams the body into a
-/// bounded temporary file, parses it into a staging generation of policy-admitted files, and swaps
-/// the active pointer only once the whole document parsed. No metadata transaction is held during the
-/// upstream request, and a failed parse or publication never disturbs the previously active generation.
-///
-/// Concurrent callers for one project share a single upstream request and all receive its result,
-/// failure included, marked [`Synced::Joined`]. The flight key leaves out `policy` because the leader publishes
-/// under its own policy, and a joiner's file count then describes the generation the store holds.
-///
-/// A failed fetch, transfer, parse, or publication leaves the active generation unchanged, and every caller
-/// in the flight receives the same shared [`ProjectSyncError`].
-pub async fn sync_project_files<C: crate::SimpleClientExt + Sync>(
-    client: &C,
-    inflight: &Inflight,
-    meta: &MetaStore,
-    index: &str,
-    policy: &Policy,
-    project: &str,
-    fallback_source: &str,
-) -> Synced<Result<ProjectSyncOutcome, Arc<ProjectSyncError>>> {
-    crate::sync_lock::coalesce(
-        inflight,
-        &format!("pypi\0project\0{index}\0{project}"),
-        sync_project(client, meta, index, policy, project, fallback_source),
-    )
-    .await
-}
-
-async fn sync_project<C: crate::SimpleClientExt + Sync>(
-    client: &C,
-    meta: &MetaStore,
-    index: &str,
-    policy: &Policy,
-    project: &str,
-    fallback_source: &str,
-) -> Result<ProjectSyncOutcome, ProjectSyncError> {
-    recover_project_generations(meta, index, project)?;
-    let previous = active_project_generation(meta, index, project)?;
-    let head = client
-        .head_project(
-            project,
-            CachedValidators {
-                source: previous.as_ref().map(|active| active.source.as_str()),
-                etag: previous.as_ref().and_then(|active| active.etag.as_deref()),
-                last_modified: previous.as_ref().and_then(|active| active.last_modified.as_deref()),
-            },
-        )
-        .await?;
-    let fetched_at_unix = OffsetDateTime::now_utc().unix_timestamp();
-    match head.status {
-        304 => {
-            let previous = previous
-                .filter(|active| head.source.as_deref().is_none_or(|answered| answered == active.source))
-                .ok_or_else(|| {
-                    MetaError::DriverPrecondition("upstream returned 304 without a matching generation".to_owned())
-                })?;
-            let refreshed = refresh_project_generation(
-                meta,
-                index,
-                project,
-                previous.generation,
-                head.etag,
-                head.last_modified,
-                fetched_at_unix,
-            );
-            refreshed?;
-            Ok(ProjectSyncOutcome::NotModified { files: previous.files })
-        }
-        404 => Ok(ProjectSyncOutcome::Missing),
-        _ => publish_project_response(meta, index, policy, project, fallback_source, head, fetched_at_unix).await,
-    }
-}
-
-async fn publish_project_response(
-    meta: &MetaStore,
-    index: &str,
-    policy: &Policy,
-    project: &str,
-    fallback_source: &str,
-    mut head: SimpleHead,
-    fetched_at_unix: i64,
-) -> Result<ProjectSyncOutcome, ProjectSyncError> {
-    match head.status {
-        200 if head.content_length.is_some_and(|bytes| bytes > MAX_PROJECT_BYTES) => {
-            return Err(ProjectSyncError::TooLarge);
-        }
-        200 => {}
-        status => return Err(ProjectSyncError::Status(status)),
-    }
-    let upstream = head.source.take();
-    let base = head.url.clone();
-    let final_url = redact_url(head.url.as_str());
-    let format = if is_json(head.content_type.as_deref()) {
-        "json"
-    } else {
-        "html"
-    };
-    let etag = head.etag.clone();
-    let last_modified = head.last_modified.clone();
-    let last_serial = head.last_serial;
-    let mut file = tempfile::tempfile()?;
-    let bytes = write_project_stream(head.into_stream(), &mut file, MAX_PROJECT_BYTES).await?;
-    file.flush()?;
-    file.rewind()?;
-
-    let (generation, expected_active) = begin_project_generation(meta, index, project)?;
-    let parsed = parse_project(
-        &mut file,
-        ParseProject {
-            format,
-            base: &base,
-            meta,
-            index,
-            policy,
-            project,
-            generation,
-            upstream: upstream.as_deref(),
-            max_files: MAX_PROJECT_FILES,
-        },
-    );
-    let (files, detail) = match parsed {
-        Ok(result) => result,
-        Err(err) => {
-            abort_project_generation(meta, index, project, generation)?;
-            return Err(err);
-        }
-    };
-    let source = upstream.unwrap_or_else(|| redact_url(fallback_source));
-    let generation_record = ProjectGeneration {
-        generation,
-        source,
-        url: final_url,
-        format: format.to_owned(),
-        etag,
-        last_modified,
-        last_serial,
-        fetched_at_unix,
-        bytes,
-        files,
-        versions: detail.versions,
-        project_status: detail.project_status,
-        project_status_reason: detail.project_status_reason,
-    };
-    publish_project_generation(meta, index, project, expected_active, generation_record)?;
-    recover_project_generations(meta, index, project)?;
-    Ok(ProjectSyncOutcome::Published { files })
-}
-
-async fn write_project_stream<S>(mut stream: S, writer: &mut impl Write, limit: u64) -> Result<u64, ProjectSyncError>
-where
-    S: futures_util::Stream<Item = Result<bytes::Bytes, UpstreamError>> + Unpin,
-{
-    use futures_util::TryStreamExt as _;
-    let mut bytes = 0_u64;
-    while let Some(chunk) = stream.try_next().await? {
-        write_project_chunk(writer, &chunk, &mut bytes, limit)?;
-    }
-    Ok(bytes)
-}
-
-fn write_project_chunk(
-    writer: &mut impl Write,
-    chunk: &[u8],
-    bytes: &mut u64,
-    limit: u64,
-) -> Result<(), ProjectSyncError> {
-    *bytes = bytes
-        .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
-        .filter(|bytes| *bytes <= limit)
-        .ok_or(ProjectSyncError::TooLarge)?;
-    writer.write_all(chunk)?;
-    Ok(())
-}
-
-/// The detail header fields a generation records once its files drain.
-#[derive(Debug)]
-struct ParsedDetailHeader {
-    versions: Vec<String>,
-    project_status: Option<String>,
-    project_status_reason: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-struct ParseProject<'a> {
-    format: &'a str,
-    base: &'a Url,
-    meta: &'a MetaStore,
-    index: &'a str,
-    policy: &'a Policy,
-    project: &'a str,
-    generation: u64,
-    upstream: Option<&'a str>,
-    max_files: u64,
-}
-
-fn parse_project(
-    reader: &mut impl Read,
-    input: ParseProject<'_>,
-) -> Result<(u64, ParsedDetailHeader), ProjectSyncError> {
-    let ParseProject {
-        format,
-        base,
-        meta,
-        index,
-        policy,
-        project,
-        generation,
-        upstream,
-        max_files,
-    } = input;
-    let mut batcher = FileBatcher::new(meta, index, project, policy, generation, upstream, max_files);
-    let header = if format == "json" {
-        let detail = stream_detail_json(reader, base, &mut batcher)?;
-        ParsedDetailHeader {
-            versions: detail.versions,
-            project_status: detail.meta.project_status,
-            project_status_reason: detail.meta.project_status_reason,
-        }
-    } else {
-        let mut body = String::new();
-        reader.read_to_string(&mut body)?;
-        let detail = parse_detail_html(project, &body, base)?;
-        for mut parsed in detail.files {
-            absolutize(base, &mut parsed.url);
-            batcher.file(parsed)?;
-        }
-        ParsedDetailHeader {
-            versions: detail.versions,
-            project_status: detail.meta.project_status,
-            project_status_reason: detail.meta.project_status_reason,
-        }
-    };
-    Ok((batcher.finish()?, header))
-}
-
-/// Collects policy-admitted files into bounded batches and commits each into the staging generation.
-struct FileBatcher<'a> {
-    meta: &'a MetaStore,
-    index: &'a str,
-    project: &'a str,
-    policy: &'a Policy,
-    generation: u64,
-    upstream: Option<&'a str>,
-    max_files: u64,
-    batch: Vec<File>,
-    admitted: u64,
-    seen: u64,
-}
-
-impl<'a> FileBatcher<'a> {
-    fn new(
-        meta: &'a MetaStore,
-        index: &'a str,
-        project: &'a str,
-        policy: &'a Policy,
-        generation: u64,
-        upstream: Option<&'a str>,
-        max_files: u64,
-    ) -> Self {
-        Self {
-            meta,
-            index,
-            project,
-            policy,
-            generation,
-            upstream,
-            max_files,
-            batch: Vec::with_capacity(PROJECT_FILE_BATCH),
-            admitted: 0,
-            seen: 0,
-        }
-    }
-
-    fn flush(&mut self) -> Result<(), ProjectSyncError> {
-        let written = put_project_files(
-            self.meta,
-            self.index,
-            self.project,
-            self.generation,
-            self.index,
-            self.upstream,
-            &self.batch,
-        );
-        self.admitted += written?;
-        self.batch.clear();
-        Ok(())
-    }
-
-    fn finish(mut self) -> Result<u64, ProjectSyncError> {
-        self.flush()?;
-        Ok(self.admitted)
-    }
-}
-
-impl DetailSink for FileBatcher<'_> {
-    type Error = ProjectSyncError;
-
-    fn file(&mut self, file: File) -> Result<(), ProjectSyncError> {
-        self.seen += 1;
-        if self.seen > self.max_files {
-            return Err(ProjectSyncError::TooManyFiles);
-        }
-        // A file peryx cannot content-address or the policy denies is left out of the generation, so
-        // only a servable file is ever exposed to an installer.
-        if file.sha256().is_none()
-            || self
-                .policy
-                .check_file(PolicyAction::Cached, self.project, &file)
-                .is_err()
-        {
-            return Ok(());
-        }
-        self.batch.push(file);
-        if self.batch.len() == PROJECT_FILE_BATCH {
-            self.flush()?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 #[path = "../../tests/unit/cache/fetch/fence_tests.rs"]
 mod fence_tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/cache/fetch/sync_tests.rs"]
-mod sync_tests;

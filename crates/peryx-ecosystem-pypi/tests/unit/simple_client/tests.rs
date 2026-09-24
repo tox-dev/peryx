@@ -60,5 +60,5 @@ async fn test_read_capped_stops_at_the_first_chunk_past_the_limit() {
 
 #[test]
 fn test_simple_page_cap_matches_the_project_sync_cap() {
-    assert_eq!(MAX_SIMPLE_PAGE_BYTES as u64, crate::cache::MAX_PROJECT_BYTES);
+    assert_eq!(MAX_SIMPLE_PAGE_BYTES as u64, crate::catalog::MAX_CATALOG_BYTES);
 }

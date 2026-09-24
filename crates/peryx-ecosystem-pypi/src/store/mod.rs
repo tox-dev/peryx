@@ -46,10 +46,8 @@ pub use files::{
 };
 pub(crate) use imports::{initialize_release_imports, initialize_release_imports_page, release_imports_initialized};
 pub use index::{
-    CachedPageWrite, PublishedFileWrite, abort_project_generation, active_project_generation, begin_project_generation,
-    get_index, get_project_status, list_index_pages, list_project_files, project_meta_state,
-    publish_project_generation, put_cached_page, put_index, put_project_files, recover_project_generations,
-    refresh_project_generation, scan_index_pages, scan_index_records, touch_index_freshness,
+    CachedPageWrite, PublishedFileWrite, get_index, get_project_status, list_index_pages, put_cached_page, put_index,
+    scan_index_pages, scan_index_records, touch_index_freshness,
 };
 pub(crate) use journal::read_changelog_page;
 pub use journal::{ChangelogReadError, JournalEntry, JournalSnapshot, read_journal_entries};
@@ -62,8 +60,8 @@ pub use projects::{
     refresh_catalog_generation, scan_project_records,
 };
 pub use record::{
-    AttestationAvailability, CachedIndex, CachedIndexPage, CachedIndexSummary, FreshnessOverlay, ProjectGeneration,
-    ProjectMetaState, ProjectStatusRecord, UpstreamAttestation,
+    AttestationAvailability, CachedIndex, CachedIndexPage, CachedIndexSummary, FreshnessOverlay, ProjectStatusRecord,
+    UpstreamAttestation,
 };
 pub use release_metadata::{
     ReleaseMetadataLocator, ReleaseMetadataSelection, release_metadata_selection, stored_release_metadata_selection,
@@ -119,18 +117,12 @@ pub(crate) const PROVENANCE_PREFIX: &str = "pypi\u{0}a\u{0}";
 /// Mutable provenance objects advertised by upstream indexes, keyed by source, artifact digest,
 /// filename, and owning project.
 const UPSTREAM_ATTESTATION_PREFIX: &str = "pypi\u{0}t\u{0}";
-/// Provenance registrations collected while a project generation is staging. Publication replaces
-/// the project's live registrations atomically; abort recovery discards these rows with the files.
+/// A project's live provenance registrations, which each cached page write replaces atomically.
 const PROJECT_ATTESTATION_PREFIX: &str = "pypi\u{0}v\u{0}";
 /// The former `projects` table: observed display names, keyed by `{index}/{normalized}`.
 const PROJECTS_PREFIX: &str = "pypi\u{0}p\u{0}";
 const CATALOG_PREFIX: &str = "pypi\u{0}c\u{0}";
 const CATALOG_GENERATION_PREFIX: &str = "pypi\u{0}g\u{0}";
-/// Per-project remote file-metadata publication state, keyed by `{index}/{normalized}`.
-const PROJECT_META_PREFIX: &str = "pypi\u{0}m\u{0}";
-/// One remote file's parsed metadata, keyed by `{index}/{normalized}/{generation}/{filename}` so a
-/// generation's rows sort together and delete by prefix.
-const PROJECT_FILE_PREFIX: &str = "pypi\u{0}r\u{0}";
 /// The former `project_status` table: explicit status markers, keyed by `{index}/{normalized}`.
 const PROJECT_STATUS_PREFIX: &str = "pypi\u{0}s\u{0}";
 /// Projects an authoritative `404` retired, keyed by `{index}/{normalized}`.
@@ -230,23 +222,6 @@ fn project_attestation_live_key(index: &str, normalized: &str, sha256: &str, fil
     )
 }
 
-fn project_generation_attestation_prefix(index: &str, normalized: &str, generation: u64) -> String {
-    format!("{}{generation:020}/", project_attestation_prefix(index, normalized))
-}
-
-fn project_generation_attestation_key(
-    index: &str,
-    normalized: &str,
-    generation: u64,
-    sha256: &str,
-    filename: &str,
-) -> String {
-    format!(
-        "{}{sha256}/{filename}",
-        project_generation_attestation_prefix(index, normalized, generation)
-    )
-}
-
 fn project_key(index: &str, normalized: &str) -> String {
     format!("{PROJECTS_PREFIX}{index}/{normalized}")
 }
@@ -318,18 +293,6 @@ fn retired_key(index: &str, normalized: &str) -> String {
 
 fn project_status_key(index: &str, normalized: &str) -> String {
     format!("{PROJECT_STATUS_PREFIX}{index}/{normalized}")
-}
-
-fn project_meta_key(index: &str, normalized: &str) -> String {
-    format!("{PROJECT_META_PREFIX}{index}/{normalized}")
-}
-
-fn project_generation_prefix(index: &str, normalized: &str, generation: u64) -> String {
-    format!("{PROJECT_FILE_PREFIX}{index}/{normalized}/{generation:020}/")
-}
-
-fn project_file_key(index: &str, normalized: &str, generation: u64, filename: &str) -> String {
-    format!("{}{filename}", project_generation_prefix(index, normalized, generation))
 }
 
 pub(crate) fn upload_key(index: &str, normalized: &str, filename: &str) -> String {
@@ -728,15 +691,6 @@ pub trait PypiStore {
 
     /// # Errors
     /// Returns a store or decode error when the record cannot be read.
-    fn list_upstream_attestations(
-        &self,
-        index: &str,
-        artifact_sha256: &str,
-        filename: &str,
-    ) -> Result<Vec<UpstreamAttestation>, peryx_storage::meta::MetaError>;
-
-    /// # Errors
-    /// Returns a store or decode error when the record cannot be read.
     fn get_upstream_attestation(
         &self,
         index: &str,
@@ -883,15 +837,6 @@ pub trait PypiStore {
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_upload_records<E>(
-        &self,
-        visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
-    ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
-
-    /// Visit the file rows every project generation holds.
-    ///
-    /// # Errors
-    /// Returns a scan error if the store read fails or the visitor returns an error.
-    fn scan_project_file_records<E>(
         &self,
         visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
@@ -1106,15 +1051,6 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         files::list_verified_provenance(self, index, normalized)
     }
 
-    fn list_upstream_attestations(
-        &self,
-        index: &str,
-        artifact_sha256: &str,
-        filename: &str,
-    ) -> Result<Vec<UpstreamAttestation>, peryx_storage::meta::MetaError> {
-        attestations::list_upstream_attestations(self, index, artifact_sha256, filename)
-    }
-
     fn get_upstream_attestation(
         &self,
         index: &str,
@@ -1299,13 +1235,6 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
         uploads::scan_upload_records(self, visit)
-    }
-
-    fn scan_project_file_records<E>(
-        &self,
-        visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
-    ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
-        index::scan_project_file_records(self, visit)
     }
 
     fn set_override(

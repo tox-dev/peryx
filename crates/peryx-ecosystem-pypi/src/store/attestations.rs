@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 
-use peryx_storage::meta::{DriverTxn, MetaError, MetaStore};
+use peryx_storage::meta::{DriverTxn, MetaError};
 
 use super::{
-    UpstreamAttestation, project_attestation_live_key, project_attestation_live_prefix,
-    project_generation_attestation_key, project_generation_attestation_prefix, upstream_attestation_key,
-    upstream_attestation_prefix,
+    UpstreamAttestation, project_attestation_live_key, project_attestation_live_prefix, upstream_attestation_key,
 };
 
 fn register_upstream_attestation_in_txn(
@@ -79,62 +77,5 @@ pub(super) fn replace_project_upstream_attestations_in_txn(
                             .and_then(|encoded| txn.put_local(&owner_key, &encoded))
                     })
                 })
-        })
-}
-
-pub(super) fn stage_upstream_attestation_in_txn(
-    txn: &mut DriverTxn<'_>,
-    index: &str,
-    generation: u64,
-    artifact_sha256: &str,
-    filename: &str,
-    record: &UpstreamAttestation,
-) -> Result<(), MetaError> {
-    let key = project_generation_attestation_key(index, &record.project, generation, artifact_sha256, filename);
-    serde_json::to_vec(&(artifact_sha256, filename, record))
-        .map_err(MetaError::from)
-        .and_then(|encoded| txn.put_local(&key, &encoded))
-}
-
-pub(super) fn publish_staged_upstream_attestations_in_txn(
-    txn: &mut DriverTxn<'_>,
-    index: &str,
-    project: &str,
-    generation: u64,
-) -> Result<(), MetaError> {
-    let prefix = project_generation_attestation_prefix(index, project, generation);
-    txn.prefix(&prefix).and_then(|staged| {
-        staged
-            .iter()
-            .map(|(_, raw)| serde_json::from_slice::<(String, String, UpstreamAttestation)>(raw))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(MetaError::from)
-            .and_then(|records| {
-                let upstream = records.last().and_then(|(_, _, record)| record.upstream.clone());
-                let attestations = records
-                    .into_iter()
-                    .map(|(digest, filename, record)| (digest, filename, record.url))
-                    .collect::<Vec<_>>();
-                replace_project_upstream_attestations_in_txn(txn, index, project, upstream.as_deref(), &attestations)
-            })
-            .and_then(|()| staged.into_iter().try_for_each(|(key, _)| txn.remove(&key).map(|_| ())))
-    })
-}
-
-pub(super) fn list_upstream_attestations(
-    meta: &MetaStore,
-    index: &str,
-    artifact_sha256: &str,
-    filename: &str,
-) -> Result<Vec<UpstreamAttestation>, MetaError> {
-    let mut records = Vec::new();
-    let prefix = upstream_attestation_prefix(index, artifact_sha256, filename);
-    meta.visit_driver_prefix(&prefix, |_key, raw| records.push(raw.to_vec()))
-        .map(|()| records)
-        .and_then(|records| {
-            records
-                .into_iter()
-                .map(|raw| serde_json::from_slice(&raw).map_err(MetaError::from))
-                .collect()
         })
 }
