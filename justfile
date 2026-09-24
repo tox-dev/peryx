@@ -1015,7 +1015,7 @@ frontend: frontend-deps _project-temp
     just frontend-test
 
 # Serve the documentation source.
-site-dev: _project-temp
+site-dev: _project-temp _site-changelog
     zola --root site serve --interface 127.0.0.1
 
 # Write the workspace dependency graph as Mermaid source.
@@ -1153,7 +1153,7 @@ openapi: _project-temp
     cargo run --quiet --package peryx --bin peryx -- openapi > site/static/openapi.json
 
 # Build and validate the documentation site.
-docs: diagrams
+docs: diagrams _site-changelog
     zola --root site check --skip-external-links
     zola --root site build --force --output-dir "{{ justfile_directory() }}/.tox/site/public"
     cargo run --quiet --package peryx --bin peryx -- openapi > .tox/site/openapi.json
@@ -1163,14 +1163,18 @@ docs: diagrams
       --include-characters "_./-"
 
 # Check external documentation links with Zola's checker.
-site-links: _project-temp
+site-links: _project-temp _site-changelog
     zola --root site check
 
 # Build the documentation site.
 site: docs
 
+# Zola reads only files under site/, and cargo-dist reads the release notes from the root CHANGELOG.md.
+_site-changelog:
+    cp CHANGELOG.md site/data/changelog.md
+
 # Build the documentation site for Read the Docs.
-site-readthedocs:
+site-readthedocs: _site-changelog
     : "${READTHEDOCS_CANONICAL_URL:?}"
     : "${READTHEDOCS_OUTPUT:?}"
     mkdir -p "$READTHEDOCS_OUTPUT/html"

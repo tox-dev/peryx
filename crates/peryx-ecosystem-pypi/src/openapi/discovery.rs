@@ -19,7 +19,7 @@ pub(super) fn index_discovery() -> OperationBuilder {
             api_json_response(
                 "The index discovery document",
                 json!({
-                    "version": "0.0.1",
+                    "version": env!("CARGO_PKG_VERSION"),
                     "index": {
                         "name": "root-pypi",
                         "route": "root/pypi",

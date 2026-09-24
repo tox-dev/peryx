@@ -8,6 +8,7 @@
 /crates/*/fuzz/target/
 /lcov.info
 /peryx-data/
+/site/data/changelog.md
 /target
 crates/peryx-web/dist/
 node_modules/

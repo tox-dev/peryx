@@ -34,13 +34,41 @@ just package-wheel
 
 Inspect the cargo-dist plan for the expected targets, installers, checksums, attestations, and custom publish job.
 
-## Publish and verify
+## Document a change
 
-1. Run `just release-plan` and `just all` on the commit to tag.
-1. Confirm that the version, lockfile, release notes, and generated plan refer to that commit.
+A pull request that changes what users see adds a change file. Run `knope document-change`, pick the change type, and
+write the summary; knope saves it under `.changeset/`. Release notes come only from these files: knope's conventional
+commit parser rejects subjects that start with an emoji, as squash commits here do, so it would pick up only the few
+older subjects without one.
+
+The change types follow Cargo's rules below 1.0. A `major` change bumps the minor version, from `0.1.0` to `0.2.0`; a
+`minor` or `patch` change bumps the patch version.
+
+## Publish a release
+
+Start the `Prepare release` workflow from the Actions tab, or from a shell:
+
+```shell
+gh workflow run prepare-release.yml --repo tox-dev/peryx
+gh workflow run prepare-release.yml --repo tox-dev/peryx -f version=0.2.0
+```
+
+An empty `version` derives the next version from the pending change files. The workflow runs `knope prepare-release`,
+which writes the version into every manifest, `Cargo.lock`, and `site/static/openapi.json`, moves the change files into
+`CHANGELOG.md`, and commits the result to `main` with a `v<version>` tag. One atomic push lands both, and the tag starts
+`release.yml`, which builds the archives, creates the GitHub release with the `CHANGELOG.md` section as its notes, and
+publishes the PyPI package.
+
+The workflow needs a `RELEASE_PAT` secret in the `release-auth` environment: a fine-grained token with contents write on
+this repository, owned by an account the `main` ruleset lets bypass required checks. A tag pushed with `GITHUB_TOKEN`
+would not start `release.yml`. The PyPI job authenticates through a trusted publisher for `release.yml` in the `pypi`
+environment.
+
+## Verify a release
+
+1. Before starting the workflow, run `just release-plan` and `just all` on `main`.
 1. If the release changes a capability compared in a migration page, verify the Peryx mapping against the shipped
    configuration, CLI, routes, and tests, then refresh each external claim from a current primary source.
-1. Create the release tag expected by cargo-dist.
 1. Wait for all build, host, and custom publication jobs to pass.
 1. Download each archive and verify its checksum and GitHub attestation.
 1. Inspect the CycloneDX manifest and cargo-auditable metadata from one executable per platform family.

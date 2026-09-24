@@ -586,7 +586,7 @@ fn discovery() -> OperationBuilder {
             api_json_response(
                 "The server discovery document",
                 json!({
-                    "version": "0.0.1",
+                    "version": env!("CARGO_PKG_VERSION"),
                     "urls": {
                         "api": "http://127.0.0.1:4433/+api",
                         "health": "http://127.0.0.1:4433/+health",

@@ -1,0 +1,5 @@
+{% component changelog() %}
+{%- set source = load_data(path="data/changelog.md", format="plain") -%}
+{#- The page supplies its own title, so the file's heading is dropped. -#}
+{{ source | replace(from="# Changelog\n", to="") | markdown | safe }}
+{% endcomponent changelog %}

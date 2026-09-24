@@ -1,0 +1,59 @@
+[package]
+# Cargo.lock and the internal dependency pins name each crate, so a pattern covers every crate, including
+# ones added later, where a per-crate `dependency` entry would miss them.
+versioned_files = [
+  { path = "Cargo.toml", regex = [
+    '(?m)^version = "(?<version>\d+\.\d+\.\d+)"',
+    'peryx[\w-]* = \{ version = "(?<version>\d+\.\d+\.\d+)"',
+  ] },
+  { path = "Cargo.lock", regex = 'name = "peryx[\w-]*"\nversion = "(?<version>\d+\.\d+\.\d+)"' },
+  { path = "crates/peryx-ecosystem-oci/fuzz/Cargo.toml", regex = 'peryx[\w-]* = \{ version = "(?<version>\d+\.\d+\.\d+)"' },
+  { path = "crates/peryx-ecosystem-pypi/fuzz/Cargo.toml", regex = 'peryx[\w-]* = \{ version = "(?<version>\d+\.\d+\.\d+)"' },
+  { path = "crates/peryx-ecosystem-oci/tests/system-suite/Cargo.toml", regex = 'peryx = \{ path = "[^"]+", version = "(?<version>\d+\.\d+\.\d+)"' },
+  { path = "crates/peryx-ecosystem-pypi/tests/system-suite/Cargo.toml", regex = 'peryx = \{ path = "[^"]+", version = "(?<version>\d+\.\d+\.\d+)"' },
+  { path = "site/static/openapi.json", regex = '"version": "(?<version>\d+\.\d+\.\d+)"' },
+]
+changelog = "CHANGELOG.md"
+
+# The conventional commit parser rejects subjects that start with an emoji, as squash commits here do, so it
+# would pick up only the few older subjects without one. Change files are the one source of release notes.
+[changes]
+ignore_conventional_commits = true
+
+[[workflows]]
+name = "document-change"
+
+[[workflows.steps]]
+type = "CreateChangeFile"
+
+[[workflows]]
+name = "prepare-release"
+
+[[workflows.steps]]
+type = "PrepareRelease"
+
+# knope writes the new section flush against the introduction; the mdformat hook adds the blank line that
+# pre-commit.ci would otherwise flag on the next pull request. A hook that rewrites a file exits non-zero,
+# so the second run is the one that decides.
+[[workflows.steps]]
+type = "Command"
+command = "prek run mdformat --files CHANGELOG.md || prek run mdformat --files CHANGELOG.md"
+shell = true
+
+[[workflows.steps]]
+type = "Command"
+command = "git add CHANGELOG.md"
+
+[[workflows.steps]]
+type = "Command"
+command = "git commit --message \"🔖 chore(release): v$version\""
+
+# Without a forge section this step only tags the commit; the tag push starts release.yml, which publishes
+# the GitHub release and the PyPI package.
+[[workflows.steps]]
+type = "Release"
+
+# An atomic push lands the commit and the tag together or neither, so a rejected push leaves nothing to undo.
+[[workflows.steps]]
+type = "Command"
+command = "git push --atomic origin HEAD:main refs/tags/v$version"

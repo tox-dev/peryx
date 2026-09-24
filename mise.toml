@@ -12,6 +12,7 @@ sccache = "latest"
 "cargo:cargo-codspeed" = "latest"
 "aqua:EmbarkStudios/cargo-deny" = "latest"
 "aqua:axodotdev/cargo-dist" = "latest"
+"github:knope-dev/knope" = { version = "latest", version_prefix = "knope/v" }
 "cargo:cargo-fuzz" = "latest"
 "cargo:cargo-hack" = "latest"
 "aqua:mitsuhiko/insta" = "latest"
