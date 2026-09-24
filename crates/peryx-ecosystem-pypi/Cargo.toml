@@ -208,3 +208,7 @@ required-features = ["serving"]
 
 [lints]
 workspace = true
+
+# Its binaries are benchmark and test fixtures, never released.
+[package.metadata.dist]
+dist = false

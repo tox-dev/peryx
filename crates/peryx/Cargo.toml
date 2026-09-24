@@ -111,3 +111,7 @@ shlex.workspace = true
 
 [lints]
 workspace = true
+
+# The process fixture serves tests only; releases ship the server alone.
+[package.metadata.dist]
+binaries = { "*" = ["peryx"] }
