@@ -5,8 +5,8 @@ use bytes::Bytes;
 use rstest::rstest;
 
 use super::{
-    Inflight, ResourceTickets, ServingCache, flight_gate, negative_weight, release_flight, resource_ticket_weight,
-    within_stale_bound,
+    Inflight, ResourceTickets, ServingCache, Turn, flight_gate, negative_weight, release_flight,
+    resource_ticket_weight, within_stale_bound,
 };
 
 /// Bounds the waits that fail by never resolving; the paused clock fires it as soon as nothing else can run.
@@ -91,6 +91,69 @@ async fn test_cancelled_waiter_retires_its_registration() {
 
     drop(producer);
     drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
+}
+
+/// Leads `key` on an idle gate, panicking if the gate answered with an outcome instead.
+async fn lead(inflight: &Inflight, key: &str) -> super::FlightGuard {
+    match flight_gate(inflight, key).lock_or_join::<u32>().await {
+        Turn::Lead(guard) => guard,
+        Turn::Joined(outcome) => panic!("an idle gate answered with {outcome}"),
+    }
+}
+
+/// Polls `waiter` once so it records the completions it saw and queues behind the current flight.
+fn queue<F: Future>(waiter: std::pin::Pin<&mut F>) {
+    assert!(waiter.poll(&mut Context::from_waker(Waker::noop())).is_pending());
+}
+
+/// Queues `waiter` behind `leader`'s flight, then completes that flight with `outcome`.
+fn complete_behind<F: Future>(leader: super::FlightGuard, waiter: std::pin::Pin<&mut F>, outcome: u32) {
+    queue(waiter);
+    leader.complete(outcome);
+}
+
+#[tokio::test]
+async fn test_a_queued_caller_joins_the_flight_that_completes_ahead_of_it() {
+    let inflight = Inflight::default();
+    let mut waiter = std::pin::pin!(flight_gate(&inflight, "digest").lock_or_join::<u32>());
+
+    complete_behind(lead(&inflight, "digest").await, waiter.as_mut(), 7);
+
+    assert!(matches!(waiter.await, Turn::Joined(7)));
+}
+
+#[tokio::test]
+async fn test_a_queued_caller_leads_when_the_flight_ahead_is_dropped() {
+    let inflight = Inflight::default();
+    let leader = lead(&inflight, "digest").await;
+    let mut waiter = std::pin::pin!(flight_gate(&inflight, "digest").lock_or_join::<u32>());
+    queue(waiter.as_mut());
+
+    drop(leader);
+
+    assert!(matches!(waiter.await, Turn::Lead(_)));
+}
+
+#[tokio::test]
+async fn test_a_caller_arriving_after_a_flight_completed_leads_its_own() {
+    let inflight = Inflight::default();
+    let _keeps_the_gate = flight_gate(&inflight, "digest");
+    lead(&inflight, "digest").await.complete(7_u32);
+
+    assert!(matches!(
+        flight_gate(&inflight, "digest").lock_or_join::<u32>().await,
+        Turn::Lead(_)
+    ));
+}
+
+#[tokio::test]
+async fn test_a_queued_caller_ignores_an_outcome_of_another_type() {
+    let inflight = Inflight::default();
+    let mut waiter = std::pin::pin!(flight_gate(&inflight, "digest").lock_or_join::<String>());
+
+    complete_behind(lead(&inflight, "digest").await, waiter.as_mut(), 7);
+
+    assert!(matches!(waiter.await, Turn::Lead(_)));
 }
 
 #[tokio::test]

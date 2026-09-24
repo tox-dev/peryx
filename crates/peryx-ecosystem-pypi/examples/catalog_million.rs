@@ -64,7 +64,7 @@ async fn run(project_count: usize) -> Result<(), Box<dyn std::error::Error>> {
         foreground.push(read_started.elapsed());
         tokio::select! {
             biased;
-            result = &mut sync => break result??,
+            result = &mut sync => break result?.into_inner()?,
             () = tokio::task::yield_now() => {}
         }
     };

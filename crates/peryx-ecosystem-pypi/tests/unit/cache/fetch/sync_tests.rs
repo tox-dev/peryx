@@ -12,6 +12,7 @@ use super::{
     sync_project_files, write_project_chunk,
 };
 use crate::SimpleClientExt as _;
+use crate::Synced;
 use crate::cache::ProjectSyncError;
 use crate::simple::{CoreMetadata, DetailSink as _, File, Provenance, Yanked};
 use crate::simple_client::CachedValidators;
@@ -127,6 +128,7 @@ async fn test_sync_publishes_a_json_detail() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::Published { files: 2 });
@@ -172,6 +174,7 @@ async fn test_sync_html_and_json_agree_on_shared_fields() {
             client.base_url(),
         )
         .await
+        .into_inner()
         .unwrap();
         listed.push(list_project_files(&meta, format, "flask").unwrap());
     }
@@ -214,6 +217,7 @@ async fn test_sync_304_reuses_the_active_generation() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });
@@ -247,9 +251,10 @@ async fn test_sync_304_without_an_active_generation_errors() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap_err();
 
-    assert!(matches!(error, ProjectSyncError::Store(_)));
+    assert!(matches!(&*error, ProjectSyncError::Store(_)));
     assert!(active_project_generation(&meta, "pypi", "flask").unwrap().is_none());
 }
 
@@ -280,6 +285,7 @@ async fn test_sync_304_revalidates_a_generation_that_carries_only_a_last_modifie
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });
@@ -318,6 +324,7 @@ async fn test_sync_404_leaves_the_prior_generation_serviceable() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::Missing);
@@ -352,9 +359,10 @@ async fn test_sync_incomplete_detail_preserves_the_active_generation() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap_err();
 
-    assert!(matches!(error, ProjectSyncError::Simple(_)));
+    assert!(matches!(&*error, ProjectSyncError::Simple(_)));
     let state = project_meta_state(&meta, "pypi", "flask").unwrap();
     assert_eq!(state.active.unwrap().generation, id);
     assert!(state.staging.is_none());
@@ -396,6 +404,7 @@ async fn test_sync_replaces_the_active_generation_and_sweeps_the_retired_one() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::Published { files: 2 });
@@ -435,6 +444,7 @@ async fn test_sync_skips_a_file_without_a_hash() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::Published { files: 1 });
@@ -467,6 +477,7 @@ async fn test_sync_registers_upstream_provenance_with_the_cached_index() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     let record = meta
@@ -499,35 +510,31 @@ async fn test_sync_returns_the_upstream_status() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap_err();
 
-    assert!(matches!(error, ProjectSyncError::Status(500)));
+    assert!(matches!(&*error, ProjectSyncError::Status(500)));
 }
 
-/// `tokio::join!` polls the first future first, so it takes the uncontended gate and holds it across
-/// its upstream request while the second blocks. The queued caller then revalidates what the first one
-/// published and reports the `304` upstream actually returned, rather than the row it found.
-#[tokio::test]
-async fn test_a_queued_sync_revalidates_what_the_first_published() {
-    let server = MockServer::start().await;
-    let body = format!(
+fn flask_detail() -> String {
+    format!(
         r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[
             {{"filename":"flask-1.0.tar.gz","size":11,"url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}}]}}"#,
         a = "a".repeat(64),
-    );
-    Mock::given(method("GET"))
-        .and(path("/simple/flask/"))
-        .and(header("if-none-match", "v1"))
-        .respond_with(ResponseTemplate::new(304))
-        .expect(1)
-        .mount(&server)
-        .await;
+    )
+}
+
+/// `tokio::join!` polls the first future first, so it leads the flight while the second queues behind it
+/// and receives the publication without a request of its own.
+#[tokio::test]
+async fn test_a_queued_sync_joins_the_publication_ahead_of_it() {
+    let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("etag", "v1")
-                .set_body_raw(body, JSON),
+                .set_body_raw(flask_detail(), JSON),
         )
         .expect(1)
         .mount(&server)
@@ -542,20 +549,24 @@ async fn test_a_queued_sync_revalidates_what_the_first_published() {
         sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
     );
 
-    assert_eq!(first.unwrap(), ProjectSyncOutcome::Published { files: 1 });
-    assert_eq!(second.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
+    assert!(matches!(
+        (first, second),
+        (
+            Synced::Led(Ok(ProjectSyncOutcome::Published { files: 1 })),
+            Synced::Joined(Ok(ProjectSyncOutcome::Published { files: 1 }))
+        )
+    ));
     server.verify().await;
 }
 
-/// Both callers revalidate an unchanged generation, so both report the `304` each of them received.
 #[tokio::test]
-async fn test_queued_syncs_each_report_their_own_not_modified() {
+async fn test_queued_syncs_share_one_revalidation() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .and(header("if-none-match", "v1"))
         .respond_with(ResponseTemplate::new(304))
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
     let client = client_for(&server);
@@ -575,21 +586,25 @@ async fn test_queued_syncs_each_report_their_own_not_modified() {
         sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
     );
 
-    assert_eq!(first.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
-    assert_eq!(second.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
+    assert!(matches!(
+        (first, second),
+        (
+            Synced::Led(Ok(ProjectSyncOutcome::NotModified { files: 1 })),
+            Synced::Joined(Ok(ProjectSyncOutcome::NotModified { files: 1 }))
+        )
+    ));
     server.verify().await;
 }
 
-/// The failure this whole change is about. An active generation is present and the refresh fails, so
-/// the queued caller used to find that row and report `NotModified`, turning the producer's failure
-/// into a success. It now makes its own request and fails the same way.
+/// A failed refresh reaches the waiter as the same failure, never as a reuse of the active generation the
+/// leader could not replace (#1302).
 #[tokio::test]
-async fn test_a_queued_sync_reports_the_failure_instead_of_the_stale_row() {
+async fn test_a_queued_sync_receives_the_leaders_failure() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .respond_with(ResponseTemplate::new(200).set_body_raw("not json", JSON))
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
     let client = client_for(&server);
@@ -609,17 +624,86 @@ async fn test_a_queued_sync_reports_the_failure_instead_of_the_stale_row() {
         sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
     );
 
-    assert!(first.is_err(), "{first:?}");
-    assert!(second.is_err(), "{second:?}");
+    let (Synced::Led(Err(led)), Synced::Joined(Err(joined))) = (first, second) else {
+        panic!("both callers fail");
+    };
+    assert!(std::sync::Arc::ptr_eq(&led, &joined));
     assert_eq!(
         active_project_generation(&meta, "pypi", "flask")
             .unwrap()
             .unwrap()
             .generation,
-        seeded,
-        "a failed refresh leaves the generation it could not replace"
+        seeded
     );
     server.verify().await;
+}
+
+/// The leader is dropped with its request still in flight, so it publishes nothing and the queued caller
+/// leads a request of its own.
+#[tokio::test]
+async fn test_a_queued_sync_leads_when_the_leader_is_cancelled() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_mins(1)))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "v1")
+                .set_body_raw(flask_detail(), JSON),
+        )
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+    let inflight = Inflight::default();
+    let policy = Policy::default();
+    let mut leader = Box::pin(sync_project_files(
+        &client,
+        &inflight,
+        &meta,
+        "pypi",
+        &policy,
+        "flask",
+        client.base_url(),
+    ));
+    let mut waiter = Box::pin(sync_project_files(
+        &client,
+        &inflight,
+        &meta,
+        "pypi",
+        &policy,
+        "flask",
+        client.base_url(),
+    ));
+    tokio::select! {
+        _ = &mut leader => panic!("the delayed response never arrives"),
+        () = requests_received(&server, 1) => {}
+    }
+    tokio::select! {
+        _ = &mut waiter => panic!("the waiter answers while the leader holds the flight"),
+        () = tokio::task::yield_now() => {}
+    }
+
+    drop(leader);
+
+    assert!(matches!(
+        waiter.await,
+        Synced::Led(Ok(ProjectSyncOutcome::Published { files: 1 }))
+    ));
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+async fn requests_received(server: &MockServer, count: usize) {
+    while server.received_requests().await.unwrap().len() < count {
+        tokio::task::yield_now().await;
+    }
 }
 
 #[tokio::test]
@@ -670,8 +754,13 @@ async fn test_sync_scopes_same_key_coalescing_to_one_store() {
         ),
     );
 
-    assert_eq!(first.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
-    assert_eq!(second.unwrap(), ProjectSyncOutcome::Missing);
+    assert!(matches!(
+        (first, second),
+        (
+            Synced::Led(Ok(ProjectSyncOutcome::NotModified { files: 1 })),
+            Synced::Led(Ok(ProjectSyncOutcome::Missing))
+        )
+    ));
 }
 
 #[tokio::test]
@@ -787,9 +876,10 @@ async fn test_sync_reports_an_unreachable_upstream() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap_err();
 
-    assert!(matches!(error, ProjectSyncError::Upstream(_)));
+    assert!(matches!(&*error, ProjectSyncError::Upstream(_)));
 }
 
 #[test]
@@ -918,6 +1008,7 @@ async fn test_sync_persists_json_project_status() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
@@ -989,6 +1080,7 @@ async fn test_sync_folds_an_upper_case_html_digest_into_the_stored_file_row() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert!(meta.get_file_url("pypi", "flask", &sha).unwrap().is_some());
@@ -1018,6 +1110,7 @@ async fn test_sync_drops_a_file_whose_digest_cannot_content_address() {
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(
@@ -1078,6 +1171,7 @@ async fn test_sync_stores_a_sidecar_claim_only_for_a_digest_that_content_address
         client.base_url(),
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(
@@ -1124,6 +1218,7 @@ async fn test_sync_304_reuses_a_generation_the_answering_source_published() {
         "https://pypi.org/simple/",
     )
     .await
+    .into_inner()
     .unwrap();
 
     assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });

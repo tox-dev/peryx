@@ -1,5 +1,6 @@
+use std::any::Any;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -18,9 +19,15 @@ impl Inflight {
     }
 }
 
+/// What the last completed flight on a gate produced, for the callers queued behind it.
+type FlightOutcome = Option<Arc<dyn Any + Send + Sync>>;
+
 #[derive(Debug)]
 struct Gate {
-    mutex: Arc<tokio::sync::Mutex<()>>,
+    mutex: Arc<tokio::sync::Mutex<FlightOutcome>>,
+    /// Flights completed so far. A caller reads it before queueing, so a later value proves a flight finished
+    /// while it waited.
+    completions: AtomicU64,
     users: AtomicUsize,
     /// Subscribers wait for the next join, so the channel carries the event and no count.
     joins: tokio::sync::watch::Sender<()>,
@@ -30,6 +37,7 @@ impl Gate {
     fn new() -> Self {
         Self {
             mutex: Arc::default(),
+            completions: AtomicU64::new(0),
             users: AtomicUsize::new(1),
             joins: tokio::sync::watch::channel(()).0,
         }
@@ -50,9 +58,21 @@ impl FlightGate {
 
     pub async fn lock_owned(self) -> FlightGuard {
         let guard = self.gate.mutex.clone().lock_owned().await;
-        FlightGuard {
-            _guard: guard,
-            flight: self,
+        FlightGuard { guard, flight: self }
+    }
+
+    /// Wait for the gate, and answer with the outcome of a flight that completed meanwhile.
+    ///
+    /// A caller that finds no such outcome leads the next flight, including when the flight ahead of it
+    /// was dropped before it completed. The outcome may come from a request sent before this caller
+    /// arrived, which is what joining a flight in progress means.
+    pub async fn lock_or_join<T: Clone + 'static>(self) -> Turn<T> {
+        let queued_at = self.gate.completions.load(Ordering::Acquire);
+        let guard = self.lock_owned().await;
+        let completed = guard.flight.gate.completions.load(Ordering::Acquire) != queued_at;
+        match guard.guard.as_deref().and_then(|outcome| outcome.downcast_ref::<T>()) {
+            Some(outcome) if completed => Turn::Joined(outcome.clone()),
+            _ => Turn::Lead(guard),
         }
     }
 
@@ -60,10 +80,7 @@ impl FlightGate {
     /// Returns Tokio's lock error while another caller holds the slot.
     pub fn try_lock_owned(self) -> Result<FlightGuard, tokio::sync::TryLockError> {
         let guard = self.gate.mutex.clone().try_lock_owned()?;
-        Ok(FlightGuard {
-            _guard: guard,
-            flight: self,
-        })
+        Ok(FlightGuard { guard, flight: self })
     }
 }
 
@@ -95,10 +112,25 @@ impl FlightEvents {
     }
 }
 
+/// Whether a caller joined a completed flight or leads the next one.
+#[derive(Debug)]
+pub enum Turn<T> {
+    Joined(T),
+    Lead(FlightGuard),
+}
+
 #[derive(Debug)]
 pub struct FlightGuard {
-    _guard: tokio::sync::OwnedMutexGuard<()>,
+    guard: tokio::sync::OwnedMutexGuard<FlightOutcome>,
     flight: FlightGate,
+}
+
+impl FlightGuard {
+    /// Release the gate with `outcome` for the callers queued behind this flight.
+    pub fn complete<T: Send + Sync + 'static>(mut self, outcome: T) {
+        *self.guard = Some(Arc::new(outcome));
+        self.flight.gate.completions.fetch_add(1, Ordering::Release);
+    }
 }
 
 #[must_use]

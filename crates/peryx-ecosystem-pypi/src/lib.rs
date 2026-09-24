@@ -123,6 +123,8 @@ pub mod stream;
 #[cfg(feature = "serving")]
 mod sync_lock;
 #[cfg(feature = "serving")]
+pub use sync_lock::Synced;
+#[cfg(feature = "serving")]
 pub mod trash;
 #[cfg(feature = "serving")]
 mod trusted_publishing;

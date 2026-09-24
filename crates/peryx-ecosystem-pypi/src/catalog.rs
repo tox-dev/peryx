@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::{Read, Seek as _, Write};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use futures_util::TryStreamExt as _;
 use html5ever::TokenizerResult;
@@ -18,6 +19,7 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use time::OffsetDateTime;
 use url::Url;
 
+use crate::Synced;
 use crate::html::project_from_url;
 use crate::simple::Meta;
 use crate::store::{
@@ -71,16 +73,29 @@ pub enum CatalogSyncError {
 /// Parsing then commits fixed-size metadata batches, and only a complete valid document swaps the
 /// active-generation pointer.
 ///
-/// # Errors
-/// Returns an error without changing the active generation when transfer, parsing, or publication fails.
+/// Concurrent callers for one index share a single upstream request and all receive its result,
+/// failure included, marked [`Synced::Joined`]. A failure leaves the active generation unchanged.
 pub async fn sync_catalog<C: SimpleClientExt + Sync>(
     client: &C,
     inflight: &Inflight,
     meta: &MetaStore,
     index: &str,
     fallback_source: &str,
+) -> Synced<Result<CatalogSyncOutcome, Arc<CatalogSyncError>>> {
+    crate::sync_lock::coalesce(
+        inflight,
+        &format!("pypi\0catalog\0{index}"),
+        sync_root(client, meta, index, fallback_source),
+    )
+    .await
+}
+
+async fn sync_root<C: SimpleClientExt + Sync>(
+    client: &C,
+    meta: &MetaStore,
+    index: &str,
+    fallback_source: &str,
 ) -> Result<CatalogSyncOutcome, CatalogSyncError> {
-    let _guard = crate::sync_lock::acquire(inflight, &format!("pypi\0catalog\0{index}")).await;
     recover_catalog_generations(meta, index)?;
     let previous = catalog_state(meta, index)?.active;
     let head = client

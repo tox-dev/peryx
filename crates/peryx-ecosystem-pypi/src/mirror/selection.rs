@@ -93,17 +93,8 @@ async fn all_projects(state: &ServingState, target: &Target, source: SelectionSo
         target.client.base_url(),
     )
     .await;
-    let outcome = match &sync {
-        Ok(crate::catalog::CatalogSyncOutcome::Published { projects }) => {
-            crate::catalog_job::CatalogMetricOutcome::Published { projects: *projects }
-        }
-        Ok(crate::catalog::CatalogSyncOutcome::NotModified { projects }) => {
-            crate::catalog_job::CatalogMetricOutcome::NotModified { projects: *projects }
-        }
-        Err(_) => crate::catalog_job::CatalogMetricOutcome::Error,
-    };
-    crate::catalog_job::record_catalog_metrics(&state.metrics, &target.cached, outcome);
-    sync?;
+    crate::catalog_job::record_catalog_sync(&state.metrics, &target.cached, &sync);
+    sync.into_inner()?;
     Ok(normalized_projects(state.meta.list_projects(&target.cached)?))
 }
 

@@ -16,10 +16,10 @@ use peryx_index::IndexKind;
 use peryx_storage::meta::{JobKind, MetaError};
 use peryx_upstream::UpstreamError;
 
-use crate::SimpleClientExt;
 use crate::cache::{ProjectSyncError, ProjectSyncOutcome, sync_project_files};
 use crate::catalog::{CatalogSyncError, CatalogSyncOutcome, sync_catalog};
 use crate::store::list_catalog_projects;
+use crate::{SimpleClientExt, Synced};
 
 const CATALOG_SYNC: &str = "catalog_sync";
 const MAX_PROGRESS_UPDATES: usize = 100;
@@ -140,6 +140,24 @@ pub enum CatalogMetricOutcome {
     Published { projects: u64 },
     NotModified { projects: u64 },
     Error,
+}
+
+/// Record a catalog sync this caller led; a joined sync belongs to its leader, which records it if it records
+/// at all.
+pub fn record_catalog_sync(
+    metrics: &Metrics,
+    route: &str,
+    sync: &Synced<Result<CatalogSyncOutcome, Arc<CatalogSyncError>>>,
+) {
+    let Synced::Led(result) = sync else {
+        return;
+    };
+    let outcome = match result {
+        Ok(CatalogSyncOutcome::Published { projects }) => CatalogMetricOutcome::Published { projects: *projects },
+        Ok(CatalogSyncOutcome::NotModified { projects }) => CatalogMetricOutcome::NotModified { projects: *projects },
+        Err(_) => CatalogMetricOutcome::Error,
+    };
+    record_catalog_metrics(metrics, route, outcome);
 }
 
 pub fn record_catalog_metrics(metrics: &Metrics, route: &str, outcome: CatalogMetricOutcome) {
@@ -477,15 +495,12 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
         () = ctx.cancelled() => return Ok(JobRunOutcome::cancelled(JobReport::default())),
         root = sync_catalog(client, inflight, meta, repository, fallback_source) => root,
     };
-    let (metric_outcome, root_changed) = match root {
-        Ok(CatalogSyncOutcome::Published { projects }) => (CatalogMetricOutcome::Published { projects }, 1),
-        Ok(CatalogSyncOutcome::NotModified { projects }) => (CatalogMetricOutcome::NotModified { projects }, 0),
-        Err(error) => {
-            record_catalog_metrics(&ctx.state().metrics, repository, CatalogMetricOutcome::Error);
-            return Err(catalog_error(&error));
-        }
+    record_catalog_sync(&ctx.state().metrics, repository, &root);
+    let root_changed = match root {
+        Synced::Led(Ok(CatalogSyncOutcome::Published { .. })) => 1,
+        Synced::Led(Ok(CatalogSyncOutcome::NotModified { .. })) | Synced::Joined(Ok(_)) => 0,
+        Synced::Led(Err(error)) | Synced::Joined(Err(error)) => return Err(catalog_error(&error)),
     };
-    record_catalog_metrics(&ctx.state().metrics, repository, metric_outcome);
 
     let projects = catalog_projects_or_error(list_catalog_projects(meta, repository, parameters.max_projects.get()))?;
     let total = projects.len();
@@ -522,9 +537,10 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
         };
         report.processed += 1;
         match outcome {
-            Ok(ProjectSyncOutcome::Published { .. }) => report.changed += 1,
-            Ok(ProjectSyncOutcome::NotModified { .. } | ProjectSyncOutcome::Missing) => {}
-            Err(error) => {
+            Synced::Led(Ok(ProjectSyncOutcome::Published { .. })) => report.changed += 1,
+            Synced::Led(Ok(ProjectSyncOutcome::NotModified { .. } | ProjectSyncOutcome::Missing))
+            | Synced::Joined(Ok(_)) => {}
+            Synced::Led(Err(error)) | Synced::Joined(Err(error)) => {
                 let Some(error) = recoverable_project_error(&error) else {
                     return Err(project_error(&error));
                 };

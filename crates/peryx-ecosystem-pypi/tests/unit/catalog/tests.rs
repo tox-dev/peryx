@@ -18,6 +18,7 @@ use super::{
     publish_response, read_catalog_projects, redact_url, sync_catalog, write_catalog_chunk, write_catalog_stream,
 };
 use crate::SimpleClientExt as _;
+use crate::Synced;
 use crate::simple_client::CachedValidators;
 use crate::store::{
     CatalogGeneration, abort_catalog_generation, begin_catalog_generation, catalog_state, list_projects,
@@ -65,9 +66,10 @@ async fn test_sync_catalog_rejects_304_without_active_generation() {
 
     let error = sync_catalog(&client, &Inflight::default(), &meta, "no-active-304", client.base_url())
         .await
+        .into_inner()
         .unwrap_err();
 
-    assert!(matches!(error, CatalogSyncError::Store(_)));
+    assert!(matches!(&*error, CatalogSyncError::Store(_)));
     assert!(catalog_state(&meta, "no-active-304").unwrap().active.is_none());
     server.verify().await;
     drop(client);
@@ -105,18 +107,11 @@ async fn test_read_catalog_projects_reports_an_upstream_failure() {
     assert!(matches!(error, CatalogSyncError::Status(503)));
 }
 
-/// The queued caller revalidates what the first one published and reports the `304` upstream returned,
-/// rather than the row it would have found.
+/// `tokio::join!` polls the first future first, so it leads the flight while the second queues behind it
+/// and receives the publication without a request of its own.
 #[tokio::test]
-async fn test_a_queued_catalog_sync_revalidates_what_the_first_published() {
+async fn test_a_queued_catalog_sync_joins_the_publication_ahead_of_it() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/simple/"))
-        .and(header("if-none-match", "v1"))
-        .respond_with(ResponseTemplate::new(304))
-        .expect(1)
-        .mount(&server)
-        .await;
     Mock::given(method("GET"))
         .and(path("/simple/"))
         .respond_with(
@@ -140,23 +135,24 @@ async fn test_a_queued_catalog_sync_revalidates_what_the_first_published() {
         sync_catalog(&client, &inflight, &meta, "concurrent", client.base_url())
     );
 
-    assert!(matches!(first.unwrap(), CatalogSyncOutcome::Published { projects: 1 }));
     assert!(matches!(
-        second.unwrap(),
-        CatalogSyncOutcome::NotModified { projects: 1 }
+        (first, second),
+        (
+            Synced::Led(Ok(CatalogSyncOutcome::Published { projects: 1 })),
+            Synced::Joined(Ok(CatalogSyncOutcome::Published { projects: 1 }))
+        )
     ));
     server.verify().await;
 }
 
-/// Both callers revalidate an unchanged catalog, so both report the `304` each of them received.
 #[tokio::test]
-async fn test_queued_catalog_syncs_each_report_their_own_not_modified() {
+async fn test_queued_catalog_syncs_share_one_revalidation() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/"))
         .and(header("if-none-match", "old"))
         .respond_with(ResponseTemplate::new(304))
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
@@ -170,12 +166,11 @@ async fn test_queued_catalog_syncs_each_report_their_own_not_modified() {
     );
 
     assert!(matches!(
-        first.unwrap(),
-        CatalogSyncOutcome::NotModified { projects: 1 }
-    ));
-    assert!(matches!(
-        second.unwrap(),
-        CatalogSyncOutcome::NotModified { projects: 1 }
+        (first, second),
+        (
+            Synced::Led(Ok(CatalogSyncOutcome::NotModified { projects: 1 })),
+            Synced::Joined(Ok(CatalogSyncOutcome::NotModified { projects: 1 }))
+        )
     ));
     server.verify().await;
 }
@@ -197,6 +192,7 @@ async fn test_sync_catalog_304_sends_etag_and_merges_returned_validator() {
     assert!(matches!(
         sync_catalog(&client, &Inflight::default(), &meta, "validated", client.base_url())
             .await
+            .into_inner()
             .unwrap(),
         CatalogSyncOutcome::NotModified { projects: 1 }
     ));
@@ -263,9 +259,10 @@ async fn test_sync_catalog_aborts_invalid_staging_generation() {
 
     let error = sync_catalog(&client, &Inflight::default(), &meta, "invalid", client.base_url())
         .await
+        .into_inner()
         .unwrap_err();
 
-    assert!(matches!(error, CatalogSyncError::Json(error) if error.to_string().contains("bad name")));
+    assert!(matches!(&*error, CatalogSyncError::Json(error) if error.to_string().contains("bad name")));
     let state = catalog_state(&meta, "invalid").unwrap();
     assert_eq!(state.active.unwrap().generation, active);
     assert!(state.staging.is_none());
@@ -298,9 +295,10 @@ async fn test_sync_catalog_rejects_response_without_projects() {
 
     let error = sync_catalog(&client, &Inflight::default(), &meta, "no-projects", client.base_url())
         .await
+        .into_inner()
         .unwrap_err();
 
-    assert!(matches!(error, CatalogSyncError::Json(error) if error.to_string().contains("projects")));
+    assert!(matches!(&*error, CatalogSyncError::Json(error) if error.to_string().contains("projects")));
     let state = catalog_state(&meta, "no-projects").unwrap();
     assert_eq!(state.active.unwrap().generation, generation);
     assert!(state.staging.is_none());

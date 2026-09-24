@@ -781,6 +781,210 @@ async fn test_public_job_records_no_change_for_a_revalidated_root() {
     server.verify().await;
 }
 
+struct HeldUpstream {
+    client: UpstreamClient,
+    entered: oneshot::Receiver<()>,
+    release: oneshot::Sender<()>,
+    held_requests: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+const HELD_ROOT: &str = r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"flask"}]}"#;
+const HELD_FLASK: &str = r#"{"meta":{"api-version":"1.4"},"versions":[],"name":"flask","files":[]}"#;
+
+/// Serves the root and `flask` at once, except `held_path`, which answers `held_body` only once released. Each
+/// connection runs on its own task, so the held request never blocks the others.
+async fn held_upstream(held_path: &'static str, held_body: &'static str) -> HeldUpstream {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (entered, entered_receiver) = oneshot::channel();
+    let (release, release_receiver) = oneshot::channel::<()>();
+    let hold = Arc::new(tokio::sync::Mutex::new(Some((entered, release_receiver))));
+    let held_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = held_requests.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let hold = hold.clone();
+            let counted = counted.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let mut chunk = [0; 1024];
+                    let read = socket.read(&mut chunk).await.unwrap();
+                    assert_ne!(read, 0, "request ended before headers");
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let body = if request.contains(&format!("GET {held_path} ")) {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let pending = hold.lock().await.take();
+                    let (entered, release) = pending.expect("the held path is requested once");
+                    entered.send(()).unwrap();
+                    release.await.unwrap();
+                    held_body
+                } else if request.contains("GET /simple/flask/ ") {
+                    HELD_FLASK
+                } else {
+                    HELD_ROOT
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: {JSON}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+        }
+    });
+    HeldUpstream {
+        client: UpstreamClient::new(&format!("http://{address}/simple/")).unwrap(),
+        entered: entered_receiver,
+        release,
+        held_requests,
+    }
+}
+
+fn held_app(upstream: &HeldUpstream) -> (tempfile::TempDir, Arc<AppState>) {
+    app(vec![index(
+        "held",
+        crate::ECOSYSTEM,
+        IndexKind::Cached {
+            client: upstream.client.clone(),
+            offline: false,
+        },
+    )])
+}
+
+type ProjectSync = crate::Synced<Result<crate::cache::ProjectSyncOutcome, Arc<crate::cache::ProjectSyncError>>>;
+
+/// Leads the `flask` project flight on `app`, as a caller outside the job would.
+fn lead_flask(app: &Arc<AppState>, upstream: &HeldUpstream) -> tokio::task::JoinHandle<ProjectSync> {
+    let app = app.clone();
+    let client = upstream.client.clone();
+    tokio::spawn(async move {
+        crate::cache::sync_project_files(
+            &client,
+            &app.serving.cache.inflight,
+            &app.serving.meta,
+            "held",
+            &Policy::default(),
+            "flask",
+            client.base_url(),
+        )
+        .await
+    })
+}
+
+/// Runs the catalog job once the test has confirmed it queued behind the flight for `key`.
+async fn job_joining(app: &Arc<AppState>, key: &str) -> tokio::task::JoinHandle<Result<JobReport, String>> {
+    let mut joins = app.serving.cache.inflight.subscribe(key).unwrap();
+    let job = tokio::spawn({
+        let app = app.clone();
+        async move { run(&app, parameters("held", 1, 1)).await }
+    });
+    joins.next_join().await.unwrap();
+    job
+}
+
+/// The job joins a project flight another caller leads, so it does not count that publication again.
+#[tokio::test]
+async fn test_public_job_does_not_count_a_publication_it_joined() {
+    let upstream = held_upstream("/simple/flask/", HELD_FLASK).await;
+    let (_dir, app) = held_app(&upstream);
+    let leader = lead_flask(&app, &upstream);
+    let HeldUpstream { entered, release, .. } = upstream;
+    entered.await.unwrap();
+    let job = job_joining(&app, "pypi\0project\0held\0flask").await;
+
+    release.send(()).unwrap();
+
+    assert!(matches!(
+        leader.await.unwrap(),
+        crate::Synced::Led(Ok(crate::cache::ProjectSyncOutcome::Published { files: 0 }))
+    ));
+    assert_eq!(
+        job.await.unwrap().unwrap(),
+        JobReport {
+            processed: 1,
+            changed: 1,
+            ..JobReport::default()
+        }
+    );
+}
+
+/// The job joins a root flight another caller leads, so only its own project publication counts.
+#[tokio::test]
+async fn test_public_job_does_not_count_a_root_it_joined() {
+    let upstream = held_upstream("/simple/", HELD_ROOT).await;
+    let (_dir, app) = held_app(&upstream);
+    let leader = tokio::spawn({
+        let app = app.clone();
+        let client = upstream.client.clone();
+        async move {
+            crate::catalog::sync_catalog(
+                &client,
+                &app.serving.cache.inflight,
+                &app.serving.meta,
+                "held",
+                client.base_url(),
+            )
+            .await
+        }
+    });
+    let HeldUpstream { entered, release, .. } = upstream;
+    entered.await.unwrap();
+    let job = job_joining(&app, "pypi\0catalog\0held").await;
+
+    release.send(()).unwrap();
+
+    assert!(matches!(
+        leader.await.unwrap(),
+        crate::Synced::Led(Ok(crate::catalog::CatalogSyncOutcome::Published { projects: 1 }))
+    ));
+    assert_eq!(
+        job.await.unwrap().unwrap(),
+        JobReport {
+            processed: 1,
+            changed: 1,
+            ..JobReport::default()
+        }
+    );
+}
+
+/// A failed refresh reaches the job that joined it as that same failure, from one upstream request.
+#[tokio::test]
+async fn test_public_job_fails_with_the_project_flight_it_joined() {
+    let upstream = held_upstream("/simple/flask/", "not json").await;
+    let (_dir, app) = held_app(&upstream);
+    let leader = lead_flask(&app, &upstream);
+    let HeldUpstream {
+        entered,
+        release,
+        held_requests,
+        ..
+    } = upstream;
+    entered.await.unwrap();
+    let job = job_joining(&app, "pypi\0project\0held\0flask").await;
+
+    release.send(()).unwrap();
+
+    let crate::Synced::Led(Err(error)) = leader.await.unwrap() else {
+        panic!("the leader's refresh fails");
+    };
+    let failure = job.await.unwrap().unwrap_err();
+    assert_eq!(
+        (
+            failure.contains("flask") && failure.contains(&error.to_string()),
+            held_requests.load(std::sync::atomic::Ordering::SeqCst)
+        ),
+        (true, 1)
+    );
+}
+
 #[tokio::test]
 async fn test_concurrent_public_jobs_both_report_a_failed_project_refresh() {
     let server = MockServer::start().await;

@@ -5,11 +5,37 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use super::http::{get, get_bytes_with_headers, harness};
-use crate::catalog_job::{CatalogMetricOutcome, record_catalog_metrics};
+use crate::Synced;
+use crate::catalog::{CatalogSyncError, CatalogSyncOutcome};
+use crate::catalog_job::{CatalogMetricOutcome, record_catalog_metrics, record_catalog_sync};
 
 fn settle(metrics: &Metrics, done: impl Fn(&Metrics) -> bool) {
     metrics.flush().unwrap();
     assert!(done(metrics), "metrics settled on an unexpected state");
+}
+
+/// A joined sync, successful or failed, was recorded by the caller that led it.
+#[test]
+fn test_catalog_sync_metrics_count_only_the_led_flight() {
+    let metrics = Metrics::start();
+    for sync in [
+        Synced::Led(Ok(CatalogSyncOutcome::Published { projects: 3 })),
+        Synced::Joined(Ok(CatalogSyncOutcome::Published { projects: 3 })),
+        Synced::Joined(Err(std::sync::Arc::new(CatalogSyncError::Status(503)))),
+    ] {
+        record_catalog_sync(&metrics, "pypi", &sync);
+    }
+    settle(&metrics, |m| m.index_totals().contains_key("pypi"));
+
+    assert_eq!(
+        metrics.index_totals()["pypi"].extensions,
+        [
+            ("pypi.catalog.projects", 3),
+            ("pypi.catalog.published", 1),
+            ("pypi.catalog.syncs", 1),
+        ]
+        .into()
+    );
 }
 
 #[test]

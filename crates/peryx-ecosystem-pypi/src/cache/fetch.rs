@@ -1,6 +1,7 @@
 use std::io::{Read, Seek as _, Write};
 use std::sync::Arc;
 
+use crate::Synced;
 use crate::catalog::redact_url;
 use crate::policy::PypiPolicy as _;
 use crate::simple::{DetailSink, File, StreamDetailError, absolutize, stream_detail_json};
@@ -473,9 +474,12 @@ impl From<StreamDetailError<Self>> for ProjectSyncError {
 /// the active pointer only once the whole document parsed. No metadata transaction is held during the
 /// upstream request, and a failed parse or publication never disturbs the previously active generation.
 ///
-/// # Errors
-/// Returns [`ProjectSyncError`] without changing the active generation when the fetch, transfer,
-/// parse, or publication fails.
+/// Concurrent callers for one project share a single upstream request and all receive its result,
+/// failure included, marked [`Synced::Joined`]. The flight key leaves out `policy` because the leader publishes
+/// under its own policy, and a joiner's file count then describes the generation the store holds.
+///
+/// A failed fetch, transfer, parse, or publication leaves the active generation unchanged, and every caller
+/// in the flight receives the same shared [`ProjectSyncError`].
 pub async fn sync_project_files<C: crate::SimpleClientExt + Sync>(
     client: &C,
     inflight: &Inflight,
@@ -484,12 +488,23 @@ pub async fn sync_project_files<C: crate::SimpleClientExt + Sync>(
     policy: &Policy,
     project: &str,
     fallback_source: &str,
+) -> Synced<Result<ProjectSyncOutcome, Arc<ProjectSyncError>>> {
+    crate::sync_lock::coalesce(
+        inflight,
+        &format!("pypi\0project\0{index}\0{project}"),
+        sync_project(client, meta, index, policy, project, fallback_source),
+    )
+    .await
+}
+
+async fn sync_project<C: crate::SimpleClientExt + Sync>(
+    client: &C,
+    meta: &MetaStore,
+    index: &str,
+    policy: &Policy,
+    project: &str,
+    fallback_source: &str,
 ) -> Result<ProjectSyncOutcome, ProjectSyncError> {
-    // The gate serializes syncs of one project, so a queued caller never joins a stampede. It does not
-    // answer for the caller ahead of it: only a conditional request of its own can tell it whether the
-    // generation it would report is current, and the row alone cannot, least of all when the caller
-    // ahead failed to refresh it.
-    let _guard = crate::sync_lock::acquire(inflight, &format!("pypi\0project\0{index}\0{project}")).await;
     recover_project_generations(meta, index, project)?;
     let previous = active_project_generation(meta, index, project)?;
     let head = client
