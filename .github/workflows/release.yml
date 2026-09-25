@@ -279,17 +279,45 @@ jobs:
     with:
       plan: ${{ needs.plan.outputs.val }}
     permissions:
+      "contents": "read" # Read the source to build from.
+
+  # PyPI matches the token's job_workflow_ref and the attestation certificate's build config against one
+  # trusted publisher; only a job in this top-level workflow makes both name release.yml.
+  publish-pypi:
+    name: publish to PyPI
+    needs:
+      - custom-publish-pypi
+    runs-on: "ubuntu-24.04"
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
       "attestations": "write" # Sign the Python packages.
       "contents": "read" # Read release metadata.
       "id-token": "write" # Authenticate to PyPI without a stored token.
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Attest Python packages
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist
 
   announce:
     needs:
       - plan
       - host
       - custom-publish-pypi
+      - publish-pypi
     # Wait for skipped prerelease jobs, but require host completion.
-    if: ${{ always() && needs.host.result == 'success' && (needs.custom-publish-pypi.result == 'skipped' || needs.custom-publish-pypi.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-pypi.result == 'skipped' || needs.publish-pypi.result == 'success') }}
     runs-on: "ubuntu-22.04"
     timeout-minutes: 15
     env:
