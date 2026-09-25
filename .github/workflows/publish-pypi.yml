@@ -43,7 +43,9 @@ jobs:
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
           COMPATIBILITY: ${{ matrix.platform.compatibility }}
-          RUSTC_WRAPPER: sccache
+          # sccache respawns rustc with cargo's argument file expanded, and web-sys's feature list then
+          # passes the Windows 32,767-character command-line limit (os error 206).
+          RUSTC_WRAPPER: ${{ matrix.platform.os != 'windows' && 'sccache' || '' }}
           USE_ZIG: ${{ matrix.platform.zig }}
         shell: bash
         run: |
