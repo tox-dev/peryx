@@ -93,10 +93,8 @@ fn set_cookies(response: &Response<Body>) -> Vec<String> {
 
 fn session_value(response: &Response<Body>) -> String {
     let cookies = set_cookies(response);
-    let [cookie] = cookies.as_slice() else {
-        panic!("expected one cookie, got {cookies:?}");
-    };
-    cookie
+    assert_eq!(cookies.len(), 1, "{cookies:?}");
+    cookies[0]
         .strip_prefix(&format!("{SESSION_COOKIE}="))
         .and_then(|cookie| cookie.split(';').next())
         .unwrap()
