@@ -336,7 +336,7 @@ security event whose `actor` is the account's stable ID and whose `result` is `s
 
 Changing the password ends no session. A session cookie carries no password state and peryx keeps no server-side session
 record, so every session of that user, including one opened with the old password on another device, stays valid until
-its cookie expires or the browser logs out. Disabling the account ends its sessions on their next request.
+its cookie expires or that browser logs out.
 
 ## Per-index keys
 
@@ -461,11 +461,12 @@ starts; disconnecting a queued request releases its place. Real checks, decoys, 
 share this process-wide admission bound.
 
 Passwords and verifiers are secrets end to end: neither appears in logs, errors, diagnostics, or any serialized account
-view, and debug rendering redacts a verifier. Enrolling again replaces the verifier; clearing it removes password
-authentication entirely. Clearing and then enrolling a new password is the recovery path when a local password is lost.
-peryx provides no self-service reset or password-reset email; a signed-in user who knows the current password changes it
-from the web UI's [change password form](#changing-a-local-password). The same check backs the web UI's
-[local password sign-in](#local-password-sign-in).
+view, and debug rendering redacts a verifier. A verifier is written in three places only: when
+[`peryx bootstrap-administrator`](@/core/access/bootstrap-administrator.md) or the first start of a standalone server
+creates the first administrator, when the [change password form](#changing-a-local-password) replaces it after checking
+the current password, and when a login upgrades a stale verifier as described above. No operation sets a password for
+another account or removes one, and peryx has no reset for a forgotten password: restore a metadata backup taken while
+the password was known. The same check backs the web UI's [local password sign-in](#local-password-sign-in).
 
 ## What this does not do
 
