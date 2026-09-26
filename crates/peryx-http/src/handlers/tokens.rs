@@ -45,7 +45,7 @@ pub async fn create_token(State(state): State<Arc<AppState>>, request: Request<B
     };
     let body = match read_json_body(&parts.headers, body).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Ok(name) = TokenName::new(&body.name) else {
         return problem(StatusCode::BAD_REQUEST, "invalid token name");
@@ -275,14 +275,14 @@ impl Rejection {
     }
 }
 
-async fn read_json_body(headers: &HeaderMap, body: Body) -> Result<CreateTokenBody, Response> {
+async fn read_json_body(headers: &HeaderMap, body: Body) -> Result<CreateTokenBody, Box<Response>> {
     if !super::is_json(headers) {
-        return Err(problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON"));
+        return Err(problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON").into());
     }
     let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
         .await
         .map_err(|_| problem(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large"))?;
-    serde_json::from_slice(&bytes).map_err(|_| problem(StatusCode::UNPROCESSABLE_ENTITY, "invalid request body"))
+    serde_json::from_slice(&bytes).map_err(|_| problem(StatusCode::UNPROCESSABLE_ENTITY, "invalid request body").into())
 }
 
 fn minted_response(status: StatusCode, record: &ScopedTokenRecord, secret: &str) -> Response {

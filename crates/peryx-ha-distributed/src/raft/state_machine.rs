@@ -223,7 +223,7 @@ impl OwnershipStateMachine {
     async fn store_candidate(
         &self,
         candidate: SnapshotCandidate,
-    ) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
+    ) -> Result<Snapshot<TypeConfig>, Box<StorageError<NodeId>>> {
         let SnapshotCandidate {
             state,
             meta,
@@ -243,7 +243,8 @@ impl OwnershipStateMachine {
                 }
                 Ok(data)
             })
-            .await?;
+            .await
+            .map_err(StorageError::from)?;
         self.inner.lock().await.publish(rank, meta.clone(), data.clone());
         Ok(Snapshot {
             meta,
@@ -279,7 +280,7 @@ impl OwnershipStateMachine {
 impl RaftSnapshotBuilder<TypeConfig> for OwnershipStateMachine {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
         let candidate = self.snapshot_candidate().await;
-        self.store_candidate(candidate).await
+        self.store_candidate(candidate).await.map_err(|error| *error)
     }
 }
 
@@ -324,12 +325,14 @@ impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
         Ok(responses)
     }
 
-    async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        self.clone()
+    fn get_snapshot_builder(&mut self) -> impl Future<Output = Self::SnapshotBuilder> + Send {
+        std::future::ready(self.clone())
     }
 
-    async fn begin_receiving_snapshot(&mut self) -> Result<Box<Cursor<Vec<u8>>>, StorageError<NodeId>> {
-        Ok(Box::new(Cursor::new(vec![])))
+    fn begin_receiving_snapshot(
+        &mut self,
+    ) -> impl Future<Output = Result<Box<Cursor<Vec<u8>>>, StorageError<NodeId>>> + Send {
+        std::future::ready(Ok(Box::new(Cursor::new(vec![]))))
     }
 
     async fn install_snapshot(

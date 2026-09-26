@@ -8,6 +8,12 @@ workspace_binary := workspace_target + "/debug/peryx" + exe_suffix
 native_coverage_target := workspace_target + "/llvm-cov-target"
 native_coverage_binary := native_coverage_target + "/debug/peryx" + exe_suffix
 tools_root := justfile_directory() + "/.tox/tools"
+# The nightly that instruments the Wasm frontend. It has to share the stable toolchain's LLVM major,
+# which `coverage-frontend` checks, and not every such nightly works: with nightly-2026-07-05 (LLVM
+# 22.1.8) `llvm-cov` rejects the Wasm build with "function name is empty", the error
+# https://github.com/llvm/llvm-project/issues/192833 tracks. Picking it by the stable build's commit date
+# reached an LLVM 23 nightly once the stable moved to 1.98.1, so it is pinned.
+coverage_nightly := "nightly-2026-05-25"
 export PERYX_TEST_TMPDIR := project_tmp
 
 # Run the default test suite.
@@ -1339,8 +1345,7 @@ coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output
     rm -f "$native_output" "$wasm_output" "$merged_output"
     scratch=$(mktemp -d "{{ project_tmp }}/coverage-frontend.XXXXXX")
     trap 'rm -rf "$scratch"' EXIT
-    commit_date=$(rustc -vV | awk '/^commit-date:/ { print $2 }')
-    toolchain="nightly-$commit_date"
+    toolchain="{{ coverage_nightly }}"
     rustup toolchain install "$toolchain" --profile minimal --component llvm-tools-preview \
       --target wasm32-unknown-unknown
     stable_llvm=$(rustc -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')

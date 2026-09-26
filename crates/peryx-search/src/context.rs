@@ -11,7 +11,7 @@ pub struct IndexerCtx<'a> {
 
 impl IndexerCtx<'_> {
     #[must_use]
-    pub fn index_at(&self, position: usize) -> &Index {
+    pub const fn index_at(&self, position: usize) -> &Index {
         &self.indexes[position]
     }
 }

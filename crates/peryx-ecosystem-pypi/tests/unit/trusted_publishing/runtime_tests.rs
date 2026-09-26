@@ -161,7 +161,7 @@ fn test_attestation_context_requires_a_named_configured_publisher(
         Signer::new(b"local-key", "peryx"),
         300,
         MAX_REPLAY_ENTRIES,
-        Some(Arc::new(SigstoreVerifier::new(&root))),
+        Some(Arc::new(SigstoreVerifier::new(&root).unwrap())),
     )
     .unwrap();
     let token = VerifiedToken {

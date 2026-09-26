@@ -297,7 +297,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         let fence = match claim_repository_home(state, &repo).await {
             Ok(fence) => fence,
-            Err(response) => return Ok(response),
+            Err(response) => return Ok(*response),
         };
         let membership = store::blob_membership_key(&index.name, &repo, digest);
         let webhook = prepare_webhook(
@@ -505,7 +505,7 @@ fn download_error_response(err: DownloadError) -> Response {
 /// repository serves the digest is a metadata write under the repository's authority.
 ///
 /// Snapshot the repository's committed authority epoch before a blob upload records membership.
-pub(super) async fn upload_epoch(state: &ServingState, repo: &str) -> Result<u64, Response> {
+pub(super) async fn upload_epoch(state: &ServingState, repo: &str) -> Result<u64, Box<Response>> {
     claim_repository_home(state, repo).await
 }
 
@@ -618,7 +618,7 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
         Ok(fence) => fence,
         Err(response) => {
             pending.abort().await.map_err(ServeError::from)?;
-            return Ok(response);
+            return Ok(*response);
         }
     };
     // A digest this repository already serves is accounted; re-pushing it must not reserve again.
@@ -718,7 +718,7 @@ pub(super) async fn publish_acknowledged(
             state.finalize_admitted_write(operation, OperationResult::Published, b"");
             Ok(success())
         }
-        Err(response) => Ok(response),
+        Err(response) => Ok(*response),
     }
 }
 
@@ -752,7 +752,7 @@ pub(super) async fn commit_staged_upload(
     } = context;
     let fence = match upload_epoch(state, repo).await {
         Ok(fence) => fence,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let reservation = if store::blob_is_member(&state.meta, &index.name, repo, digest)? {
         None

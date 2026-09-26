@@ -213,7 +213,7 @@ fn lex_ident(text: &str, index: usize, tokens: &mut Vec<Token>) -> usize {
     end
 }
 
-fn token_end(text: &str, start: usize) -> usize {
+const fn token_end(text: &str, start: usize) -> usize {
     let bytes = text.as_bytes();
     let mut cursor = start;
     while cursor < bytes.len() && is_ident_continue(bytes[cursor]) {

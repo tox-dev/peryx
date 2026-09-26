@@ -106,18 +106,21 @@ async fn authenticate(State(state): State<ListenerState>, mut request: Request, 
             request.extensions_mut().insert(actor);
             next.run(request).await
         }
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
 /// Uses the public API identity store to avoid a second control-plane credential database.
-async fn authenticate_actor(authorizer: &dyn ControlAuthorizer, headers: &HeaderMap) -> Result<ControlActor, Response> {
+async fn authenticate_actor(
+    authorizer: &dyn ControlAuthorizer,
+    headers: &HeaderMap,
+) -> Result<ControlActor, Box<Response>> {
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
     authorizer
         .authenticate(authorization)
         .await
         .map_err(|_| unavailable())?
-        .ok_or_else(unauthorized)
+        .ok_or_else(|| Box::new(unauthorized()))
 }
 
 fn scope_denied(state: &ListenerState, actor: &ControlActor, permission: ControlPermission) -> Option<Response> {

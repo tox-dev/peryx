@@ -541,7 +541,7 @@ impl<'a, 'store> HtmlState<'a, 'store> {
             return;
         }
         match token {
-            Token::TagToken(tag) if tag.kind == TagKind::StartTag && tag.name.as_ref() == "a" => {
+            Token::TagToken(tag) if tag.kind == TagKind::StartTag && &*tag.name == "a" => {
                 self.anchor = Some(HtmlAnchor {
                     text: String::new(),
                     href: attr(&tag.attrs, "href"),
@@ -552,7 +552,7 @@ impl<'a, 'store> HtmlState<'a, 'store> {
                     anchor.text.push_str(&text);
                 }
             }
-            Token::TagToken(tag) if tag.kind == TagKind::EndTag && tag.name.as_ref() == "a" => {
+            Token::TagToken(tag) if tag.kind == TagKind::EndTag && &*tag.name == "a" => {
                 let Some(anchor) = self.anchor.take() else {
                     return;
                 };
@@ -570,7 +570,7 @@ impl<'a, 'store> HtmlState<'a, 'store> {
             }
             Token::TagToken(tag)
                 if tag.kind == TagKind::StartTag
-                    && tag.name.as_ref() == "meta"
+                    && &*tag.name == "meta"
                     && attr(&tag.attrs, "name").as_deref() == Some("pypi:repository-version") =>
             {
                 self.api_version = attr(&tag.attrs, "content");
@@ -591,7 +591,7 @@ impl<'a, 'store> HtmlState<'a, 'store> {
 fn attr(attributes: &[html5ever::Attribute], name: &str) -> Option<String> {
     attributes
         .iter()
-        .find(|attribute| attribute.name.local.as_ref() == name)
+        .find(|attribute| &*attribute.name.local == name)
         .map(|attribute| attribute.value.to_string())
 }
 

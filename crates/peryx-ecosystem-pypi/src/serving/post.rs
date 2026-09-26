@@ -282,7 +282,7 @@ async fn admit_and_store(
             if intent.fresh {
                 let _ = state.meta.release_intent(&intent.intent_key);
             }
-            response
+            response.into_response()
         }
     }
 }
@@ -298,7 +298,7 @@ async fn store_admitted(
     audit: &UploadAudit<'_>,
     intent: &admission::AdmittedIntent,
     now: i64,
-) -> Result<Response, Response> {
+) -> HttpResult<Response> {
     let project = audit.project;
     let digest = prepared.digest.clone();
     let incoming = prepared
@@ -313,7 +313,7 @@ async fn store_admitted(
         Some(now + OPERATION_RETENTION_SECS),
         now,
     )) {
-        return Err(response);
+        return Err(response.into());
     }
     let authority = crate::name::authority_key(project);
     let fence = first_publish_fence(state, &authority).await?;
@@ -341,7 +341,7 @@ async fn store_admitted(
     let stored = match cache::store_upload(state, &hosted.name, project, prepared, quota, fence, upload_webhook).await {
         Ok(stored) => stored,
         // A store fault stays a 5xx and leaves the operation pending, so a retry re-drives it.
-        Err(err) => return Err(upload_store_error_response(audit, err)),
+        Err(err) => return Err(upload_store_error_response(audit, err).into()),
     };
     // The bytes are durable whether this stored fresh content or deduplicated an identical resend, so the
     // intent advances to admitted either way, which lets the reaper reclaim it.
@@ -376,16 +376,16 @@ async fn store_admitted(
     Ok((response.status, response.body).into_response())
 }
 
-async fn first_publish_fence(state: &ServingState, authority: &str) -> Result<u64, Response> {
+async fn first_publish_fence(state: &ServingState, authority: &str) -> HttpResult<u64> {
     match state.claim_first_publish_home(authority).await {
         Ok(None) => Ok(0),
         Ok(Some(claim)) if state.availability_topology().local_datacenter() == Some(claim.home.as_str()) => {
             Ok(claim.epoch)
         }
-        Ok(Some(_)) => Err(first_publish_unavailable()),
+        Ok(Some(_)) => Err(first_publish_unavailable().into()),
         Err(error) => {
             tracing::warn!(%error, authority, "first-publish home could not be resolved");
-            Err(first_publish_unavailable())
+            Err(first_publish_unavailable().into())
         }
     }
 }

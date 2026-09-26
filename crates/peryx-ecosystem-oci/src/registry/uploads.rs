@@ -241,7 +241,7 @@ async fn mount_blob(state: &ServingState, request: MountRequest<'_>) -> Result<R
     }
     let fence = match upload_epoch(state, repo).await {
         Ok(fence) => fence,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     // A mount publishes an existing blob into this repository without a transfer, so it reserves the
     // mounted digest's bytes exactly as an upload of them would; a digest already served here is not
@@ -489,9 +489,9 @@ async fn append_to_stage(
         let chunk = chunk.map_err(|err| UploadBodyError::ClientBody(BodyFailure::of(&err), Some(*offset)))?;
         let size = *offset + chunk.len() as u64;
         if limit.is_some_and(|limit| size > limit) {
-            return Err(UploadBodyError::Denied(
+            return Err(UploadBodyError::Denied(Box::new(
                 policy_size_denial(index, repo, size).expect("size above the policy limit is denied"),
-            ));
+            )));
         }
         let staged = state
             .blobs
@@ -516,7 +516,7 @@ async fn append_to_stage(
 
 enum UploadBodyError {
     Fault(ServeError),
-    Denied(Response),
+    Denied(Box<Response>),
     /// The client's bytes stopped arriving, carrying the offset a resumable session reached.
     ClientBody(BodyFailure, Option<u64>),
     /// The session's row went while the chunk was being written, so the offset this append reached
@@ -556,7 +556,7 @@ impl UploadBodyError {
     fn into_response(self) -> Result<Response, ServeError> {
         match self {
             Self::Fault(err) => Err(err),
-            Self::Denied(response) => Ok(response),
+            Self::Denied(response) => Ok(*response),
             Self::ClientBody(failure, resume) => Ok(client_body_response(failure, resume)),
             Self::Vanished => Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown")),
         }
@@ -591,9 +591,9 @@ async fn append_body(
         let chunk = chunk.map_err(|err| UploadBodyError::ClientBody(BodyFailure::of(&err), None))?;
         let size = *offset + chunk.len() as u64;
         if limit.is_some_and(|limit| size > limit) {
-            return Err(UploadBodyError::Denied(
+            return Err(UploadBodyError::Denied(Box::new(
                 policy_size_denial(index, repo, size).expect("size above the policy limit is denied"),
-            ));
+            )));
         }
         pending
             .write_chunk(chunk)

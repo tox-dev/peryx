@@ -12,10 +12,17 @@ use crate::raft::persistence::RaftLogStore;
 struct Builder;
 
 impl StoreBuilder<TypeConfig, RaftLogStoreAdapter, OwnershipStateMachine, TempDir> for Builder {
-    async fn build(&self) -> Result<(TempDir, RaftLogStoreAdapter, OwnershipStateMachine), StorageError<NodeId>> {
+    fn build(
+        &self,
+    ) -> impl Future<Output = Result<(TempDir, RaftLogStoreAdapter, OwnershipStateMachine), StorageError<NodeId>>> + Send
+    {
         let dir = tempfile::tempdir().unwrap();
         let store = RaftLogStore::open(dir.path().join("raft.redb")).unwrap();
-        Ok((dir, RaftLogStoreAdapter::new(store), OwnershipStateMachine::default()))
+        std::future::ready(Ok((
+            dir,
+            RaftLogStoreAdapter::new(store),
+            OwnershipStateMachine::default(),
+        )))
     }
 }
 

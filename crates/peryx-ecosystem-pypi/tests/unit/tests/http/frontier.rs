@@ -207,8 +207,8 @@ async fn test_apply_replicated_changes_retires_only_the_changed_projects() {
     assert!(h.state.serving.hot_fresh(&hot_beta).is_some());
 
     let changed = vec![
-        format!("pypi\u{0}p\u{0}hosted/alpha"),
-        format!("pypi\u{0}p\u{0}hosted/alpha"),
+        "pypi\u{0}p\u{0}hosted/alpha".to_owned(),
+        "pypi\u{0}p\u{0}hosted/alpha".to_owned(),
         "pypi\u{0}f\u{0}deadbeef".to_owned(),
     ];
     h.state.apply(

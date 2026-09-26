@@ -381,7 +381,7 @@ fn test_retention_removes_old_terminal_runs_and_preserves_running_runs() {
         .unwrap()
         .runs;
     assert_eq!(runs.len(), 16);
-    assert!(runs.iter().filter(|run| run.state == JobState::Running).count() == 4);
+    assert_eq!(runs.iter().filter(|run| run.state == JobState::Running).count(), 4);
     assert!(ids[..8].iter().all(|id| store.get_job_run(id).unwrap().is_none()));
     assert!(ids[20..].iter().all(|id| store.get_job_run(id).unwrap().is_some()));
 }

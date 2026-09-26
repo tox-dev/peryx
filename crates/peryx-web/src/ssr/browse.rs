@@ -49,7 +49,6 @@ async fn request_base(state: &ServingState) -> Option<BaseUrl> {
     let OriginalUri(uri) = leptos_axum::extract::<OriginalUri>().await.ok()?;
     let trusted_proxy = leptos_axum::extract::<ConnectInfo<SocketAddr>>()
         .await
-        .ok()
-        .is_some_and(|ConnectInfo(address)| state.rate_limits.trusts_proxy(address.ip()));
+        .is_ok_and(|ConnectInfo(address)| state.rate_limits.trusts_proxy(address.ip()));
     BaseUrl::from_request(&headers, &uri, trusted_proxy)
 }

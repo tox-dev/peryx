@@ -180,7 +180,7 @@ fn text_findings(
     rows.iter()
         .filter_map(|(stored_key, raw)| {
             let key = &stored_key[namespace.prefix().len()..];
-            let valid = std::str::from_utf8(raw).ok().is_some_and(|value| {
+            let valid = std::str::from_utf8(raw).is_ok_and(|value| {
                 if namespace == PypiRecords::FileUrl {
                     valid_file_source_key(key, cached, hosted) && valid_file_source(value)
                 } else {

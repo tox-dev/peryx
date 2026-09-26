@@ -3,7 +3,7 @@ use std::error::Error as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier as ThreadBarrier};
 
-use argon2::password_hash::{PasswordHasher as _, SaltString};
+use argon2::password_hash::PasswordHasher as _;
 use argon2::{Algorithm, Argon2, Params, Version};
 use peryx_identity::{
     Action, Glob, Grant, IndexAcl, NamedToken, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier,
@@ -335,10 +335,9 @@ where
 async fn test_authenticate_upgrades_a_legacy_profile() {
     let (_dir, store, service) = cheap_service();
     let user = service.create("Alice").unwrap();
-    let salt = SaltString::encode_b64(&[0; 16]).unwrap();
     let params = Params::new(8, 1, 1, Some(16)).unwrap();
     let encoded = Argon2::new(Algorithm::Argon2i, Version::V0x10, params)
-        .hash_password(b"correct horse", &salt)
+        .hash_password_with_salt(b"correct horse", &[0; 16])
         .unwrap()
         .to_string();
     let verifier: PasswordVerifier = serde_json::from_value(serde_json::Value::String(encoded)).unwrap();

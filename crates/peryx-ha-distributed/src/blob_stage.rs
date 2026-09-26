@@ -109,7 +109,7 @@ pub async fn pull_blob_staged<T: BlobTransport + ?Sized>(
     pull_blob_staged_reported(blobs, sources, digest, total_length, catalog, budget)
         .await
         .map(|(pull, _)| pull)
-        .map_err(|(error, _)| error)
+        .map_err(|failure| failure.0)
 }
 
 pub async fn pull_blob_staged_reported<T: BlobTransport + ?Sized>(
@@ -119,7 +119,7 @@ pub async fn pull_blob_staged_reported<T: BlobTransport + ?Sized>(
     total_length: usize,
     catalog: Option<&ChunkedDigest>,
     budget: RangedPullBudget,
-) -> Result<(StagedPull, SourceReport), (StagedPullError, SourceReport)> {
+) -> Result<(StagedPull, SourceReport), Box<(StagedPullError, SourceReport)>> {
     let ranges = plan_ranges(total_length, catalog, budget.range_bytes);
     let attempts = if catalog.is_none() && sources.len() >= 2 {
         sources.len() + 1
@@ -141,13 +141,13 @@ pub async fn pull_blob_staged_reported<T: BlobTransport + ?Sized>(
             Err(StagedPullError::RangeUnavailable(unavailable)) => {
                 first_unavailable.get_or_insert(unavailable);
             }
-            Err(error) => return Err((error, report)),
+            Err(error) => return Err(Box::new((error, report))),
         }
     }
     let error = first_unavailable
         .map(StagedPullError::RangeUnavailable)
         .unwrap_or(StagedPullError::DigestMismatch { attempts });
-    Err((error, report))
+    Err(Box::new((error, report)))
 }
 
 /// Returns `None` when the staged bytes failed whole-digest verification, leaving nothing published.

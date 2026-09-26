@@ -67,15 +67,13 @@ impl VerificationContext {
             .verify(
                 Sha256Hash::from_hex(sha256).map_err(|_| ())?,
                 &bundle.into_bundle(),
-                &VerificationPolicy::default()
-                    .require_identity(&self.identity)
-                    .require_issuer(&self.issuer),
+                &VerificationPolicy::new(&self.identity, &self.issuer),
             )
             .map_err(|_| ())?;
         let mut claims = self.verify_claims(&certificate)?;
-        claims.insert("identity".to_owned(), verified.identity.ok_or(())?);
+        claims.insert("identity".to_owned(), verified.identity().ok_or(())?.to_owned());
         Ok(Publisher {
-            kind: verified.issuer.ok_or(())?,
+            kind: verified.issuer().ok_or(())?.to_owned(),
             claims,
         })
     }

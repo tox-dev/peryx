@@ -15,17 +15,17 @@ use crate::error::{ErrorCode, error_response};
 
 /// Resolve the repository's committed home and return its publication epoch. The canonical key keeps
 /// OCI authorities separate from other ecosystems.
-pub(in crate::registry) async fn claim_repository_home(state: &ServingState, repo: &str) -> Result<u64, Response> {
+pub(in crate::registry) async fn claim_repository_home(state: &ServingState, repo: &str) -> Result<u64, Box<Response>> {
     let authority = crate::name::authority_key(repo);
     match state.claim_first_publish_home(&authority).await {
         Ok(None) => Ok(0),
         Ok(Some(claim)) if state.availability_topology().local_datacenter() == Some(claim.home.as_str()) => {
             Ok(claim.epoch)
         }
-        Ok(Some(_)) => Err(authority_moved()),
+        Ok(Some(_)) => Err(authority_moved().into()),
         Err(error) => {
             tracing::warn!(%error, authority, "first-publish home could not be resolved");
-            Err(authority_moved())
+            Err(authority_moved().into())
         }
     }
 }

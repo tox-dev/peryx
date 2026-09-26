@@ -40,7 +40,7 @@ pub async fn put_revocation(
     let (actor, authorization) =
         match administrator(&state, headers, request.extensions(), Scope::AdministrationWrite).await {
             Ok(authenticated) => authenticated,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
@@ -80,7 +80,7 @@ pub async fn inspect_revocation(
 ) -> Response {
     let (_actor, authorization) = match administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
         Ok(authenticated) => authenticated,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
@@ -100,7 +100,7 @@ pub async fn list_revocations(
 ) -> Response {
     let (_actor, _authorization) = match administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
         Ok(authenticated) => authenticated,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let cursor = match query.cursor {
         Some(cursor) => match ArtifactDigest::from_str(&cursor) {
@@ -132,7 +132,7 @@ pub async fn lift_revocation(
 ) -> Response {
     let (actor, authorization) = match administrator(&state, &headers, &extensions, Scope::AdministrationWrite).await {
         Ok(authenticated) => authenticated,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
@@ -151,7 +151,7 @@ async fn administrator(
     headers: &HeaderMap,
     extensions: &Extensions,
     scope: Scope,
-) -> Result<(UserId, ScopedDecision), Response> {
+) -> Result<(UserId, ScopedDecision), Box<Response>> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -169,7 +169,7 @@ async fn administrator(
         .authorization
         .authorize_scoped(&actor, scope, &Resource::Operator);
     if decision.decision() != Decision::Allow {
-        return Err(StatusCode::NOT_FOUND.into_response());
+        return Err(StatusCode::NOT_FOUND.into_response().into());
     }
     Ok((actor, decision))
 }

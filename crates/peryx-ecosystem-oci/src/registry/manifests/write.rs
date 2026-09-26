@@ -40,7 +40,7 @@ pub(in crate::registry) async fn put_manifest(
     };
     let fence = match claim_repository_home(state, &repo).await {
         Ok(fence) => fence,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
     let referrer = referrer_of(
         &manifest.canonical,
@@ -319,7 +319,7 @@ async fn finish_manifest(
     )
     .await
     {
-        return Ok(response);
+        return Ok(*response);
     }
     state.finalize_admitted_write(operation, peryx_storage::meta::OperationResult::Published, &[]);
     record_manifest_success(state, index, repo);

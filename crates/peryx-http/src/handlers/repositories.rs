@@ -66,7 +66,7 @@ pub async fn create_repository(
 ) -> Response {
     let (actor, _) = match administrator(&state, &headers, &extensions, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let create: CreateBody = match parse_json(&headers, &body) {
         Ok(create) => create,
@@ -97,7 +97,7 @@ pub async fn list_repositories(
     Query(query): Query<RepositoriesQuery>,
 ) -> Response {
     if let Err(response) = administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
-        return response;
+        return *response;
     }
     let repository_query = RepositoryQuery {
         state: match query.state.as_deref().map(parse_state).transpose() {
@@ -122,7 +122,7 @@ pub async fn inspect_repository(
     Path(id): Path<RepositoryId>,
 ) -> Response {
     if let Err(response) = administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
-        return response;
+        return *response;
     }
     match services.repositories().inspect(&id) {
         Ok(Some(record)) => record_response(StatusCode::OK, &record),
@@ -141,7 +141,7 @@ pub async fn update_repository(
 ) -> Response {
     let (actor, _) = match administrator(&state, &headers, &extensions, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let precondition = match version_precondition(&headers) {
         Ok(precondition) => precondition,
@@ -196,7 +196,7 @@ async fn set_enabled(
 ) -> Response {
     let (actor, _) = match administrator(state, headers, extensions, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let precondition = match version_precondition(headers) {
         Ok(precondition) => precondition,
@@ -220,7 +220,7 @@ async fn administrator(
     headers: &HeaderMap,
     extensions: &Extensions,
     scope: Scope,
-) -> Result<(UserId, ScopedDecision), Response> {
+) -> Result<(UserId, ScopedDecision), Box<Response>> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -238,7 +238,7 @@ async fn administrator(
         .authorization
         .authorize_scoped(&actor, scope, &Resource::Operator);
     if decision.decision() != Decision::Allow {
-        return Err(not_found());
+        return Err(not_found().into());
     }
     Ok((actor, decision))
 }

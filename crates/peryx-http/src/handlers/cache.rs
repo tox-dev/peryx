@@ -55,7 +55,7 @@ struct CacheListParams {
 pub async fn list_cached_contents(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
     let (parts, _) = request.into_parts();
     if let Err(response) = administrator(&state, &parts.headers, &parts.extensions, Scope::AdministrationRead).await {
-        return protected(response);
+        return protected(*response);
     }
     let Ok(Query(params)) = Query::<CacheListParams>::try_from_uri(&parts.uri) else {
         return protected(problem(StatusCode::BAD_REQUEST, "invalid cache list query"));
@@ -84,7 +84,7 @@ async fn inspect_cache(
     inspect: impl FnOnce(&AppState) -> Result<Vec<u8>, String> + Send + 'static,
 ) -> Response {
     if let Err(response) = administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
-        return protected(response);
+        return protected(*response);
     }
     run_inspection(state, inspect).await
 }
@@ -226,7 +226,7 @@ async fn purge_response(state: &AppState, request: Request<Body>) -> Response {
         Scope::AdministrationRead
     };
     if let Err(rejection) = administrator(state, &parts.headers, &parts.extensions, scope).await {
-        return rejection;
+        return *rejection;
     }
     // A repository the caller cannot resolve is a 404 rather than a distinct error, so an
     // administrator cannot probe which repositories exist by the shape of the failure.
@@ -264,7 +264,7 @@ async fn administrator(
     headers: &HeaderMap,
     extensions: &Extensions,
     scope: Scope,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -284,7 +284,7 @@ async fn administrator(
     if decision.decision() == Decision::Allow {
         return Ok(());
     }
-    Err(StatusCode::NOT_FOUND.into_response())
+    Err(StatusCode::NOT_FOUND.into_response().into())
 }
 
 fn unauthorized() -> Response {

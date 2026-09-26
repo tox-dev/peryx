@@ -733,13 +733,17 @@ impl BlobBackend for S3Backend {
             .map_err(|error| error.with_context("s3", BlobOperation::Head, Some(&digest)))
     }
 
-    async fn begin(&self) -> Result<BlobWrite, BlobError> {
-        let inner = BlobWrite::filesystem(self.staging.clone())
-            .map_err(|error| error.with_context("s3", BlobOperation::Write, None))?;
-        Ok(BlobWrite::s3(S3Write {
-            inner: Box::new(inner),
-            backend: self.clone(),
-        }))
+    fn begin(&self) -> impl Future<Output = Result<BlobWrite, BlobError>> + Send {
+        std::future::ready(
+            BlobWrite::filesystem(self.staging.clone())
+                .map_err(|error| error.with_context("s3", BlobOperation::Write, None))
+                .map(|inner| {
+                    BlobWrite::s3(S3Write {
+                        inner: Box::new(inner),
+                        backend: self.clone(),
+                    })
+                }),
+        )
     }
 
     async fn verify(&self, digest: Digest) -> Result<bool, BlobError> {

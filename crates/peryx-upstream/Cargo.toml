@@ -35,7 +35,7 @@ rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 peryx-test-support.workspace = true
-rcgen = "0.14.9"
+rcgen = "0.14.10"
 rstest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

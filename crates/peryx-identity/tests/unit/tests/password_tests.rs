@@ -1,4 +1,4 @@
-use argon2::password_hash::{PasswordHasher as _, SaltString};
+use argon2::password_hash::PasswordHasher as _;
 use argon2::{Algorithm, Argon2, Params, Version};
 use rstest::rstest;
 
@@ -107,11 +107,25 @@ fn test_debug_redacts_the_verifier() {
 }
 
 fn custom_verifier(algorithm: Algorithm, version: Version, output_len: usize) -> PasswordVerifier {
-    let salt = SaltString::encode_b64(&[0; 16]).unwrap();
     let params = Params::new(8, 1, 1, Some(output_len)).unwrap();
     let encoded = Argon2::new(algorithm, version, params)
-        .hash_password(b"correct horse", &salt)
+        .hash_password_with_salt(b"correct horse", &[0; 16])
         .unwrap()
         .to_string();
     serde_json::from_value(serde_json::Value::String(encoded)).unwrap()
+}
+
+/// Stores keep verifiers enrolled by earlier argon2 releases; this one came from argon2 0.5.3 under the
+/// recommended policy, so an upgrade that stops reading it would lock every existing account out.
+#[test]
+fn test_check_accepts_a_verifier_enrolled_by_argon2_0_5() {
+    let verifier: PasswordVerifier = serde_json::from_str(
+        r#""$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$eZ8SueF3EIJEgtgpg1rLafWpNVv3dMTwc0KCOxG5CSg""#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        verifier.check("correct horse battery staple", &PasswordPolicy::recommended()),
+        PasswordCheck::Accepted { stale: false }
+    );
 }

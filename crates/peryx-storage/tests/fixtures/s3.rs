@@ -80,7 +80,7 @@ async fn run_unit(arguments: Vec<OsString>) -> Result<(), String> {
     if !arguments.len().is_multiple_of(3) {
         return Err("unit scenarios require name, endpoint, and staging directory".to_owned());
     }
-    for arguments in arguments.chunks_exact(3) {
+    for arguments in arguments.as_chunks::<3>().0 {
         let scenario = UnitScenario::parse(arguments[0].to_str().ok_or("scenario is not valid UTF-8")?)?;
         let endpoint = arguments[1].to_str().ok_or("endpoint is not valid UTF-8")?.to_owned();
         run_scenario(

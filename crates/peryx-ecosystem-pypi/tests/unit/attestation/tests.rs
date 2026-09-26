@@ -27,7 +27,7 @@ fn verification_context_with_issuer(
 ) -> VerificationContext {
     let root = TrustedRoot::from_json(root).unwrap();
     VerificationContext::new(
-        Arc::new(Verifier::new(&root)),
+        Arc::new(Verifier::new(&root).unwrap()),
         identity.to_owned(),
         issuer.to_owned(),
         claims,

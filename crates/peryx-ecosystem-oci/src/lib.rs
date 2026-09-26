@@ -351,7 +351,6 @@ async fn browse_http(state: Arc<AppState>, request: Request) -> Response {
         },
     )
     .await
-    .unwrap_or_else(std::convert::identity)
 }
 
 struct BrowseHttpRequest<'a> {
@@ -367,8 +366,10 @@ async fn browse_resource_response(
     driver: &OciRegistry,
     position: usize,
     request: BrowseHttpRequest<'_>,
-) -> Result<Response, Response> {
-    authorize_browse_resource(&state.serving, position, &request).map_err(browse_denial)?;
+) -> Response {
+    if let Err(denial) = authorize_browse_resource(&state.serving, position, &request) {
+        return browse_denial(denial);
+    }
     match request.path {
         "/+ui/browse" => driver
             .browse(BrowseRequest {
@@ -401,7 +402,7 @@ async fn browse_resource_response(
             .map_err(browse_error),
         "/+ui/project" => {
             let Some(repository) = request.query.project else {
-                return Ok((StatusCode::BAD_REQUEST, "missing project").into_response());
+                return (StatusCode::BAD_REQUEST, "missing project").into_response();
             };
             driver
                 .repository_tags(&state.serving, state.serving.index_at(position), &repository)
@@ -412,7 +413,7 @@ async fn browse_resource_response(
         }
         "/+ui/manifest" => {
             let (Some(repository), Some(reference)) = (request.query.project, request.query.reference) else {
-                return Ok((StatusCode::BAD_REQUEST, "missing project or ref").into_response());
+                return (StatusCode::BAD_REQUEST, "missing project or ref").into_response();
             };
             driver
                 .manifest_content(state.serving.clone(), position, repository, reference)
@@ -428,7 +429,7 @@ async fn browse_resource_response(
         }
         "/+ui/members" => {
             let (Some(repository), Some(digest)) = (request.query.project, request.query.layer) else {
-                return Ok((StatusCode::BAD_REQUEST, "missing project or digest").into_response());
+                return (StatusCode::BAD_REQUEST, "missing project or digest").into_response();
             };
             driver
                 .layer_members(state.serving.clone(), position, repository, digest)
@@ -441,7 +442,7 @@ async fn browse_resource_response(
             let (Some(repository), Some(digest), Some(member)) =
                 (request.query.project, request.query.layer, request.query.member)
             else {
-                return Ok((StatusCode::BAD_REQUEST, "missing project, digest, or member").into_response());
+                return (StatusCode::BAD_REQUEST, "missing project, digest, or member").into_response();
             };
             driver
                 .layer_member_chunk(
@@ -459,6 +460,7 @@ async fn browse_resource_response(
         }
         _ => Ok(StatusCode::NOT_FOUND.into_response()),
     }
+    .unwrap_or_else(std::convert::identity)
 }
 
 fn authorize_browse_resource(

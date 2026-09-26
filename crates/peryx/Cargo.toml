@@ -107,7 +107,7 @@ tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 redb.workspace = true
 wiremock.workspace = true
-rcgen = "0.14.9"
+rcgen = "0.14.10"
 shlex.workspace = true
 
 [lints]

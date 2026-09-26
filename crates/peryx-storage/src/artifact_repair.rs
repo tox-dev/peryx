@@ -81,7 +81,7 @@ pub async fn repair_artifact_placements_cancellable(
     blobs: &BlobStorage,
     batch: usize,
     cancelled: &CancellationToken,
-) -> Result<ArtifactRepairReport, ArtifactRepairFailure> {
+) -> Result<ArtifactRepairReport, Box<ArtifactRepairFailure>> {
     Box::pin(repair_artifact_placements_until(meta, blobs, batch, Some(cancelled))).await
 }
 
@@ -90,30 +90,30 @@ async fn repair_artifact_placements_until(
     blobs: &BlobStorage,
     batch: usize,
     cancelled: Option<&CancellationToken>,
-) -> Result<ArtifactRepairReport, ArtifactRepairFailure> {
+) -> Result<ArtifactRepairReport, Box<ArtifactRepairFailure>> {
     let mut report = ArtifactRepairReport::default();
     let Some(limit) = NonZeroUsize::new(batch).filter(|limit| limit.get() <= MAX_REPAIR_BATCH) else {
-        return Err(ArtifactRepairFailure {
+        return Err(Box::new(ArtifactRepairFailure {
             report,
             error: ArtifactRepairError::Batch,
-        });
+        }));
     };
     let _ownership = match cancelled {
         Some(cancelled) => tokio::select! {
-            () = cancelled.cancelled() => return Err(ArtifactRepairFailure {
+            () = cancelled.cancelled() => return Err(Box::new(ArtifactRepairFailure {
                 report,
                 error: ArtifactRepairError::Cancelled,
-            }),
+            })),
             ownership = meta.artifact_repair_ownership() => ownership,
         },
         None => meta.artifact_repair_ownership().await,
     };
     report.content = Box::pin(repair_content_page(meta, blobs, limit, cancelled))
         .await
-        .map_err(|error| ArtifactRepairFailure { report, error })?;
+        .map_err(|error| Box::new(ArtifactRepairFailure { report, error }))?;
     report.placement = repair_placement_page(meta, blobs, limit, cancelled)
         .await
-        .map_err(|error| ArtifactRepairFailure { report, error })?;
+        .map_err(|error| Box::new(ArtifactRepairFailure { report, error }))?;
     Ok(report)
 }
 

@@ -35,43 +35,43 @@ url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/carg
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471599057"
 
 [[tools."aqua:axodotdev/cargo-dist"]]
-version = "0.32.0"
+version = "0.33.0"
 backend = "aqua:axodotdev/cargo-dist"
 
 [tools."aqua:axodotdev/cargo-dist"."platforms.linux-arm64"]
-checksum = "sha256:d29bcffeb3f8b0c517b4ce0dd2470926ed5cb0bb29d78c6bdd5f88d76ee14a6a"
-url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-aarch64-unknown-linux-gnu.tar.xz"
-url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804449"
+checksum = "sha256:9c554ab21a58ad46eb9b6710f89633ccb26bc2577cf4b0c2d18a5b826a31913e"
+url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-aarch64-unknown-linux-gnu.tar.xz"
+url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/556576962"
 provenance = "github-attestations"
 
 [tools."aqua:axodotdev/cargo-dist"."platforms.linux-x64"]
-checksum = "sha256:eb52f9fae0d0506774e9f1801c1168f87fa2c87a45e2d64d3ae7c89401929946"
-url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-x86_64-unknown-linux-gnu.tar.xz"
-url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804471"
+checksum = "sha256:4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293"
+url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-x86_64-unknown-linux-gnu.tar.xz"
+url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/556576992"
 provenance = "github-attestations"
 
 [tools."aqua:axodotdev/cargo-dist"."platforms.macos-arm64"]
-checksum = "sha256:aa343b2ff78ec2981f17a65140250c5ad6062c74072163f68c5c2686d94763a7"
-url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-aarch64-apple-darwin.tar.xz"
-url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804448"
+checksum = "sha256:7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c"
+url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-aarch64-apple-darwin.tar.xz"
+url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/556576963"
 provenance = "github-attestations"
 
 [tools."aqua:axodotdev/cargo-dist"."platforms.macos-x64"]
-checksum = "sha256:6243464a8389e006b9256ee548bc795638f1a17113c1b6669c0e05ce89fd05c5"
-url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-x86_64-apple-darwin.tar.xz"
-url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804465"
+checksum = "sha256:6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29"
+url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-x86_64-apple-darwin.tar.xz"
+url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/556576979"
 provenance = "github-attestations"
 
 [tools."aqua:axodotdev/cargo-dist"."platforms.windows-arm64"]
-checksum = "sha256:26e845cabff12a92911ce960af73a86c8f9b2b2d9072b01dfe5b662acf044fa3"
-url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804467"
+checksum = "sha256:9a36d70795e14326a5ec4bf17aee085df00ab85a322739291ea5d4b1b5f693cd"
+url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/556576987"
 provenance = "github-attestations"
 
 [tools."aqua:axodotdev/cargo-dist"."platforms.windows-x64"]
-checksum = "sha256:26e845cabff12a92911ce960af73a86c8f9b2b2d9072b01dfe5b662acf044fa3"
-url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804467"
+checksum = "sha256:9a36d70795e14326a5ec4bf17aee085df00ab85a322739291ea5d4b1b5f693cd"
+url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/556576987"
 provenance = "github-attestations"
 
 [[tools."aqua:mitsuhiko/insta"]]
@@ -104,51 +104,51 @@ url = "https://github.com/mitsuhiko/insta/releases/download/1.48.0/cargo-insta-x
 url_api = "https://api.github.com/repos/mitsuhiko/insta/releases/assets/444757862"
 
 [[tools."aqua:taiki-e/cargo-llvm-cov"]]
-version = "0.9.0"
+version = "0.9.1"
 backend = "aqua:taiki-e/cargo-llvm-cov"
 
 [tools."aqua:taiki-e/cargo-llvm-cov"."platforms.linux-arm64"]
-checksum = "sha256:9af53b273e50d01d8bde8785de8541f6738cc4375248cd7683aec8b5768b9d21"
-url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/517185425"
+checksum = "sha256:abf5f13c1520f8756d2192bfaaeadb0208f5b7eaa8cadc15bf847befa42b7360"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547403281"
 provenance = "github-attestations"
 
 [tools."aqua:taiki-e/cargo-llvm-cov"."platforms.linux-x64"]
-checksum = "sha256:b068f7c98841aacb9c4f382b4a0c184ae82f49b56a32d442b429b2961c73be15"
-url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/517184759"
+checksum = "sha256:b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547403171"
 provenance = "github-attestations"
 
 [tools."aqua:taiki-e/cargo-llvm-cov"."platforms.macos-arm64"]
-checksum = "sha256:1bbf5dc8ad82e0f6ff0eb923aa6a691c760adb60f797cdcb454e204b9399c4f0"
-url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/517184633"
+checksum = "sha256:7e821a6c90c0884f79f759f5d9be50799ade67bb82515186d922f26032ef43b8"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547403359"
 provenance = "github-attestations"
 
 [tools."aqua:taiki-e/cargo-llvm-cov"."platforms.macos-x64"]
-checksum = "sha256:4595bc9310b009913570514eb0ff7c3aba74902562578038f1700d611783fdc2"
-url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/517184799"
+checksum = "sha256:ddf949b82a63017441ea76aa068bdd7e2dde8055f47cd3ef736fdbbd633bc33e"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547403156"
 provenance = "github-attestations"
 
 [tools."aqua:taiki-e/cargo-llvm-cov"."platforms.windows-arm64"]
-checksum = "sha256:49494b25effe07cc15d22b7f791cd874f8f789d96cdb4e395b06bfcdfa77f852"
-url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-x86_64-pc-windows-msvc.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/517185668"
+checksum = "sha256:15eefd5b90fcdd4006b727c6e710d70a61aff509fcd7bb37f9c2a35c4f024948"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547404213"
 provenance = "github-attestations"
 
 [tools."aqua:taiki-e/cargo-llvm-cov"."platforms.windows-x64"]
-checksum = "sha256:49494b25effe07cc15d22b7f791cd874f8f789d96cdb4e395b06bfcdfa77f852"
-url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-x86_64-pc-windows-msvc.tar.gz"
-url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/517185668"
+checksum = "sha256:15eefd5b90fcdd4006b727c6e710d70a61aff509fcd7bb37f9c2a35c4f024948"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547404213"
 provenance = "github-attestations"
 
 [[tools."cargo:cargo-auditable"]]
-version = "0.7.5"
+version = "0.7.6"
 backend = "cargo:cargo-auditable"
 
 [[tools."cargo:cargo-codspeed"]]
-version = "5.0.1"
+version = "5.0.2"
 backend = "cargo:cargo-codspeed"
 
 [[tools."cargo:cargo-cyclonedx"]]
@@ -237,80 +237,75 @@ url = "https://github.com/knope-dev/knope/releases/download/knope/v0.23.0/knope-
 url_api = "https://api.github.com/repos/knope-dev/knope/releases/assets/428748408"
 
 [[tools."github:leptos-rs/cargo-leptos"]]
-version = "0.3.7"
+version = "0.3.9"
 backend = "github:leptos-rs/cargo-leptos"
 
 [tools."github:leptos-rs/cargo-leptos"."platforms.linux-arm64"]
-checksum = "sha256:70e0c1cdf47f3c26c90ab4a020f8fcd9206233cc34b321c1aa37f7a554aa3bad"
-url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/465714596"
+checksum = "sha256:91461f8f8200b46eba94975b134d035604cbf9cd800231245e8a123c305e2ad5"
+url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.9/cargo-leptos-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/573260874"
 
 [tools."github:leptos-rs/cargo-leptos"."platforms.linux-x64"]
-checksum = "sha256:fda80f4845e92d0e8f5ec13cf1a46982ba7a518ae01182e7e4201312944bc05d"
-url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/465714627"
+checksum = "sha256:35657e0ada6a026389cfffe2c22ca8eacee46250c27fe88b869955fe17a3d05f"
+url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.9/cargo-leptos-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/573260923"
 
 [tools."github:leptos-rs/cargo-leptos"."platforms.macos-arm64"]
-checksum = "sha256:f5464add2ee2778eb11189be1e2f1721d6f30aa47b2cf4f00172962738d99e42"
-url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/465714594"
+checksum = "sha256:eb740a4d502b9cee79c4a13e4f4de6e2037f39be1bb8d4ec066238ba232c5c14"
+url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.9/cargo-leptos-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/573260872"
 
 [tools."github:leptos-rs/cargo-leptos"."platforms.macos-x64"]
-checksum = "sha256:6ae47376c816f66c0191adea1fec0bd70b05e85f8a10ba42bd3ca8e3adf0748b"
-url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/465714611"
-
-[tools."github:leptos-rs/cargo-leptos"."platforms.windows-arm64"]
-checksum = "sha256:6e4b72ede0ca23e1023773c2ccac1b8035b3cbb5ddb1fc721d53b181244cdadb"
-url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/source.tar.gz"
-url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/465714657"
+checksum = "sha256:7b9b5f5edf1e9ad4bdf3fc3c685c0185fb32fe0587acf8ee3d558fe760216964"
+url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.9/cargo-leptos-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/573260903"
 
 [tools."github:leptos-rs/cargo-leptos"."platforms.windows-x64"]
-checksum = "sha256:041d4d2d59020325c28c6fc6f64ca8fea0c9768dd5956817bfaa78977e1dd64e"
-url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-x86_64-pc-windows-msvc.tar.gz"
-url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/465714617"
+checksum = "sha256:12e9f92ac71de294d24dfdc341c93524c3c7972b323ce8a4b968377a13ce160f"
+url = "https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.9/cargo-leptos-x86_64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/leptos-rs/cargo-leptos/releases/assets/573260924"
 
 [[tools."github:nextest-rs/nextest"]]
-version = "0.9.145"
+version = "0.9.146"
 backend = "github:nextest-rs/nextest"
 
 [tools."github:nextest-rs/nextest".options]
 version_prefix = "cargo-nextest-"
 
 [tools."github:nextest-rs/nextest"."platforms.linux-arm64"]
-checksum = "sha256:0ad2815fd91a7ecec3a7e25c749b584f66729ac688fd26b2fd494f7ff94b7fd0"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.145/cargo-nextest-0.9.145-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/568837128"
+checksum = "sha256:b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579608024"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.linux-x64"]
-checksum = "sha256:32aa82416099eb12fffae9cf1a279ad201fecbd3f74826c613e32e9006b29867"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.145/cargo-nextest-0.9.145-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/568838794"
+checksum = "sha256:682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579609342"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.macos-arm64"]
-checksum = "sha256:52ecaedb4f5af9267ef7ed02bc937d2a15a94ff96cb663080e81311f798c9905"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.145/cargo-nextest-0.9.145-universal-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/568848732"
+checksum = "sha256:39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579630774"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.macos-x64"]
-checksum = "sha256:52ecaedb4f5af9267ef7ed02bc937d2a15a94ff96cb663080e81311f798c9905"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.145/cargo-nextest-0.9.145-universal-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/568848732"
+checksum = "sha256:39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579630774"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.windows-arm64"]
-checksum = "sha256:c1659805ebf3fd21400163e59e2ea5abbe981437d9d2a9e369cf32afe606b816"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.145/cargo-nextest-0.9.145-aarch64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/568853584"
+checksum = "sha256:8a071bd8190b287863c8aaa0b20fc56485f9190f0fc02206f48a0b0af4416de4"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-aarch64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579619938"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.windows-x64"]
-checksum = "sha256:5bc4b6789103e9834f596eff2b290cfb5b2b69e5413c78bbaa5acc835ac5baa0"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.145/cargo-nextest-0.9.145-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/568848390"
+checksum = "sha256:0fa689815c8157e4633225b6b173184b3d546eb6ffb754c3d0e6ea5973284a20"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579617054"
 provenance = "github-attestations"
 
 [[tools."github:obi1kenobi/cargo-semver-checks"]]
@@ -343,31 +338,31 @@ url = "https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v0.50
 url_api = "https://api.github.com/repos/obi1kenobi/cargo-semver-checks/releases/assets/498090877"
 
 [[tools."github:project-zot/zot"]]
-version = "2.1.20"
+version = "2.1.21"
 backend = "github:project-zot/zot"
 
 [tools."github:project-zot/zot".options]
 matching_regex = "^zot-(darwin|linux)-(amd64|arm64)$"
 
 [tools."github:project-zot/zot"."platforms.linux-arm64"]
-checksum = "sha256:d6a39475587be18ec3d42e0d2bfa50f5c5064cbbcdc222dbd88e55ecf69dd8e9"
-url = "https://github.com/project-zot/zot/releases/download/v2.1.20/zot-linux-arm64"
-url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/501642091"
+checksum = "sha256:49e1f948af8e5c6ed5c803bad4508cf7af37be6c15b7fb2840109900b916eb48"
+url = "https://github.com/project-zot/zot/releases/download/v2.1.21/zot-linux-arm64"
+url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/547549970"
 
 [tools."github:project-zot/zot"."platforms.linux-x64"]
-checksum = "sha256:a32e42d042d1f17b5b1317e55cc1a415a744c873dcd05c25c56b665478258bcb"
-url = "https://github.com/project-zot/zot/releases/download/v2.1.20/zot-linux-amd64"
-url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/501641554"
+checksum = "sha256:8751cc0daf739634835a3bd8206e3094c84d552e2c462e4a4baf80f40dd92685"
+url = "https://github.com/project-zot/zot/releases/download/v2.1.21/zot-linux-amd64"
+url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/547550400"
 
 [tools."github:project-zot/zot"."platforms.macos-arm64"]
-checksum = "sha256:7bdade2bfca62f5466c53dc56dd2237a56b8d321584ad5e4b87c84f8917c0a51"
-url = "https://github.com/project-zot/zot/releases/download/v2.1.20/zot-darwin-arm64"
-url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/501641639"
+checksum = "sha256:85c3294952c2abd3095531369e522e75cfb9c01337c3087ae7a0061518c42d0b"
+url = "https://github.com/project-zot/zot/releases/download/v2.1.21/zot-darwin-arm64"
+url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/547549911"
 
 [tools."github:project-zot/zot"."platforms.macos-x64"]
-checksum = "sha256:13886c499b085bf6ca67a30de07399d8582e6f2cd71512ec1fc7458bc5c39d8a"
-url = "https://github.com/project-zot/zot/releases/download/v2.1.20/zot-darwin-amd64"
-url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/501641958"
+checksum = "sha256:0c07b50e7f99df38702b115f6f648aab4072ec7b2ff1d4c343e88c011a1471a2"
+url = "https://github.com/project-zot/zot/releases/download/v2.1.21/zot-darwin-amd64"
+url_api = "https://api.github.com/repos/project-zot/zot/releases/assets/547550235"
 
 [[tools.jq]]
 version = "1.8.2"
@@ -485,145 +480,145 @@ url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562239"
 provenance = "github-attestations"
 
 [[tools.node]]
-version = "26.7.0"
+version = "26.10.0"
 backend = "core:node"
 
 [tools.node."platforms.linux-arm64"]
-checksum = "sha256:925aa6157dd37542d0d7f2e28b7bf61e7b39284411210b0498bc3788db4aef68"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-arm64.tar.gz"
+checksum = "sha256:423a41bff8e2a2fa15e702fefe2919ef95823b2378744daccb8439302534b44f"
+url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-linux-arm64.tar.gz"
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:bd6b6c31e377bad9ad579bed72e5bc11f4c879ac9452ad51d30e646ea3d828df"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.gz"
+checksum = "sha256:cb5c9ce9c80d7b8821e3a258543c71b939138cf17c74d5cc44bbe85d6dbc5ad8"
+url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-linux-x64.tar.gz"
 
 [tools.node."platforms.macos-arm64"]
-checksum = "sha256:7ee659a7768e641bbfd5360940660b8e8fd0052f77488f365562bac522fc15d4"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-darwin-arm64.tar.gz"
+checksum = "sha256:751fdf7439f115d87ee2a8f3f18c065b6151852068e3e666ac60ac2996f75ac9"
+url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-darwin-arm64.tar.gz"
 
 [tools.node."platforms.macos-x64"]
-checksum = "sha256:f279d1ed28ce57f7788bf23435d2ad7fdd7438904ad5c4d8a1081a7cde3d4b96"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-darwin-x64.tar.gz"
+checksum = "sha256:ebbe9ab9b58ad6bb54390d6e2c862c1afa7d4475fb7e8ae8146acde211bf70df"
+url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-darwin-x64.tar.gz"
 
 [tools.node."platforms.windows-arm64"]
-checksum = "sha256:be8775204cfceca5a73c30f91bf0de5e85274c01b776dc13f16b91aa251ebb01"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-win-arm64.zip"
+checksum = "sha256:b778640d7271566bcaa9679912cdf0684c13e824c114e41a8b696fb14af7a7aa"
+url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-win-arm64.zip"
 
 [tools.node."platforms.windows-x64"]
-checksum = "sha256:d3bd72755141ed32bbcd841228ee81897c8a98d50dfa7dae2179399a0a7c90f8"
-url = "https://nodejs.org/dist/v26.7.0/node-v26.7.0-win-x64.zip"
+checksum = "sha256:9fef7eca6743a6b910989cd8e78712376b394fcb9b6e1e9c44a0799a287f90c5"
+url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-win-x64.zip"
 
 [[tools.prek]]
-version = "0.4.14"
+version = "0.5.3"
 backend = "aqua:j178/prek"
 
 [tools.prek."platforms.linux-arm64"]
-checksum = "sha256:a0302d10599f40eb1b46bfe28cfe04c2638f0af858787d21c5904acc8047aaff"
-url = "https://github.com/j178/prek/releases/download/v0.4.14/prek-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/j178/prek/releases/assets/517620521"
+checksum = "sha256:4cfc936895e8b4e1e2f92daca61bb7c8eb123bac14585ba9f706b599776cdcc8"
+url = "https://github.com/j178/prek/releases/download/v0.5.3/prek-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/j178/prek/releases/assets/560889195"
 provenance = "github-attestations"
 
 [tools.prek."platforms.linux-x64"]
-checksum = "sha256:d1eacb826b9f71ce9098636d2c3e96df0ed1cf08c9c17c57bf358b401f5a995d"
-url = "https://github.com/j178/prek/releases/download/v0.4.14/prek-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/j178/prek/releases/assets/517620600"
+checksum = "sha256:c1475ddc56df0003c780557d9b52273d9eb19c9ef8d91143f3ce03511182a36e"
+url = "https://github.com/j178/prek/releases/download/v0.5.3/prek-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/j178/prek/releases/assets/560889224"
 provenance = "github-attestations"
 
 [tools.prek."platforms.macos-arm64"]
-checksum = "sha256:87f7fb2b99871820eb352d9a2327461d25affe354d6d48c4edf3a34f360c6be8"
-url = "https://github.com/j178/prek/releases/download/v0.4.14/prek-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/j178/prek/releases/assets/517620513"
+checksum = "sha256:6006cc4e69cfc86d55f4e407ca60ba960a521befa54fece94038639b1f4de381"
+url = "https://github.com/j178/prek/releases/download/v0.5.3/prek-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/j178/prek/releases/assets/560889174"
 provenance = "github-attestations"
 
 [tools.prek."platforms.macos-x64"]
-checksum = "sha256:59073820f5145cea2fa91b7e4256bbab6ed44de364d4b6809311d7ee9653d3b7"
-url = "https://github.com/j178/prek/releases/download/v0.4.14/prek-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/j178/prek/releases/assets/517620585"
+checksum = "sha256:874f05d12e7cb672758295b5253dfd05aadad3c2bcaa42ae712b917294629b07"
+url = "https://github.com/j178/prek/releases/download/v0.5.3/prek-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/j178/prek/releases/assets/560889217"
 provenance = "github-attestations"
 
 [tools.prek."platforms.windows-arm64"]
-checksum = "sha256:700c2aa43c88937bba5bfc8199a0ab8d08be30ed212b4a13bc91fee3e4cf4050"
-url = "https://github.com/j178/prek/releases/download/v0.4.14/prek-aarch64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/j178/prek/releases/assets/517620511"
+checksum = "sha256:394ab47d1c42f2d563a995814291913105a21cccd070501e32052fb5b5cc8b40"
+url = "https://github.com/j178/prek/releases/download/v0.5.3/prek-aarch64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/j178/prek/releases/assets/560889177"
 provenance = "github-attestations"
 
 [tools.prek."platforms.windows-x64"]
-checksum = "sha256:284eb3b185788fbb5c1b53b1e2217c744be44debaff88efd305b1947df6f0b82"
-url = "https://github.com/j178/prek/releases/download/v0.4.14/prek-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/j178/prek/releases/assets/517620593"
+checksum = "sha256:c15a5636bf93a3937507d8da2302b074b0946b3d35882471b002ea93586728d8"
+url = "https://github.com/j178/prek/releases/download/v0.5.3/prek-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/j178/prek/releases/assets/560889220"
 provenance = "github-attestations"
 
 [[tools.sccache]]
-version = "0.17.0"
+version = "0.18.0"
 backend = "aqua:mozilla/sccache"
 
 [tools.sccache."platforms.linux-arm64"]
-checksum = "sha256:821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77"
-url = "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/493678924"
+checksum = "sha256:2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/563129830"
 
 [tools.sccache."platforms.linux-x64"]
-checksum = "sha256:67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"
-url = "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/493679099"
+checksum = "sha256:45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/563130201"
 
 [tools.sccache."platforms.macos-arm64"]
-checksum = "sha256:0c560bfba31aef5bdfb4fb3d2677f6e61d71c5c00952f2a83344f47aa31f00f1"
-url = "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/493678886"
+checksum = "sha256:308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/563129740"
 
 [tools.sccache."platforms.macos-x64"]
-checksum = "sha256:c2144cafbfe3d22e34ae637f9974ce53613543ac19477fdb287df22ea3668261"
-url = "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/493679070"
+checksum = "sha256:1dade83cc49eeb42337565eccd534b05982820a8e44b851bd7937467a18c7aef"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/563130112"
 
 [tools.sccache."platforms.windows-arm64"]
-checksum = "sha256:f1bec6836a764f5f0a01ae3b5d47d1778a6b80171f9f49722e246cdff27a9f3b"
-url = "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-pc-windows-msvc.tar.gz"
-url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/493678898"
+checksum = "sha256:9c1f3ecaeeae2e69171ff704867aa99813d2d68ae4d172dd34b11a07037ddd27"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/563129789"
 
 [tools.sccache."platforms.windows-x64"]
-checksum = "sha256:caf1932d76a909c909b7a2e41443cdfe3c79a49a380da1a22fa422e1d00d3ca7"
-url = "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-pc-windows-msvc.tar.gz"
-url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/493679085"
+checksum = "sha256:1a63c1be2beab3f04d27e4cc145443e092e02d3dd83a51030989829d7023091b"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/mozilla/sccache/releases/assets/563130158"
 
 [[tools.uv]]
-version = "0.12.5"
+version = "0.12.19"
 backend = "aqua:astral-sh/uv"
 
 [tools.uv."platforms.linux-arm64"]
-checksum = "sha256:9bf43b4d1a07665bf64d4c4e710930b382321a785e0eb10aac07f46471f86a31"
-url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514850990"
+checksum = "sha256:0804e9b164c64b6914182d5920c08551958a095986f10a3731056df701126436"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/587158851"
 provenance = "github-attestations"
 
 [tools.uv."platforms.linux-x64"]
-checksum = "sha256:68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2"
-url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514851093"
+checksum = "sha256:23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/587159011"
 provenance = "github-attestations"
 
 [tools.uv."platforms.macos-arm64"]
-checksum = "sha256:5bb0e5fe008a773c3dbcb97ff79cd89e1241464fe9d2f986d52ad8f1b037bd62"
-url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514850968"
+checksum = "sha256:a9a8df1eedeb192f2e47e40e2faabfb387db4b850209118786d42f89dde3e0ba"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/587158826"
 provenance = "github-attestations"
 
 [tools.uv."platforms.macos-x64"]
-checksum = "sha256:b3b2137477cf96c9686ebfb71524614cec780c673fd73e59bce099aef02e70e8"
-url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514851078"
+checksum = "sha256:cb5fa57bafe68fc0fb94b17f06bee0b0b9a7feb94ccbd110445afa0696e39273"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/587158992"
 provenance = "github-attestations"
 
 [tools.uv."platforms.windows-arm64"]
-checksum = "sha256:4c4d49d8738847d9b71ba319e49a5688c93eac0fe6204b1df24e98528dddf39a"
-url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514851084"
+checksum = "sha256:6dbb02d79e419522f1c500f0adb1cddcff0cda7d59b0d66ea7f5e3b4a1b2f5f0"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/587159002"
 provenance = "github-attestations"
 
 [tools.uv."platforms.windows-x64"]
-checksum = "sha256:4c4d49d8738847d9b71ba319e49a5688c93eac0fe6204b1df24e98528dddf39a"
-url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514851084"
+checksum = "sha256:6dbb02d79e419522f1c500f0adb1cddcff0cda7d59b0d66ea7f5e3b4a1b2f5f0"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/587159002"
 provenance = "github-attestations"
 
 [[tools.zig]]
@@ -656,41 +651,41 @@ checksum = "sha256:68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75
 url = "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"
 
 [[tools.zola]]
-version = "0.23.4"
+version = "0.23.6"
 backend = "aqua:getzola/zola"
 
 [tools.zola."platforms.linux-arm64"]
-checksum = "sha256:21bb37a4f3bbac663cf8f04df9b51ac6bc154acfe2cf2c3e9ea162b4951487b6"
-url = "https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/getzola/zola/releases/assets/522506503"
+checksum = "sha256:266448fffbf7c7004ca399d0e76dd699541771096d8a42aede98cebe2a029d02"
+url = "https://github.com/getzola/zola/releases/download/v0.23.6/zola-v0.23.6-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/getzola/zola/releases/assets/560029424"
 provenance = "github-attestations"
 
 [tools.zola."platforms.linux-x64"]
-checksum = "sha256:54d1a347781b2f32330914fcc02def81c7e3ddb6111b36d1cc89c06557aed1de"
-url = "https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/getzola/zola/releases/assets/522506497"
+checksum = "sha256:8f5132b3522412d04e395e0b25f6d68613ad272a873e54a2b3ebf664873024a4"
+url = "https://github.com/getzola/zola/releases/download/v0.23.6/zola-v0.23.6-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/getzola/zola/releases/assets/560029419"
 provenance = "github-attestations"
 
 [tools.zola."platforms.macos-arm64"]
-checksum = "sha256:303b8e1f3251a6250e47f811eda143316f653c22201faa66777d48ac499c0ee3"
-url = "https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/getzola/zola/releases/assets/522506499"
+checksum = "sha256:cbffbd29b3f59c3f52633507c8cb945a7a02d8b1399b43b235f5932912297aa3"
+url = "https://github.com/getzola/zola/releases/download/v0.23.6/zola-v0.23.6-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/getzola/zola/releases/assets/560029425"
 provenance = "github-attestations"
 
 [tools.zola."platforms.macos-x64"]
-checksum = "sha256:e79edcba2e8d03d22065c9cb8fa2e3abf07b823ef17f00abdc060188dceabba7"
-url = "https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/getzola/zola/releases/assets/522506506"
+checksum = "sha256:79a4d0ab51a4d863c068e6e594c6fce36f0aa17429a414ea63066f5910d14460"
+url = "https://github.com/getzola/zola/releases/download/v0.23.6/zola-v0.23.6-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/getzola/zola/releases/assets/560029423"
 provenance = "github-attestations"
 
 [tools.zola."platforms.windows-arm64"]
-checksum = "sha256:dc839498e27b631f60fd5e1527935198b7f002eb09b8446a1e2913a8fa386925"
-url = "https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/getzola/zola/releases/assets/522506492"
+checksum = "sha256:79179284f816febc281adbedb27189806cf22f83e8be4d0fca6835fbeeb09587"
+url = "https://github.com/getzola/zola/releases/download/v0.23.6/zola-v0.23.6-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/getzola/zola/releases/assets/560029421"
 provenance = "github-attestations"
 
 [tools.zola."platforms.windows-x64"]
-checksum = "sha256:dc839498e27b631f60fd5e1527935198b7f002eb09b8446a1e2913a8fa386925"
-url = "https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/getzola/zola/releases/assets/522506492"
+checksum = "sha256:79179284f816febc281adbedb27189806cf22f83e8be4d0fca6835fbeeb09587"
+url = "https://github.com/getzola/zola/releases/download/v0.23.6/zola-v0.23.6-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/getzola/zola/releases/assets/560029421"
 provenance = "github-attestations"

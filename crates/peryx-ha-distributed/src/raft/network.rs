@@ -360,7 +360,7 @@ impl PeerRaftNetwork {
         action: RPCTypes,
         request: &Req,
         option: &RPCOption,
-    ) -> Result<Resp, RPCError<NodeId, PeryxNode, RaftError<NodeId, E>>>
+    ) -> Result<Resp, Box<RPCError<NodeId, PeryxNode, RaftError<NodeId, E>>>>
     where
         Req: Serialize + Sync,
         Resp: DeserializeOwned,
@@ -382,7 +382,11 @@ impl PeerRaftNetwork {
             .await
             .map_err(|error| self.classify(action, deadline, &error))?;
         wire.map_err(|error| {
-            RPCError::RemoteError(RemoteError::new_with_node(self.target, self.target_node.clone(), error))
+            Box::new(RPCError::RemoteError(RemoteError::new_with_node(
+                self.target,
+                self.target_node.clone(),
+                error,
+            )))
         })
     }
 
@@ -415,7 +419,9 @@ impl RaftNetwork<TypeConfig> for PeerRaftNetwork {
         rpc: AppendEntriesRequest<TypeConfig>,
         option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId>>> {
-        self.call(RPCTypes::AppendEntries, &rpc, &option).await
+        self.call(RPCTypes::AppendEntries, &rpc, &option)
+            .await
+            .map_err(|error| *error)
     }
 
     async fn vote(
@@ -423,7 +429,7 @@ impl RaftNetwork<TypeConfig> for PeerRaftNetwork {
         rpc: VoteRequest<NodeId>,
         option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId>>> {
-        self.call(RPCTypes::Vote, &rpc, &option).await
+        self.call(RPCTypes::Vote, &rpc, &option).await.map_err(|error| *error)
     }
 
     async fn install_snapshot(
@@ -432,7 +438,9 @@ impl RaftNetwork<TypeConfig> for PeerRaftNetwork {
         option: RPCOption,
     ) -> Result<InstallSnapshotResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId, InstallSnapshotError>>>
     {
-        self.call(RPCTypes::InstallSnapshot, &rpc, &option).await
+        self.call(RPCTypes::InstallSnapshot, &rpc, &option)
+            .await
+            .map_err(|error| *error)
     }
 }
 
@@ -456,15 +464,15 @@ impl PeerRaftNetworkFactory {
 impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
     type Network = PeerRaftNetwork;
 
-    async fn new_client(&mut self, target: NodeId, node: &PeryxNode) -> Self::Network {
+    fn new_client(&mut self, target: NodeId, node: &PeryxNode) -> impl Future<Output = Self::Network> + Send {
         // OpenRaft creates clients inside replication tasks, and this trait cannot return an error. Store
         // invalid-address errors so calls return `Unreachable` without panicking the task.
-        PeerRaftNetwork {
+        std::future::ready(PeerRaftNetwork {
             local: self.local,
             target,
             target_node: node.clone(),
             client: RaftRpcClient::new(target, &node.endpoint, self.token.clone(), self.connect_timeout),
-        }
+        })
     }
 }
 

@@ -317,7 +317,8 @@ async fn test_bootstrap_rejects_a_roster_that_omits_this_node() {
 
     let result = node
         .bootstrap(BTreeMap::from([(2, peer("west", "localhost:4470"))]))
-        .await;
+        .await
+        .map_err(|error| *error);
 
     assert!(matches!(
         result,

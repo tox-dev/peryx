@@ -384,7 +384,7 @@ fn test_decode_refuses_a_stream_that_ends_early() {
 
     assert_eq!(
         deflated_entry(b"body").decode(truncated).unwrap_err().to_string(),
-        "member decoded to 3 bytes where the central directory declares 4"
+        "member does not decode: incomplete deflate stream"
     );
 }
 

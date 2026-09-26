@@ -7,8 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use blake2::Blake2bVar;
-use blake2::digest::{Update as _, VariableOutput as _};
+use blake2::Blake2b256;
 use bytes::Bytes;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken, Principal, Signer, TokenScope};
 
@@ -2385,10 +2384,7 @@ async fn test_upload_declared_digest_mismatch_is_bad_request() {
 async fn test_upload_matching_strong_digest_ignores_mismatched_md5() {
     let wheel = fixture_wheel();
     let sha256_digest = Digest::of(&wheel);
-    let mut blake2 = Blake2bVar::new(32).unwrap();
-    blake2.update(&wheel);
-    let mut blake2_digest = [0; 32];
-    blake2.finalize_variable(&mut blake2_digest).unwrap();
+    let blake2_digest: [u8; 32] = Blake2b256::digest(&wheel).into();
     let blake2_digest = blake2_digest.map(|byte| format!("{byte:02x}")).concat();
 
     for (field, digest) in [

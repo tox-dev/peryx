@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use blake2::Blake2bVar;
-use blake2::digest::{Update as _, VariableOutput as _};
+use blake2::Blake2b256;
+use blake2::Digest as _;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
@@ -160,7 +160,7 @@ fn sdist_pkg_info_identity(filename: &str, parsed: &DistributionFilename, path: 
 }
 
 fn stage_file(path: &Path, blobs: &BlobStorage) -> std::io::Result<StagedUpload> {
-    let mut blake2 = Blake2bVar::new(32).expect("blake2b-256 output size is valid");
+    let mut blake2 = Blake2b256::new();
     let blob = {
         let mut input = HashingReader {
             inner: File::open(path)?,
@@ -179,7 +179,7 @@ fn stage_file(path: &Path, blobs: &BlobStorage) -> std::io::Result<StagedUpload>
 
 struct HashingReader<'hasher, Reader> {
     inner: Reader,
-    blake2: &'hasher mut Blake2bVar,
+    blake2: &'hasher mut Blake2b256,
 }
 
 impl<Reader: std::io::Read> std::io::Read for HashingReader<'_, Reader> {
@@ -227,12 +227,9 @@ fn upload_error_reason(err: &UploadError) -> String {
     }
 }
 
-fn finalize_blake2(blake2: Blake2bVar) -> String {
+fn finalize_blake2(blake2: Blake2b256) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut digest = [0; 32];
-    blake2
-        .finalize_variable(&mut digest)
-        .expect("blake2b-256 output buffer has the requested size");
+    let digest = blake2.finalize();
     let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
         out.push(HEX[(byte >> 4) as usize] as char);

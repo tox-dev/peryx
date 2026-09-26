@@ -202,8 +202,10 @@ fn invalid_repository(id: &str) -> String {
 fn attestation_verifier(root: Option<&str>) -> Result<Option<Arc<SigstoreVerifier>>, String> {
     root.map(|root| {
         TrustedRoot::from_json(root)
-            .map(|root| Arc::new(SigstoreVerifier::new(&root)))
-            .map_err(|_| "auth: `sigstore_trusted_root` is invalid".to_owned())
+            .ok()
+            .and_then(|root| SigstoreVerifier::new(&root).ok())
+            .map(Arc::new)
+            .ok_or_else(|| "auth: `sigstore_trusted_root` is invalid".to_owned())
     })
     .transpose()
 }

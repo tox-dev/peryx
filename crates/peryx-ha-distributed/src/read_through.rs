@@ -212,7 +212,7 @@ impl RemotePlacementReader {
                 admitted.iter().map(|source| source.source.transport.as_ref()).collect();
             let pull =
                 pull_blob_staged_reported(&self.blobs, &transports, digest, total_length, catalog, self.budget).await;
-            match pull {
+            match pull.map_err(|failure| *failure) {
                 Ok(staged) => {
                     settle(&mut admitted, &staged.1);
                     if let Some(chunks) = &staged.0.chunks {

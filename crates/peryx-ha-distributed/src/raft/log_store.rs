@@ -115,67 +115,91 @@ impl RaftLogStoreAdapter {
 }
 
 impl RaftLogReader<TypeConfig> for RaftLogStoreAdapter {
-    async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
+    fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> Result<Vec<Entry>, StorageError<NodeId>> {
-        self.entries_in_range(range)
-            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read))
+    ) -> impl Future<Output = Result<Vec<Entry>, StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.entries_in_range(range)
+                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read)),
+        )
     }
 }
 
 impl RaftLogStorage<TypeConfig> for RaftLogStoreAdapter {
     type LogReader = Self;
 
-    async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<NodeId>> {
-        self.log_state()
-            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read))
+    fn get_log_state(&mut self) -> impl Future<Output = Result<LogState<TypeConfig>, StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.log_state()
+                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read)),
+        )
     }
 
-    async fn get_log_reader(&mut self) -> Self::LogReader {
-        self.clone()
+    fn get_log_reader(&mut self) -> impl Future<Output = Self::LogReader> + Send {
+        std::future::ready(self.clone())
     }
 
-    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
-        self.store_vote(vote)
-            .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Write))
+    fn save_vote(&mut self, vote: &Vote<NodeId>) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.store_vote(vote)
+                .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Write)),
+        )
     }
 
-    async fn read_vote(&mut self) -> Result<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        self.load_vote()
-            .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Read))
+    fn read_vote(&mut self) -> impl Future<Output = Result<Option<Vote<NodeId>>, StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.load_vote()
+                .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Read)),
+        )
     }
 
-    async fn append<I>(&mut self, entries: I, callback: LogFlushed<TypeConfig>) -> Result<(), StorageError<NodeId>>
+    fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<TypeConfig>,
+    ) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send
     where
         I: IntoIterator<Item = Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
-        self.append_entries(entries)
-            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write))?;
-        // redb committed the batch before this callback, satisfying OpenRaft's durability contract.
-        callback.log_io_completed(Ok(()));
-        Ok(())
+        std::future::ready(
+            self.append_entries(entries)
+                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write))
+                // redb committed the batch before this callback, satisfying OpenRaft's durability contract.
+                .map(|()| callback.log_io_completed(Ok(()))),
+        )
     }
 
-    async fn truncate(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        self.truncate_from(log_id.index)
-            .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete))
+    fn truncate(&mut self, log_id: LogId<NodeId>) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.truncate_from(log_id.index)
+                .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete)),
+        )
     }
 
-    async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        self.purge_upto(log_id)
-            .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete))
+    fn purge(&mut self, log_id: LogId<NodeId>) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.purge_upto(log_id)
+                .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete)),
+        )
     }
 
-    async fn save_committed(&mut self, committed: Option<LogId<NodeId>>) -> Result<(), StorageError<NodeId>> {
-        self.store_committed(committed)
-            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write))
+    fn save_committed(
+        &mut self,
+        committed: Option<LogId<NodeId>>,
+    ) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.store_committed(committed)
+                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write)),
+        )
     }
 
-    async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-        self.load_committed()
-            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read))
+    fn read_committed(&mut self) -> impl Future<Output = Result<Option<LogId<NodeId>>, StorageError<NodeId>>> + Send {
+        std::future::ready(
+            self.load_committed()
+                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read)),
+        )
     }
 }
 

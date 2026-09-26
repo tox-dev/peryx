@@ -33,7 +33,7 @@ pub(in crate::registry) struct MetadataAck<'a> {
 /// `Ok` means the policy passed and the caller may publish the operation and answer the endpoint's
 /// success code. `Err` carries the retry response for a write whose durability is still unproven; the
 /// caller must leave the operation pending so the retry finishes it.
-pub(in crate::registry) async fn acknowledge_blob(state: &ServingState, ack: BlobAck<'_>) -> Result<(), Response> {
+pub(in crate::registry) async fn acknowledge_blob(state: &ServingState, ack: BlobAck<'_>) -> Result<(), Box<Response>> {
     let authority = crate::name::authority_key(ack.repo);
     let digest = ack.digest.as_str();
     let epoch = AuthorityEpoch(state.committed_authority_epoch(&authority).await);
@@ -71,7 +71,7 @@ pub(in crate::registry) async fn acknowledge_blob(state: &ServingState, ack: Blo
                 durability = ?durability,
                 "oci write durability unproven within the configured deadline"
             );
-            Err(durability_pending())
+            Err(durability_pending().into())
         }
     }
 }
@@ -79,7 +79,7 @@ pub(in crate::registry) async fn acknowledge_blob(state: &ServingState, ack: Blo
 pub(in crate::registry) async fn acknowledge_metadata(
     state: &ServingState,
     ack: MetadataAck<'_>,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     let authority = crate::name::authority_key(ack.repo);
     let epoch = AuthorityEpoch(ack.epoch);
     let durability = state
@@ -111,7 +111,7 @@ pub(in crate::registry) async fn acknowledge_metadata(
                 durability = ?durability,
                 "oci metadata write durability unproven within the configured deadline"
             );
-            Err(durability_pending())
+            Err(durability_pending().into())
         }
     }
 }

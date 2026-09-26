@@ -70,10 +70,10 @@ impl RaftNode {
     pub async fn bootstrap(
         &self,
         members: BTreeMap<NodeId, PeryxNode>,
-    ) -> Result<(), RaftError<NodeId, InitializeError<NodeId, PeryxNode>>> {
+    ) -> Result<(), Box<RaftError<NodeId, InitializeError<NodeId, PeryxNode>>>> {
         match self.raft.initialize(members).await {
             Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
-            Err(error) => Err(error),
+            Err(error) => Err(Box::new(error)),
         }
     }
 
@@ -84,7 +84,7 @@ impl RaftNode {
     pub async fn submit(
         &self,
         command: OwnershipCommand,
-    ) -> Result<OwnershipResponse, RaftError<NodeId, ClientWriteError<NodeId, PeryxNode>>> {
+    ) -> Result<OwnershipResponse, Box<RaftError<NodeId, ClientWriteError<NodeId, PeryxNode>>>> {
         let response = self.raft.client_write(command).await?;
         Ok(response.data)
     }

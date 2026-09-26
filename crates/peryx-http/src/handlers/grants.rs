@@ -47,7 +47,7 @@ pub async fn list_grants(
 ) -> Response {
     let (_actor, grants) = match caller(&state, &headers, &extensions).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let (filter, reach) = match (query.user, query.resource.as_deref()) {
         (Some(_), Some(_)) => return problem(StatusCode::BAD_REQUEST, "specify at most one of user or resource"),
@@ -89,7 +89,7 @@ pub async fn create_grant(State(state): State<Arc<AppState>>, request: Request<B
     }
     let (actor, grants) = match caller(&state, &headers, request.extensions()).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let body = match axum::body::to_bytes(request.into_body(), MAX_BODY).await {
         Ok(body) => match serde_json::from_slice::<CreateGrantBody>(&body) {
@@ -146,7 +146,7 @@ pub async fn inspect_grant(
 ) -> Response {
     let (_actor, grants) = match caller(&state, &headers, &extensions).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if !administers(&id, &grants) {
         return StatusCode::NOT_FOUND.into_response();
@@ -166,7 +166,7 @@ pub async fn revoke_grant(
 ) -> Response {
     let (actor, grants) = match caller(&state, &headers, &extensions).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if !administers(&id, &grants) {
         return StatusCode::NOT_FOUND.into_response();
@@ -214,7 +214,7 @@ async fn caller(
     state: &AppState,
     headers: &HeaderMap,
     extensions: &Extensions,
-) -> Result<(UserId, Vec<RoleGrant>), Response> {
+) -> Result<(UserId, Vec<RoleGrant>), Box<Response>> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())

@@ -12,7 +12,7 @@ build:
     build:
       html:
         - >-
-          release=https://github.com/jdx/mise/releases/download/v2026.8.14 &&
+          release=https://github.com/jdx/mise/releases/download/v2026.9.14 &&
           curl --fail --location --output /tmp/SHASUMS256.txt "$release/SHASUMS256.txt" &&
           curl --fail --location --output /tmp/SHASUMS256.txt.minisig "$release/SHASUMS256.txt.minisig" &&
           minisign -Vm /tmp/SHASUMS256.txt -x /tmp/SHASUMS256.txt.minisig

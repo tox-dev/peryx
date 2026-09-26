@@ -54,7 +54,7 @@ pub async fn retention_plan(
 ) -> Response {
     let request = match Prepared::from_request(&state, request).await {
         Ok(prepared) => prepared,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(permit) = services.retention().try_enter(&request.repository) else {
         return busy();
@@ -116,7 +116,7 @@ pub async fn retention_export(
 ) -> Response {
     let request = match Prepared::from_request(&state, request).await {
         Ok(prepared) => prepared,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(permit) = services.retention().try_enter(&request.repository) else {
         return busy();
@@ -158,20 +158,20 @@ struct Prepared {
 }
 
 impl Prepared {
-    async fn from_request(state: &AppState, request: Request<Body>) -> Result<Self, Response> {
+    async fn from_request(state: &AppState, request: Request<Body>) -> Result<Self, Box<Response>> {
         let (parts, body) = request.into_parts();
         administrator(state, &parts.headers, &parts.extensions).await?;
         if !super::is_json(&parts.headers) {
-            return Err(problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON"));
+            return Err(problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON").into());
         }
         let Ok(body) = axum::body::to_bytes(body, MAX_BODY_BYTES).await else {
-            return Err(problem(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large"));
+            return Err(problem(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large").into());
         };
         let request: PlanRequest = serde_json::from_slice(&body)
             .map_err(|_| problem(StatusCode::UNPROCESSABLE_ENTITY, "invalid request body"))?;
         let limit = match request.limit {
             Some(limit) if limit == 0 || limit > MAX_LIMIT => {
-                return Err(problem(StatusCode::BAD_REQUEST, "limit must be between 1 and 1000"));
+                return Err(problem(StatusCode::BAD_REQUEST, "limit must be between 1 and 1000").into());
             }
             Some(limit) => limit,
             None => DEFAULT_LIMIT,
@@ -188,7 +188,7 @@ impl Prepared {
             Some(cursor) => {
                 let resume = decode_cursor(cursor).map_err(|reason| problem(StatusCode::BAD_REQUEST, &reason))?;
                 if resume.repository != index.name || resume.ecosystem != index.ecosystem.as_str() {
-                    return Err(stale());
+                    return Err(stale().into());
                 }
                 (resume.after, Some(resume.expect), resume.evaluated_at)
             }
@@ -222,7 +222,11 @@ impl Prepared {
     }
 }
 
-async fn administrator(state: &AppState, headers: &HeaderMap, extensions: &Extensions) -> Result<UserId, Response> {
+async fn administrator(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> Result<UserId, Box<Response>> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -240,7 +244,7 @@ async fn administrator(state: &AppState, headers: &HeaderMap, extensions: &Exten
         .authorization
         .authorize_scoped(&actor, Scope::AdministrationRead, &Resource::Operator);
     if decision.decision() != Decision::Allow {
-        return Err(not_found());
+        return Err(not_found().into());
     }
     Ok(actor)
 }

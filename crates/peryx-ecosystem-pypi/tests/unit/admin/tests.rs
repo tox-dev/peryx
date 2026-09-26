@@ -350,7 +350,7 @@ fn test_referenced_blob_digests_includes_the_provenance_blob() {
 
 #[rstest]
 #[case::without_size(DIGEST_B.to_owned())]
-#[case::provenance(format!("not-hex\n16"))]
+#[case::provenance("not-hex\n16".to_owned())]
 #[case::size(format!("{DIGEST_B}\ninvalid"))]
 fn test_referenced_blob_digests_rejects_each_corrupt_provenance_field(#[case] value: String) {
     let (_dir, meta) = store();
