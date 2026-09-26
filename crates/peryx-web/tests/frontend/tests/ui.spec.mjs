@@ -1694,6 +1694,14 @@ boundaryCases(test, {
   },
 });
 
+test("header omits login when no provider or session can use it", async ({
+  page,
+}) => {
+  await goto(page, "/");
+  await expect(page.locator(".nav-links")).toBeVisible();
+  await expect(page.locator('a[href="/login"]')).toHaveCount(0);
+});
+
 test("login renders providers returned to the hydrated router", async ({
   page,
 }) => {
@@ -1701,7 +1709,7 @@ test("login renders providers returned to the hydrated router", async ({
     route.fulfill({ json: { user: null, providers: ["work", "personal"] } }),
   );
   await goto(page, "/");
-  await page.locator('a[href="/login"]').click();
+  await openClientPath(page, "/login");
   await expect(
     page.getByRole("link", { name: "Sign in with work" }),
   ).toHaveAttribute("href", "/_/login/work");
@@ -1717,7 +1725,7 @@ test("login renders the current session", async ({ page }) => {
     }),
   );
   await goto(page, "/");
-  await page.locator('a[href="/login"]').click();
+  await openClientPath(page, "/login");
   await expect(page.getByText("Signed in as")).toContainText("Browser User");
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
 });

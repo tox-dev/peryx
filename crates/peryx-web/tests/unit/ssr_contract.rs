@@ -386,6 +386,29 @@ async fn login_contract_reads_signed_session_cookie() {
     assert!(body.contains("Ada Lovelace"), "{body}");
 }
 
+#[rstest::rstest]
+#[case::anonymous_without_providers(false)]
+#[case::signed_in(true)]
+#[tokio::test]
+async fn header_contract_links_login_only_when_it_offers_sign_in(#[case] signed_in: bool) {
+    let (_directory, mut app) = state(Vec::new());
+    let user = app.serving.users.create("Ada Lovelace").unwrap();
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    let cookie = format!(
+        "{SESSION_COOKIE}={}",
+        SessionSealer::new(SESSION_KEY).seal_session(&user, 4_102_444_800)
+    );
+    let headers: &[(&str, &str)] = if signed_in {
+        &[(header::COOKIE.as_str(), cookie.as_str())]
+    } else {
+        &[]
+    };
+
+    let (_, _, body) = render(Arc::new(app), "/", headers).await;
+
+    assert_eq!(body.contains(r#"href="/login""#), signed_in, "{body}");
+}
+
 #[tokio::test]
 async fn router_contract_serves_favicon() {
     let (status, headers, body) = asset("/favicon.svg").await;
