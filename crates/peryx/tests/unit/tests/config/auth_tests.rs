@@ -616,6 +616,19 @@ fn test_oidc_provider_ids_are_unique() {
 }
 
 #[test]
+fn test_oidc_provider_id_password_is_reserved_for_local_sign_in() {
+    let config = toml_config(
+        "[auth]\nsigning_key = \"key\"\n[[auth.oidc_provider]]\nid = \"password\"\nissuer = \"https://idp.example\"\n\
+         client_id = \"peryx\"\nredirect_uri = \"https://registry.example/callback\"\n",
+    );
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "OIDC provider password: `password` is reserved for local sign-in"
+    );
+}
+
+#[test]
 fn test_oidc_providers_require_a_signing_key() {
     // Browser sessions require the token-realm signing key for cookie sealing.
     let config = toml_config(

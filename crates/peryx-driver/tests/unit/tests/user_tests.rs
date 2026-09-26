@@ -102,6 +102,18 @@ async fn test_authenticate_accepts_the_password_and_rejects_a_wrong_one() {
 }
 
 #[tokio::test]
+async fn test_authenticate_account_returns_the_verified_account() {
+    let (_dir, _store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    service.set_password(&user.id, "correct horse").await.unwrap();
+
+    assert_eq!(
+        service.authenticate_account("alice", "correct horse").await.unwrap(),
+        Some(user)
+    );
+}
+
+#[tokio::test]
 async fn test_user_service_bootstrap_uses_the_password_worker() {
     let (_dir, store, service) = cheap_service();
 

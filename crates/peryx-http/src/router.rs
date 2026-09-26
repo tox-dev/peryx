@@ -282,6 +282,14 @@ fn authentication_routes() -> RouteSet {
             get(handlers::login_callback),
         )
         .route(
+            read(
+                RouteMethod::Post,
+                "/_/login/password",
+                rate_limit::RouteClass::Authentication,
+            ),
+            post(handlers::login_password),
+        )
+        .route(
             read(RouteMethod::Post, "/_/logout", rate_limit::RouteClass::Authentication),
             post(handlers::logout),
         )
@@ -587,7 +595,7 @@ mod route_tests {
     fn process_routes_declare_complete_semantics() {
         let descriptors = service_route_descriptors();
 
-        assert_eq!(descriptors.len(), 52);
+        assert_eq!(descriptors.len(), 53);
         assert_eq!(
             descriptors
                 .iter()
@@ -608,7 +616,7 @@ mod route_tests {
                     .filter(|descriptor| descriptor.rate_limit() == rate_limit)
                     .count()
             }),
-            [2, 2, 44, 4]
+            [2, 2, 44, 5]
         );
     }
 

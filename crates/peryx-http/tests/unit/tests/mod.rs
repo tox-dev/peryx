@@ -6,6 +6,7 @@ mod fallback_tests;
 mod grant_tests;
 mod job_tests;
 mod login_tests;
+mod password_login_tests;
 mod password_overload_tests;
 mod path_spelling_tests;
 mod policy_decision_tests;

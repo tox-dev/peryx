@@ -6,11 +6,12 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::AppState;
-use peryx_driver::access::{read_cookie, session_user};
+use peryx_driver::access::{origin_matches_host, read_cookie, session_user};
 use peryx_identity::{
     CallbackResponse, OidcLoginError, OidcProviderError, PRE_AUTH_COOKIE, PendingLogin, SESSION_COOKIE,
 };
@@ -24,6 +25,11 @@ const PRE_AUTH_TTL_SECS: i64 = 10 * 60;
 const PRE_AUTH_PATH: &str = "/_/login";
 /// Where a completed or cleared login lands the browser.
 const ROOT_PATH: &str = "/";
+/// Where a rejected password sign-in returns the browser. Every rejection lands here, so the page cannot
+/// tell an unknown name from a wrong password.
+const SIGN_IN_FAILED_PATH: &str = "/login?error=sign-in";
+/// The fetch-metadata header a browser attaches to say how the request's initiator relates to its target.
+const SEC_FETCH_SITE: &str = "sec-fetch-site";
 
 pub async fn login_start(State(state): State<Arc<AppState>>, Path(provider): Path<String>) -> Response {
     let Some(service) = state.serving.oidc_login(&provider) else {
@@ -102,6 +108,70 @@ async fn login_callback_inner(state: &AppState, provider: &str, query: Option<&s
     }
 }
 
+/// `POST /_/login/password` - signs a local user in with the login page's name and password form.
+///
+/// Signing in plants a session, so a form another site submits could sign the browser into an account
+/// the attacker controls (login CSRF). Only a same-origin submission reaches the password check.
+pub async fn login_password(State(state): State<Arc<AppState>>, uri: Uri, headers: HeaderMap, body: Bytes) -> Response {
+    no_store(login_password_inner(&state, &uri, &headers, &body).await)
+}
+
+async fn login_password_inner(state: &AppState, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Response {
+    let Some(sealer) = state.serving.session_sealer() else {
+        return misconfigured();
+    };
+    if !same_origin(headers, uri) {
+        return (StatusCode::FORBIDDEN, "cross-site sign-in rejected").into_response();
+    }
+    let Some((name, password)) = parse_password_form(body) else {
+        return (StatusCode::BAD_REQUEST, "invalid sign-in form").into_response();
+    };
+    match state.serving.users.authenticate_account(&name, &password).await {
+        Ok(Some(user)) => {
+            let now = (state.serving.clock)();
+            let session = sealer.seal_session(&user, now + SESSION_TTL_SECS);
+            redirect(
+                ROOT_PATH,
+                &[set_cookie(SESSION_COOKIE, &session, ROOT_PATH, SESSION_TTL_SECS)],
+            )
+        }
+        Ok(None) => redirect(SIGN_IN_FAILED_PATH, &[]),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "sign-in is unavailable; retry").into_response(),
+    }
+}
+
+/// A browser that sends `Sec-Fetch-Site` decides on it alone. The UI's `Referrer-Policy: no-referrer`
+/// makes that browser send `Origin: null` on a form post, so the origin carries nothing to compare.
+/// Without fetch metadata the `Origin` must name the request's host. An HTTP/2 request names that host
+/// in `:authority`, which arrives as the URI authority rather than a `Host` header.
+fn same_origin(headers: &HeaderMap, uri: &Uri) -> bool {
+    if let Some(site) = headers.get(SEC_FETCH_SITE) {
+        return site == "same-origin";
+    }
+    let host = headers.get(header::HOST).cloned().or_else(|| {
+        uri.authority()
+            .and_then(|authority| HeaderValue::from_str(authority.as_str()).ok())
+    });
+    headers
+        .get(header::ORIGIN)
+        .is_some_and(|origin| origin_matches_host(origin, host.as_ref()))
+}
+
+fn parse_password_form(body: &[u8]) -> Option<(String, String)> {
+    let (mut name, mut password) = (None, None);
+    for (key, value) in url::form_urlencoded::parse(body) {
+        let field = match key.as_ref() {
+            "name" => &mut name,
+            "password" => &mut password,
+            _ => continue,
+        };
+        if field.replace(value.into_owned()).is_some() {
+            return None;
+        }
+    }
+    name.zip(password)
+}
+
 fn parse_callback_query(query: &str) -> Option<CallbackQuery> {
     let (mut state, mut code, mut error) = (None, None, None);
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -130,14 +200,19 @@ enum CallbackQuery {
 
 /// `GET /_/session` - the read-only UI's login state.
 ///
-/// Reports the signed-in user (or null) and the OIDC providers a visitor can sign in with. The session
+/// Reports the signed-in user (or null), the OIDC providers a visitor can sign in with, and whether the
+/// local name and password form works, which it does whenever the server can seal a session. The session
 /// cookie is consulted only for identity here; it authorizes nothing that mutates state.
 pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let user = session_user(&state.serving, &headers)
         .map(|user| json!({ "id": user.id.as_str(), "name": user.name.display(), "state": user.state }));
     json_no_store(
         StatusCode::OK,
-        &json!({ "user": user, "providers": state.serving.oidc_providers() }),
+        &json!({
+            "user": user,
+            "providers": state.serving.oidc_providers(),
+            "local": state.serving.session_sealer().is_some(),
+        }),
     )
 }
 

@@ -225,20 +225,37 @@ impl UserService {
             .map_or(LocalAuthentication::Rejected, LocalAuthentication::Verified))
     }
 
+    /// [`Self::authenticate_account`], reduced to the stable ID a credential check needs.
+    ///
+    /// # Errors
+    /// Returns the failure [`Self::authenticate_account`] returns.
+    pub async fn authenticate(
+        &self,
+        display_name: &str,
+        password: &str,
+    ) -> Result<Option<UserId>, AuthenticationError> {
+        Ok(self
+            .authenticate_account(display_name, password)
+            .await?
+            .map(|user| user.id))
+    }
+
     /// An unknown name, a disabled account, a passwordless account, and a wrong password all fail the
     /// same way - `Ok(None)` after spending one derivation's worth of work - so none is distinguishable
     /// from the others by its response or its timing. A successful check whose verifier has fallen
     /// behind the policy re-enrolls it under the same ID before returning. The store replaces only the
     /// verifier checked; authentication fails if another request changed it.
     ///
+    /// Returns the account the check read, so a browser sign-in seals it without a second lookup.
+    ///
     /// # Errors
     /// Returns an unavailable error when lookup, derivation admission, hashing, or conditional
     /// replacement fails.
-    pub async fn authenticate(
+    pub async fn authenticate_account(
         &self,
         display_name: &str,
         password: &str,
-    ) -> Result<Option<UserId>, AuthenticationError> {
+    ) -> Result<Option<ServerUser>, AuthenticationError> {
         let admission = self.admit()?;
         let active = match self.store.get_user_by_name(display_name) {
             Ok(user) => user.filter(|user| user.state == UserState::Active),
@@ -264,7 +281,7 @@ impl UserService {
             }
             PasswordCheck::Accepted { stale: false } => {
                 drop(admission);
-                Ok(Some(user.id))
+                Ok(Some(user))
             }
             PasswordCheck::Accepted { stale: true } => {
                 let replacement = self.hash(&admission, password.to_owned()).await?;
@@ -272,7 +289,7 @@ impl UserService {
                 let replaced = self
                     .store
                     .compare_and_set_user_password(&user.id, &verifier, &replacement)?;
-                Ok(replaced.then_some(user.id))
+                Ok(replaced.then_some(user))
             }
         }
     }

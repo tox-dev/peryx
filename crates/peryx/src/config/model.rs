@@ -433,6 +433,13 @@ impl Config {
                     reason: "provider IDs must be unique",
                 });
             }
+            // `/_/login/password` is the local sign-in form's route, which would shadow the provider's.
+            if provider.id.as_str() == "password" {
+                return Err(ConfigError::OidcProvider {
+                    id: provider.id.to_string(),
+                    reason: "`password` is reserved for local sign-in",
+                });
+            }
             if provider.group_mappings.iter().any(|mapping| {
                 matches!(
                     &mapping.scope,
