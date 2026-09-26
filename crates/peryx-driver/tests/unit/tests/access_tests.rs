@@ -11,7 +11,9 @@ use peryx_search::{SearchAccess, SearchAccessPattern};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 
-use crate::access::{HeaderCredential, InvalidCredential, ReadAccess, VerifiedCredential, read_cookie};
+use crate::access::{
+    HeaderCredential, InvalidCredential, ReadAccess, VerifiedCredential, origin_matches_host, read_cookie,
+};
 use crate::authz::AuthorizationService;
 use crate::users::UserService;
 use crate::{AppState, Index, IndexKind, ServingState};
@@ -580,6 +582,37 @@ fn test_read_cookie_selects_the_named_value(#[case] header: &str, #[case] expect
         read_cookie(&headers, SESSION_COOKIE).as_deref(),
         expected.map(str::to_owned).as_deref()
     );
+}
+
+#[rstest]
+#[case::same_host("https://peryx.test", Some("peryx.test"), true)]
+#[case::host_case("https://PERYX.test", Some("peryx.test"), true)]
+#[case::explicit_port("http://peryx.test:8080", Some("peryx.test:8080"), true)]
+#[case::default_port("https://peryx.test", Some("peryx.test:443"), true)]
+#[case::other_host("https://other.test", Some("peryx.test"), false)]
+#[case::other_port("http://peryx.test:8443", Some("peryx.test:443"), false)]
+#[case::port_without_host_port("http://peryx.test:8080", Some("peryx.test"), false)]
+#[case::non_http("ftp://peryx.test", Some("peryx.test"), false)]
+#[case::unparsable_origin("peryx.test", Some("peryx.test"), false)]
+#[case::unparsable_host("https://peryx.test", Some("["), false)]
+#[case::missing_host("https://peryx.test", None, false)]
+fn test_origin_matches_host(#[case] origin: &str, #[case] host: Option<&str>, #[case] expected: bool) {
+    let host = host.map(|host| HeaderValue::from_str(host).unwrap());
+
+    assert_eq!(
+        origin_matches_host(&HeaderValue::from_str(origin).unwrap(), host.as_ref()),
+        expected
+    );
+}
+
+#[test]
+fn test_origin_matches_host_rejects_an_origin_that_is_not_text() {
+    let origin = HeaderValue::from_bytes(b"https://peryx.test/\xff").unwrap();
+
+    assert!(!origin_matches_host(
+        &origin,
+        Some(&HeaderValue::from_static("peryx.test"))
+    ));
 }
 
 #[test]

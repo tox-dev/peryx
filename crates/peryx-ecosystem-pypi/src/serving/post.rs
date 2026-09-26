@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use axum::extract::Multipart;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use peryx_driver::access::origin_matches_host;
 use peryx_driver::not_found;
 use peryx_driver::quota::quota_limit_label;
 use peryx_driver::state::ServingState;
@@ -95,7 +96,7 @@ fn browser_upload(headers: &HeaderMap) -> HttpResult<bool> {
     let valid = origin.zip(csrf).is_some_and(|(origin, csrf)| {
         origin == csrf
             && headers.get("sec-fetch-site").is_none_or(|site| site == "same-origin")
-            && browser_origin_matches_host(origin, headers.get(header::HOST))
+            && origin_matches_host(origin, headers.get(header::HOST))
     });
     if valid {
         Ok(true)
@@ -104,27 +105,6 @@ fn browser_upload(headers: &HeaderMap) -> HttpResult<bool> {
             .into_response()
             .into())
     }
-}
-
-fn browser_origin_matches_host(origin: &axum::http::HeaderValue, host: Option<&axum::http::HeaderValue>) -> bool {
-    let Some((origin, host)) = origin.to_str().ok().zip(host.and_then(|host| host.to_str().ok())) else {
-        return false;
-    };
-    let Ok(origin) = url::Url::parse(origin) else {
-        return false;
-    };
-    let Ok(host) = host.parse::<axum::http::uri::Authority>() else {
-        return false;
-    };
-    let host_name = host.host().trim_start_matches('[').trim_end_matches(']');
-    matches!(origin.scheme(), "http" | "https")
-        && origin
-            .host_str()
-            .is_some_and(|origin| origin.eq_ignore_ascii_case(host_name))
-        && host.port_u16().map_or_else(
-            || origin.port().is_none(),
-            |port| origin.port_or_known_default() == Some(port),
-        )
 }
 
 struct UploadContext<'a> {

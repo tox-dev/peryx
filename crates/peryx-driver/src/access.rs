@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use peryx_identity::{
     Action, BasicCredentials, Denial, Grant, Principal, Resource, ResourceMatch, RoleGrant, SESSION_COOKIE, Scope,
     ServerUser, UserState, authorize, authorize_grants, grants_permit, parse_basic, strip_auth_scheme,
@@ -113,6 +113,30 @@ pub fn session_user(state: &ServingState, headers: &HeaderMap) -> Option<ServerU
         .ok()
         .flatten()
         .filter(|user| user.state == UserState::Active)
+}
+
+/// Whether a browser `Origin` names the host the request was sent to: the same host, compared without
+/// case, and the same port, where a host without one matches only an origin on its scheme's default.
+#[must_use]
+pub fn origin_matches_host(origin: &HeaderValue, host: Option<&HeaderValue>) -> bool {
+    let Some((origin, host)) = origin.to_str().ok().zip(host.and_then(|host| host.to_str().ok())) else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    let Ok(host) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    let host_name = host.host().trim_start_matches('[').trim_end_matches(']');
+    matches!(origin.scheme(), "http" | "https")
+        && origin
+            .host_str()
+            .is_some_and(|origin| origin.eq_ignore_ascii_case(host_name))
+        && host.port_u16().map_or_else(
+            || origin.port().is_none(),
+            |port| origin.port_or_known_default() == Some(port),
+        )
 }
 
 /// Returns the value of cookie `name` from the request's `Cookie` header.
