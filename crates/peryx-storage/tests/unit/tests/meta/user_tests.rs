@@ -654,7 +654,7 @@ fn enrolled(store: &MetaStore, policy: &PasswordPolicy) -> (ServerUser, StoredPa
         .set_user_password(&user.id, &policy.hash("checked").unwrap())
         .unwrap();
     let checked = store.get_user_password(&user.id).unwrap().unwrap();
-    (user, checked)
+    (store.get_user(&user.id).unwrap().unwrap(), checked)
 }
 
 #[test]
@@ -676,7 +676,7 @@ fn test_change_user_password_replaces_the_verifier_and_advances_the_session_epoc
         ),
         (
             Some(ServerUser {
-                session_epoch: 1,
+                session_epoch: user.session_epoch + 1,
                 ..user
             }),
             changed,
@@ -693,6 +693,7 @@ fn test_change_user_password_changes_nothing_once_the_checked_verifier_is_replac
     store
         .set_user_password(&user.id, &policy.hash("reset").unwrap())
         .unwrap();
+    let reset = store.get_user(&user.id).unwrap();
 
     let changed = store
         .change_user_password(&user.id, &checked, &policy.hash("replacement").unwrap())
@@ -705,7 +706,7 @@ fn test_change_user_password_changes_nothing_once_the_checked_verifier_is_replac
             store.get_user(&user.id).unwrap(),
             stored.verifier().check("reset", &policy)
         ),
-        (None, Some(user), PasswordCheck::Accepted { stale: false })
+        (None, reset, PasswordCheck::Accepted { stale: false })
     );
 }
 
@@ -720,6 +721,36 @@ fn test_change_user_password_rejects_an_unknown_user() {
             .change_user_password(&UserId::random(), &checked, &policy.hash("replacement").unwrap())
             .unwrap(),
         None
+    );
+}
+
+#[test]
+fn test_set_user_password_advances_the_session_epoch() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (user, _checked) = enrolled(&store, &policy);
+
+    store
+        .set_user_password(&user.id, &policy.hash("reset").unwrap())
+        .unwrap();
+
+    assert_eq!(
+        store.get_user(&user.id).unwrap().unwrap().session_epoch,
+        user.session_epoch + 1
+    );
+}
+
+#[test]
+fn test_clear_user_password_advances_the_session_epoch() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (user, _checked) = enrolled(&store, &policy);
+
+    store.clear_user_password(&user.id).unwrap();
+
+    assert_eq!(
+        store.get_user(&user.id).unwrap().unwrap().session_epoch,
+        user.session_epoch + 1
     );
 }
 
@@ -764,6 +795,6 @@ fn test_change_user_password_lets_one_of_two_concurrent_changes_win() {
                 .verifier()
                 .check(["first", "second"][usize::from(results[0].is_none())], &policy),
         ),
-        (1, 1, PasswordCheck::Accepted { stale: false })
+        (1, user.session_epoch + 1, PasswordCheck::Accepted { stale: false })
     );
 }

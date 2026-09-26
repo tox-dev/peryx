@@ -418,10 +418,11 @@ async fn login_contract_treats_a_session_from_before_a_password_change_as_signed
 #[tokio::test]
 async fn login_contract_offers_the_password_change_form_only_to_a_local_account(#[case] password: bool) {
     let (_directory, mut app) = state(Vec::new());
-    let user = app.serving.users.create("Ada Lovelace").unwrap();
+    let created = app.serving.users.create("Ada Lovelace").unwrap();
     if password {
-        app.serving.users.set_password(&user.id, PASSWORD).await.unwrap();
+        app.serving.users.set_password(&created.id, PASSWORD).await.unwrap();
     }
+    let user = app.serving.meta.get_user(&created.id).unwrap().unwrap();
     app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
     let cookie = format!(
         "{SESSION_COOKIE}={}",

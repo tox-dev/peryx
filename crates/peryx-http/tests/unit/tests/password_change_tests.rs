@@ -375,9 +375,10 @@ async fn test_session_reports_whether_the_user_holds_a_password(#[case] password
     if !password {
         fixture.state.serving.users.clear_password(&fixture.user.id).unwrap();
     }
+    let user = fixture.state.serving.meta.get_user(&fixture.user.id).unwrap().unwrap();
 
     assert_eq!(
-        session(&fixture.state, &cookie(&fixture.user)).await["user"]["password"],
+        session(&fixture.state, &cookie(&user)).await["user"]["password"],
         password
     );
 }

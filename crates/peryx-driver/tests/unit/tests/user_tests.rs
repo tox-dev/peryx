@@ -104,8 +104,9 @@ async fn test_authenticate_accepts_the_password_and_rejects_a_wrong_one() {
 #[tokio::test]
 async fn test_authenticate_account_returns_the_verified_account() {
     let (_dir, _store, service) = cheap_service();
-    let user = service.create("Alice").unwrap();
-    service.set_password(&user.id, "correct horse").await.unwrap();
+    let created = service.create("Alice").unwrap();
+    service.set_password(&created.id, "correct horse").await.unwrap();
+    let user = service.inspect(&created.id).unwrap().unwrap();
 
     assert_eq!(
         service.authenticate_account("alice", "correct horse").await.unwrap(),
@@ -401,8 +402,9 @@ async fn test_set_password_reports_an_unknown_user() {
 #[tokio::test]
 async fn test_change_password_replaces_the_verifier() {
     let (_dir, _store, service) = cheap_service();
-    let user = service.create("Alice").unwrap();
-    service.set_password(&user.id, "old password").await.unwrap();
+    let created = service.create("Alice").unwrap();
+    service.set_password(&created.id, "old password").await.unwrap();
+    let user = service.inspect(&created.id).unwrap().unwrap();
 
     let changed = service
         .change_password(&user.id, "old password", "new password")
@@ -419,7 +421,7 @@ async fn test_change_password_replaces_the_verifier() {
     assert_eq!(
         changed,
         Some(ServerUser {
-            session_epoch: 1,
+            session_epoch: user.session_epoch + 1,
             ..user
         })
     );
@@ -442,8 +444,9 @@ async fn test_change_password_stores_the_advanced_session_epoch() {
 #[tokio::test]
 async fn test_authenticate_keeps_the_session_epoch_when_it_upgrades_a_stale_verifier() {
     let (_dir, store, weak) = cheap_service();
-    let user = weak.create("Alice").unwrap();
-    weak.set_password(&user.id, "correct horse").await.unwrap();
+    let created = weak.create("Alice").unwrap();
+    weak.set_password(&created.id, "correct horse").await.unwrap();
+    let user = weak.inspect(&created.id).unwrap().unwrap();
     let tighter = PasswordPolicy::new(16, 2, 1).unwrap();
     let strong = UserService::with_password_settings(store.clone(), tighter, 2);
 
@@ -545,6 +548,7 @@ async fn test_change_password_loses_to_a_concurrent_password_change(#[case] chan
         .get_user_password(&user.id)
         .unwrap()
         .map(|stored| stored.verifier().clone());
+    let user_after_change = service.inspect(&user.id).unwrap();
     release_login.wait();
 
     assert_eq!(changing.join().unwrap().unwrap(), None);
@@ -556,7 +560,7 @@ async fn test_change_password_loses_to_a_concurrent_password_change(#[case] chan
                 .map(|stored| stored.verifier().clone()),
             service.inspect(&user.id).unwrap()
         ),
-        (password_after_change, Some(user))
+        (password_after_change, user_after_change)
     );
 }
 

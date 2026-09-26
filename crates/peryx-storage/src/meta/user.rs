@@ -209,21 +209,24 @@ impl MetaStore {
         Ok(user)
     }
 
-    /// Replaces any prior verifier.
+    /// Replaces any prior verifier and ends the user's sessions in the same transaction, since whoever
+    /// knew the old password may hold one.
     ///
     /// # Errors
     /// Returns [`UserStoreError::NotFound`] for an unknown ID or a store error when the transaction
     /// cannot commit.
     pub fn set_user_password(&self, id: &UserId, verifier: &PasswordVerifier) -> Result<(), UserStoreError> {
         let txn = self.db.begin_write().map_err(MetaError::from)?;
-        if read_user(&txn, id)?.is_none() {
+        let Some(mut user) = read_user(&txn, id)? else {
             return Err(UserStoreError::NotFound { id: id.clone() });
-        }
+        };
         let bytes = serde_json::to_vec(verifier).map_err(MetaError::from)?;
         txn.open_table(USER_VERIFIER)
             .map_err(MetaError::from)?
             .insert(id.as_str(), bytes.as_slice())
             .map_err(MetaError::from)?;
+        user.session_epoch += 1;
+        write_user(&txn, &user)?;
         txn.commit().map_err(MetaError::from)?;
         Ok(())
     }
@@ -294,20 +297,22 @@ impl MetaStore {
         Ok(Some(user))
     }
 
-    /// Disables password authentication for the user.
+    /// Disables password authentication for the user and ends its sessions in the same transaction.
     ///
     /// # Errors
     /// Returns [`UserStoreError::NotFound`] for an unknown ID or a store error when the transaction
     /// cannot commit.
     pub fn clear_user_password(&self, id: &UserId) -> Result<(), UserStoreError> {
         let txn = self.db.begin_write().map_err(MetaError::from)?;
-        if read_user(&txn, id)?.is_none() {
+        let Some(mut user) = read_user(&txn, id)? else {
             return Err(UserStoreError::NotFound { id: id.clone() });
-        }
+        };
         txn.open_table(USER_VERIFIER)
             .map_err(MetaError::from)?
             .remove(id.as_str())
             .map_err(MetaError::from)?;
+        user.session_epoch += 1;
+        write_user(&txn, &user)?;
         txn.commit().map_err(MetaError::from)?;
         Ok(())
     }

@@ -297,7 +297,7 @@ fn app(admin: RouteLimit, checks: usize) -> (tempfile::TempDir, AppState) {
 async fn enroll(state: &AppState, name: &str) -> ServerUser {
     let user = enroll_without_password(state, name);
     state.serving.users.set_password(&user.id, PASSWORD).await.unwrap();
-    user
+    state.serving.meta.get_user(&user.id).unwrap().unwrap()
 }
 
 fn enroll_without_password(state: &AppState, name: &str) -> ServerUser {

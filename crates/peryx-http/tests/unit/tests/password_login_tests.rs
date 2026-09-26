@@ -40,8 +40,9 @@ pub(super) async fn fixture_with(sealer: bool, password_checks: usize) -> Fixtur
         assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
     }
     let enrollment = UserService::with_password_settings(meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 2);
-    let user = enrollment.create("Ada Lovelace").unwrap();
-    enrollment.set_password(&user.id, PASSWORD).await.unwrap();
+    let created = enrollment.create("Ada Lovelace").unwrap();
+    enrollment.set_password(&created.id, PASSWORD).await.unwrap();
+    let user = meta.get_user(&created.id).unwrap().unwrap();
     Arc::get_mut(&mut state.serving).unwrap().users =
         UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), password_checks);
     Fixture {

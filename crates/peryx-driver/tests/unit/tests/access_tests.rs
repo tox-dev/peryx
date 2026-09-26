@@ -418,13 +418,14 @@ fn test_session_read_access_needs_a_configured_sealer() {
 #[test]
 fn test_a_password_change_ends_the_sessions_sealed_before_it() {
     let (_dir, state) = browser_app(Sealer::Configured);
-    let user = state.serving.users.create("Alice").unwrap();
+    let created = state.serving.users.create("Alice").unwrap();
     let policy = PasswordPolicy::new(8, 1, 1).unwrap();
     state
         .serving
         .meta
-        .set_user_password(&user.id, &policy.hash("old password").unwrap())
+        .set_user_password(&created.id, &policy.hash("old password").unwrap())
         .unwrap();
+    let user = state.serving.meta.get_user(&created.id).unwrap().unwrap();
     let checked = state.serving.meta.get_user_password(&user.id).unwrap().unwrap();
     let before = session_user(&state.serving, &session_cookie(&user, FAR_FUTURE));
 
