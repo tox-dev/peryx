@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::sync::Arc;
 
 use anyhow::{Context as _, bail, ensure};
@@ -27,6 +27,11 @@ use crate::config::{
     IndexKind as ConfigKind, LdapBindConfig, LdapProviderConfig, OidcProviderConfig, SecretSource, UpstreamTlsConfig,
     WebhookSecret,
 };
+
+/// The shortest key peryx signs or seals with: the HS256 minimum in RFC 7518.
+const MIN_KEY_BYTES: usize = 32;
+/// Where a standalone server without a configured `auth.signing_key` keeps its generated session key.
+const SESSION_KEY_FILE: &str = "session-key";
 
 /// The derived views a read must not outrun. A replica gates reads on whole-blob availability as well
 /// as the search view, so its readable frontier holds at the slower of the metadata and blob views;
@@ -227,6 +232,7 @@ fn build_state_with_active_backend_and_plugins(
     }
     let ecosystem_settings = build_index_settings_with_plugins(&configs, plugins)?;
     let webhooks = build_webhooks(&configs, plugins)?;
+    let session_key = resolve_session_key(config, signing_key.as_deref())?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
         meta,
@@ -250,6 +256,7 @@ fn build_state_with_active_backend_and_plugins(
         &mut state,
         config,
         signing_key.as_deref(),
+        session_key.as_deref(),
         &ecosystem_settings,
         read_only,
         plugins,
@@ -271,23 +278,72 @@ fn persist_configured_repositories(meta: &MetaStore, configs: &[IndexConfig]) ->
 }
 
 fn resolve_signing_key(config: &Config) -> anyhow::Result<Option<String>> {
-    const MIN_BYTES: usize = 32;
     let Some(source) = &config.auth.signing_key else {
         return Ok(None);
     };
     let key = source.read().context("read `auth.signing_key`")?;
     ensure!(!key.trim().is_empty(), "`auth.signing_key` must not be empty");
     ensure!(
-        key.len() >= MIN_BYTES,
-        "`auth.signing_key` must contain at least {MIN_BYTES} bytes"
+        key.len() >= MIN_KEY_BYTES,
+        "`auth.signing_key` must contain at least {MIN_KEY_BYTES} bytes"
     );
     Ok(Some(key))
+}
+
+/// The key browser sessions are sealed with. A configured `auth.signing_key` always wins. Without one, a
+/// standalone server keeps a generated key in its data directory so sessions outlive a restart. A `dc`
+/// or `ha` node gets none: every node must open the cookies its peers seal, so only a key configured on
+/// each of them works.
+///
+/// The generated key seals sessions only. The token realm stays off until a key is configured, so
+/// generating one never starts minting tokens.
+fn resolve_session_key(config: &Config, signing_key: Option<&str>) -> anyhow::Result<Option<String>> {
+    match (signing_key, &config.availability) {
+        (Some(key), _) => Ok(Some(key.to_owned())),
+        (None, crate::config::AvailabilityConfig::None) => {
+            load_or_create_session_key(&config.data_dir.join(SESSION_KEY_FILE)).map(Some)
+        }
+        (None, crate::config::AvailabilityConfig::Dc(_) | crate::config::AvailabilityConfig::Ha(_)) => Ok(None),
+    }
+}
+
+/// The metadata store's exclusive lock is already held here, so no second process races this create.
+fn load_or_create_session_key(path: &std::path::Path) -> anyhow::Result<String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(mut file) => {
+            let key = peryx_identity::generate_session_key();
+            file.write_all(key.as_bytes())
+                .and_then(|()| file.sync_all())
+                .context("write the session key")?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let key = SecretSource::File(path.to_owned())
+                .read()
+                .context("read the session key")?;
+            ensure!(
+                key.len() >= MIN_KEY_BYTES,
+                "session key {} must contain at least {MIN_KEY_BYTES} bytes; delete it to generate a new one",
+                path.display()
+            );
+            Ok(key)
+        }
+        Err(error) => Err(error).with_context(|| format!("create session key {}", path.display())),
+    }
 }
 
 fn configure_state(
     state: &mut AppState,
     config: &Config,
     signing_key: Option<&str>,
+    session_key: Option<&str>,
     ecosystem_settings: &HashMap<String, peryx_driver::serving::CompiledEcosystemSettings>,
     read_only: bool,
     plugins: &peryx_plugin_registry::PluginRegistry,
@@ -336,11 +392,13 @@ fn configure_state(
         .set_oidc_logins(oidc_logins(&config.auth.oidc_providers, &state.serving.meta)?)
         .map_err(anyhow::Error::msg)
         .context("install OIDC login services")?;
-    if let Some(key) = signing_key {
+    if let Some(key) = session_key {
         state
             .set_session_sealer(SessionSealer::new(key.as_bytes()))
             .map_err(anyhow::Error::msg)
             .context("install session sealer")?;
+    }
+    if let Some(key) = signing_key {
         state
             .set_token_realm(
                 Signer::new(key.as_bytes(), peryx_identity::TOKEN_AUDIENCE),

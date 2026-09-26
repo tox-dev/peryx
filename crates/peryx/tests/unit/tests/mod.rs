@@ -9,6 +9,7 @@ mod policy_dispatch_tests;
 mod read_through_install_tests;
 mod replication_liveness_tests;
 mod server_tests;
+mod session_key_tests;
 pub mod support;
 mod tls_support;
 mod ui_rate_limit_tests;

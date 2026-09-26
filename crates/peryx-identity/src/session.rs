@@ -20,12 +20,25 @@ pub const PRE_AUTH_COOKIE: &str = "peryx_login";
 const HKDF_SALT: &[u8] = b"peryx-identity-session-hkdf-salt-v1";
 const SESSION_INFO: &[u8] = b"peryx browser session v1";
 const PRE_AUTH_INFO: &[u8] = b"peryx browser pre-auth v1";
+const GENERATED_KEY_BYTES: usize = 32;
 
 /// Servers reject stolen cookies after their absolute expiry.
 #[derive(Serialize, serde::Deserialize)]
 struct Envelope<T> {
     exp: i64,
     data: T,
+}
+
+/// A fresh key for [`SessionSealer::new`]: 32 bytes from the platform CSPRNG, base64url-encoded so it
+/// also reads back as a valid `auth.signing_key`.
+///
+/// # Panics
+/// Panics when the operating system CSPRNG fails.
+#[must_use]
+pub fn generate_session_key() -> String {
+    let mut bytes = [0_u8; GENERATED_KEY_BYTES];
+    getrandom::fill(&mut bytes).expect("the platform CSPRNG is available");
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 pub struct SessionSealer {

@@ -4,7 +4,7 @@ use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, NONCE_LEN, Nonce, UnboundK
 use ring::hkdf::{HKDF_SHA256, Salt};
 use serde::{Deserialize, Serialize};
 
-use super::{PRE_AUTH_COOKIE, SESSION_COOKIE, SessionSealer};
+use super::{PRE_AUTH_COOKIE, SESSION_COOKIE, SessionSealer, generate_session_key};
 use crate::{ServerUser, UserId, UserName, UserState};
 
 const KEY: &[u8] = b"a-token-realm-signing-secret-32b!";
@@ -39,6 +39,14 @@ fn handoff() -> Handoff {
 fn test_cookie_names_are_stable() {
     assert_eq!(SESSION_COOKIE, "peryx_session");
     assert_eq!(PRE_AUTH_COOKIE, "peryx_login");
+}
+
+#[test]
+fn test_a_generated_session_key_carries_32_random_bytes() {
+    let key = generate_session_key();
+
+    assert_eq!(URL_SAFE_NO_PAD.decode(&key).unwrap().len(), 32);
+    assert_ne!(key, generate_session_key());
 }
 
 #[test]

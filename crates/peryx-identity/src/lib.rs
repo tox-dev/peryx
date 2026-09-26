@@ -47,7 +47,7 @@ pub use password::{PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifie
 pub use revocation::{ArtifactDigest, ArtifactDigestError, DigestDecision, RevocationReason, RevocationReasonError};
 pub use roles::{GrantScope, Resource, Role, RoleGrant, Scope, can_manage_grants, grants_permit};
 pub use scoped_token::{TokenId, TokenName, TokenNameError, TokenSecret, TokenVerifier};
-pub use session::{PRE_AUTH_COOKIE, SESSION_COOKIE, SessionSealer};
+pub use session::{PRE_AUTH_COOKIE, SESSION_COOKIE, SessionSealer, generate_session_key};
 pub use token::{Signer, TokenError, TokenScope, VerifiedToken};
 pub use user::{
     ServerUser, USER_NAME_CANONICAL_VERSION, UserId, UserLifecycleChange, UserLifecycleEvent, UserName, UserNameError,
