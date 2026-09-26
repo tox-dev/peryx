@@ -9,24 +9,24 @@ use rstest::rstest;
 use serde_json::Value;
 use tower::ServiceExt as _;
 
-const KEY: &[u8] = b"a-token-realm-signing-secret-here";
-const NOW: i64 = 4_102_444_800 - 600;
-const PASSWORD: &str = "correct horse battery";
-const ORIGIN: &str = "https://peryx.test";
-const HOST: &str = "peryx.test";
+pub(super) const KEY: &[u8] = b"a-token-realm-signing-secret-here";
+pub(super) const NOW: i64 = 4_102_444_800 - 600;
+pub(super) const PASSWORD: &str = "correct horse battery";
+pub(super) const ORIGIN: &str = "https://peryx.test";
+pub(super) const HOST: &str = "peryx.test";
 const FORM: &str = "application/x-www-form-urlencoded";
 
-struct Fixture {
+pub(super) struct Fixture {
     _dir: tempfile::TempDir,
-    state: Arc<AppState>,
-    user: ServerUser,
+    pub(super) state: Arc<AppState>,
+    pub(super) user: ServerUser,
 }
 
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     fixture_with(true, 2).await
 }
 
-async fn fixture_with(sealer: bool, password_checks: usize) -> Fixture {
+pub(super) async fn fixture_with(sealer: bool, password_checks: usize) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let mut state = AppState::with_clock(
@@ -51,14 +51,14 @@ async fn fixture_with(sealer: bool, password_checks: usize) -> Fixture {
     }
 }
 
-fn form(name: &str, password: &str) -> String {
+pub(super) fn form(name: &str, password: &str) -> String {
     url::form_urlencoded::Serializer::new(String::new())
         .append_pair("name", name)
         .append_pair("password", password)
         .finish()
 }
 
-async fn post(state: &Arc<AppState>, uri: &str, headers: &[(&str, &str)], body: String) -> Response<Body> {
+pub(super) async fn post(state: &Arc<AppState>, uri: &str, headers: &[(&str, &str)], body: String) -> Response<Body> {
     let mut request = Request::builder()
         .method(Method::POST)
         .uri(uri)
@@ -72,7 +72,7 @@ async fn post(state: &Arc<AppState>, uri: &str, headers: &[(&str, &str)], body: 
         .unwrap()
 }
 
-async fn sign_in(state: &Arc<AppState>, body: String) -> Response<Body> {
+pub(super) async fn sign_in(state: &Arc<AppState>, body: String) -> Response<Body> {
     post(
         state,
         "/_/login/password",
@@ -82,7 +82,7 @@ async fn sign_in(state: &Arc<AppState>, body: String) -> Response<Body> {
     .await
 }
 
-fn set_cookies(response: &Response<Body>) -> Vec<String> {
+pub(super) fn set_cookies(response: &Response<Body>) -> Vec<String> {
     response
         .headers()
         .get_all(header::SET_COOKIE)
@@ -91,7 +91,7 @@ fn set_cookies(response: &Response<Body>) -> Vec<String> {
         .collect()
 }
 
-fn session_value(response: &Response<Body>) -> String {
+pub(super) fn session_value(response: &Response<Body>) -> String {
     let cookies = set_cookies(response);
     assert_eq!(cookies.len(), 1, "{cookies:?}");
     cookies[0]
@@ -101,11 +101,11 @@ fn session_value(response: &Response<Body>) -> String {
         .to_owned()
 }
 
-fn location(response: &Response<Body>) -> &str {
+pub(super) fn location(response: &Response<Body>) -> &str {
     response.headers()[header::LOCATION].to_str().unwrap()
 }
 
-async fn body_text(response: Response<Body>) -> String {
+pub(super) async fn body_text(response: Response<Body>) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
 }

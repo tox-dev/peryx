@@ -290,6 +290,10 @@ fn authentication_routes() -> RouteSet {
             post(handlers::login_password),
         )
         .route(
+            mutation(RouteMethod::Post, "/_/password", rate_limit::RouteClass::Authentication),
+            post(handlers::change_password),
+        )
+        .route(
             read(RouteMethod::Post, "/_/logout", rate_limit::RouteClass::Authentication),
             post(handlers::logout),
         )
@@ -595,13 +599,13 @@ mod route_tests {
     fn process_routes_declare_complete_semantics() {
         let descriptors = service_route_descriptors();
 
-        assert_eq!(descriptors.len(), 53);
+        assert_eq!(descriptors.len(), 54);
         assert_eq!(
             descriptors
                 .iter()
                 .filter(|descriptor| descriptor.posture() == RoutePosture::Mutation)
                 .count(),
-            14
+            15
         );
         assert_eq!(
             [
@@ -616,7 +620,7 @@ mod route_tests {
                     .filter(|descriptor| descriptor.rate_limit() == rate_limit)
                     .count()
             }),
-            [2, 2, 44, 5]
+            [2, 2, 44, 6]
         );
     }
 

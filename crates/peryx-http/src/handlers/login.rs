@@ -1,6 +1,7 @@
 //! These routes authenticate a human to the read-only web UI by sealing the resolved user into a
 //! session cookie. They never mint a write credential: repository mutations stay on
-//! `Authorization`-header tokens, so the session cookie carries no CSRF surface. The login handoff
+//! `Authorization`-header tokens. The one write a session reaches is its own user's password change,
+//! which also demands the current password and a same-origin form. The login handoff
 //! (PKCE verifier, nonce, `state`) rides a single-use sealed pre-authentication cookie between the
 //! redirect and the callback.
 
@@ -13,7 +14,8 @@ use axum::response::{IntoResponse as _, Response};
 use peryx_driver::AppState;
 use peryx_driver::access::{origin_matches_host, read_cookie, session_user};
 use peryx_identity::{
-    CallbackResponse, OidcLoginError, OidcProviderError, PRE_AUTH_COOKIE, PendingLogin, SESSION_COOKIE,
+    CallbackResponse, MAX_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS, OidcLoginError, OidcProviderError,
+    PRE_AUTH_COOKIE, PendingLogin, SESSION_COOKIE,
 };
 use serde_json::json;
 
@@ -28,6 +30,11 @@ const ROOT_PATH: &str = "/";
 /// Where a rejected password sign-in returns the browser. Every rejection lands here, so the page cannot
 /// tell an unknown name from a wrong password.
 const SIGN_IN_FAILED_PATH: &str = "/login?error=sign-in";
+/// Where a password change returns the browser, by outcome. Every rejection of the current password or
+/// the session shares one page, so it never says which check failed.
+const PASSWORD_CHANGED_PATH: &str = "/login?password=changed";
+const PASSWORD_REJECTED_PATH: &str = "/login?password=rejected";
+const PASSWORD_INVALID_PATH: &str = "/login?password=invalid";
 /// The fetch-metadata header a browser attaches to say how the request's initiator relates to its target.
 const SEC_FETCH_SITE: &str = "sec-fetch-site";
 
@@ -140,6 +147,74 @@ async fn login_password_inner(state: &AppState, uri: &Uri, headers: &HeaderMap, 
     }
 }
 
+/// `POST /_/password` - replaces the signed-in local user's password from the login page's form.
+///
+/// The session names the account, and the form's current password must verify against it, so a stolen
+/// cookie alone cannot change the password. The new password is checked against the length policy and
+/// its confirmation before any derivation runs. The same-origin guard keeps another site from
+/// submitting the form with the victim's cookie.
+pub async fn change_password(
+    State(state): State<Arc<AppState>>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    no_store(change_password_inner(&state, &uri, &headers, &body).await)
+}
+
+async fn change_password_inner(state: &AppState, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Response {
+    if !same_origin(headers, uri) {
+        return (StatusCode::FORBIDDEN, "cross-site password change rejected").into_response();
+    }
+    let Some(form) = parse_password_change_form(body) else {
+        return (StatusCode::BAD_REQUEST, "invalid password form").into_response();
+    };
+    let Some(user) = session_user(&state.serving, headers) else {
+        return redirect(PASSWORD_REJECTED_PATH, &[]);
+    };
+    if form.replacement != form.confirmation
+        || !(MIN_PASSWORD_CHARACTERS..=MAX_PASSWORD_CHARACTERS).contains(&form.replacement.chars().count())
+    {
+        return redirect(PASSWORD_INVALID_PATH, &[]);
+    }
+    match state
+        .serving
+        .users
+        .change_password(&user.id, &form.current, &form.replacement)
+        .await
+    {
+        Ok(true) => redirect(PASSWORD_CHANGED_PATH, &[]),
+        Ok(false) => redirect(PASSWORD_REJECTED_PATH, &[]),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "password change is unavailable; retry").into_response(),
+    }
+}
+
+struct PasswordChangeForm {
+    current: String,
+    replacement: String,
+    confirmation: String,
+}
+
+fn parse_password_change_form(body: &[u8]) -> Option<PasswordChangeForm> {
+    let (mut current, mut replacement, mut confirmation) = (None, None, None);
+    for (key, value) in url::form_urlencoded::parse(body) {
+        let field = match key.as_ref() {
+            "current_password" => &mut current,
+            "new_password" => &mut replacement,
+            "confirmation" => &mut confirmation,
+            _ => continue,
+        };
+        if field.replace(value.into_owned()).is_some() {
+            return None;
+        }
+    }
+    Some(PasswordChangeForm {
+        current: current?,
+        replacement: replacement?,
+        confirmation: confirmation?,
+    })
+}
+
 /// A browser that sends `Sec-Fetch-Site` decides on it alone. The UI's `Referrer-Policy: no-referrer`
 /// makes that browser send `Origin: null` on a form post, so the origin carries nothing to compare.
 /// Without fetch metadata the `Origin` must name the request's host. An HTTP/2 request names that host
@@ -200,12 +275,19 @@ enum CallbackQuery {
 
 /// `GET /_/session` - the read-only UI's login state.
 ///
-/// Reports the signed-in user (or null), the OIDC providers a visitor can sign in with, and whether the
-/// local name and password form works, which it does whenever the server can seal a session. The session
-/// cookie is consulted only for identity here; it authorizes nothing that mutates state.
+/// Reports the signed-in user (or null) and whether that user holds a local password to change, the
+/// OIDC providers a visitor can sign in with, and whether the local name and password form works, which
+/// it does whenever the server can seal a session. The session cookie is consulted only for identity
+/// here; it authorizes nothing that mutates state.
 pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let user = session_user(&state.serving, &headers)
-        .map(|user| json!({ "id": user.id.as_str(), "name": user.name.display(), "state": user.state }));
+    let user = session_user(&state.serving, &headers).map(|user| {
+        json!({
+            "id": user.id.as_str(),
+            "name": user.name.display(),
+            "state": user.state,
+            "password": state.serving.users.has_password(&user.id).is_ok_and(|password| password),
+        })
+    });
     json_no_store(
         StatusCode::OK,
         &json!({

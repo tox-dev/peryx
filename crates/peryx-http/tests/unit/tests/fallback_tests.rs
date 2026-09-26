@@ -507,6 +507,7 @@ async fn test_management_routes_use_the_admin_limit(#[case] method: Method) {
 #[case::read(Method::GET, "/_/session")]
 #[case::write(Method::POST, "/_/logout")]
 #[case::password(Method::POST, "/_/login/password")]
+#[case::password_change(Method::POST, "/_/password")]
 #[tokio::test]
 async fn test_authentication_routes_use_the_authentication_limit(#[case] method: Method, #[case] uri: &str) {
     let (_dir, state) = unwired_state_with_limits(RateLimitConfig {
