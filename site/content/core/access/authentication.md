@@ -263,9 +263,11 @@ pinned issuer, this client's audience, a matching `nonce`, and a signature from 
 **The session.** A completed login, through a provider or the local password form, seals the resolved user into a
 short-lived `peryx_session` cookie with `HttpOnly`, `Secure`, and `SameSite=Lax`, then redirects to the dashboard. The
 session authenticates the read-only web UI. A state-changing request still authenticates with an `Authorization` header
-token. peryx does not accept the session cookie as authorization for a mutation, which prevents a CSRF surface.
-`GET /_/session` reports the signed-in user, the configured providers, and whether local password sign-in is available
-for the login page. `POST /_/logout` clears the cookie.
+token. peryx does not accept the session cookie as authorization for a mutation, which prevents a CSRF surface. The one
+exception is [changing a local password](#changing-a-local-password), which also requires the current password and a
+same-origin form. `GET /_/session` reports the signed-in user and whether that user holds a local password, the
+configured providers, and whether local password sign-in is available for the login page. `POST /_/logout` clears the
+cookie.
 
 **What a session authorizes.** A protected read - a server-rendered page, the UI JSON endpoint behind it, and the status
 classification - accepts the session cookie only when the request carries no `Authorization` header. A header the
@@ -309,6 +311,32 @@ account the attacker controls. peryx therefore accepts the form only from its ow
 that names the host the request was sent to: the `Host` header, or the HTTP/2 `:authority`. A reverse proxy must forward
 the original `Host` for that fallback, as [serving over HTTPS](@/core/operations/serve-https.md) configures it. The OIDC
 provider ID `password` is reserved because this route owns `/_/login/password`.
+
+### Changing a local password
+
+A signed-in user whose account holds a local password sees a change password form on the login page. An account without
+one, such as an account that signs in only through OIDC or LDAP, gets no form. The form posts `current_password`,
+`new_password`, and `confirmation` as `application/x-www-form-urlencoded` to `POST /_/password`.
+
+The session names the account and the current password must verify against it, so a stolen session cookie alone cannot
+change the password. The new password must contain 15 to 1,024 Unicode characters, the same rule
+[bootstrap](@/core/access/bootstrap-administrator.md) applies, and match its confirmation. peryx checks both before
+spending a password derivation. The current password goes through the same check as
+[local password authentication](#local-password-authentication), and the new verifier replaces only the verifier that
+check read: a password another request changed in between fails this change instead of being overwritten.
+
+Every outcome redirects back to the login page with one of three messages. `/login?password=changed` confirms the
+change. `/login?password=invalid` means the new password broke the length rule or did not match its confirmation.
+`/login?password=rejected` covers a missing or expired session, a disabled account, an account without a local password,
+and a wrong current password alike, so the page never says which check failed. A full password check queue or an
+unreadable identity store answers `503 Service Unavailable`, a malformed form `400 Bad Request`, and a read-only replica
+refuses the change like any other mutation. The route shares the same-origin guard and the `[rate_limit.authentication]`
+budget with the password sign-in form. Each attempt that reaches the current password check emits a `password_change`
+security event whose `actor` is the account's stable ID and whose `result` is `success` or `denied`.
+
+Changing the password ends no session. A session cookie carries no password state and peryx keeps no server-side session
+record, so every session of that user, including one opened with the old password on another device, stays valid until
+its cookie expires or the browser logs out. Disabling the account ends its sessions on their next request.
 
 ## Per-index keys
 
@@ -435,7 +463,8 @@ share this process-wide admission bound.
 Passwords and verifiers are secrets end to end: neither appears in logs, errors, diagnostics, or any serialized account
 view, and debug rendering redacts a verifier. Enrolling again replaces the verifier; clearing it removes password
 authentication entirely. Clearing and then enrolling a new password is the recovery path when a local password is lost.
-peryx provides no self-service reset or password-reset email. The same check backs the web UI's
+peryx provides no self-service reset or password-reset email; a signed-in user who knows the current password changes it
+from the web UI's [change password form](#changing-a-local-password). The same check backs the web UI's
 [local password sign-in](#local-password-sign-in).
 
 ## What this does not do
