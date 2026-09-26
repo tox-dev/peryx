@@ -11,6 +11,13 @@ use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier 
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
 
+/// The fewest Unicode characters a password chosen for a server user may contain. Length is the only
+/// composition rule, following the OWASP authentication guidance.
+pub const MIN_PASSWORD_CHARACTERS: usize = 15;
+/// The most Unicode characters a password chosen for a server user may contain, which bounds the
+/// input one derivation hashes.
+pub const MAX_PASSWORD_CHARACTERS: usize = 1_024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasswordPolicy {
     memory_kib: u32,

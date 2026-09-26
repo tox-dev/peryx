@@ -9,12 +9,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use peryx_driver::AppState;
 use peryx_driver::users::UserService;
 use peryx_events::security::Event;
+use peryx_identity::{MAX_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS};
 
 use crate::cli::BootstrapAdministratorArgs;
 use crate::config::{AvailabilityConfig, Config};
 
-const MAX_PASSWORD_CHARACTERS: usize = 1_024;
-const MIN_PASSWORD_CHARACTERS: usize = 15;
 pub const INITIAL_ADMINISTRATOR: &str = "admin";
 const INITIAL_PASSWORD_FILE: &str = "initial-admin-password";
 /// 192 bits, which encode to 32 URL-safe characters inside the password length policy.

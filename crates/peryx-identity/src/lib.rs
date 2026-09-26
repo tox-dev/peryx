@@ -43,7 +43,9 @@ pub use oidc_login::{
     Authorization, CallbackResponse, OidcLoginError, OidcLoginProvider, OidcLoginService, OidcProviderBuildError,
     OidcProviderError, OidcProviderSettings, OidcTokenErrorCode, OidcTokenExchangeError, PendingLogin,
 };
-pub use password::{PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier};
+pub use password::{
+    MAX_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier,
+};
 pub use revocation::{ArtifactDigest, ArtifactDigestError, DigestDecision, RevocationReason, RevocationReasonError};
 pub use roles::{GrantScope, Resource, Role, RoleGrant, Scope, can_manage_grants, grants_permit};
 pub use scoped_token::{TokenId, TokenName, TokenNameError, TokenSecret, TokenVerifier};
