@@ -31,7 +31,6 @@ redb-fault = ["dep:redb"]
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
-peryx-driver = { workspace = true, features = ["test-doubles"] }
 redb = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["blocking", "gzip", "http2", "json", "rustls-no-provider", "stream"] }
 rustls.workspace = true
@@ -49,6 +48,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 
 [dev-dependencies]
 peryx-core.workspace = true
+peryx-driver = { workspace = true, features = ["test-doubles"] }
 peryx-storage.workspace = true
 temp-env.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

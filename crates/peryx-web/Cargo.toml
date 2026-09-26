@@ -48,7 +48,6 @@ axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = ["fs"] }
 wasm-bindgen = { workspace = true, optional = true }
 gloo-net = { workspace = true, optional = true }
-console_error_panic_hook = { workspace = true, optional = true }
 send_wrapper = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "Blob",
@@ -75,6 +74,7 @@ url.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 minicov = { workspace = true, optional = true }
+console_error_panic_hook = { workspace = true, optional = true }
 
 [dev-dependencies]
 any_spawner = "0.3"
@@ -83,6 +83,7 @@ peryx-policy.workspace = true
 peryx-events.workspace = true
 peryx-identity.workspace = true
 peryx-storage = { workspace = true, features = ["fault-injection"] }
+peryx-driver = { workspace = true, features = ["test-doubles"] }
 peryx-test-support = { workspace = true, features = ["redb-fault"] }
 rstest.workspace = true
 tempfile.workspace = true

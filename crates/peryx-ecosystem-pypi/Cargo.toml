@@ -12,6 +12,7 @@ description = "The PyPI ecosystem driver for peryx: names, versions, the simple 
 default = ["serving"]
 serving = [
   "dep:peryx-driver",
+  "dep:unicode-ident",
   "dep:peryx-archive",
   "dep:peryx-http",
   "dep:peryx-plugin-registry",
@@ -82,7 +83,7 @@ web_atoms = "0.2.6"
 url.workspace = true
 percent-encoding.workspace = true
 sha2.workspace = true
-unicode-ident.workspace = true
+unicode-ident = { workspace = true, optional = true }
 unicode-normalization.workspace = true
 xml = { package = "xml-rs", version = "1.0" }
 hdrhistogram = { workspace = true, optional = true }

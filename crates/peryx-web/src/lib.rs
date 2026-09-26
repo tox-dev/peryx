@@ -5,10 +5,15 @@ use leptos_router::hooks::use_query_map;
 use leptos_router::{SsrMode, StaticSegment};
 
 use crate::data::{load_login, load_search};
+
+// Cargo features cannot say "hydrate without ssr": the all-features build compiles `ssr`, whose data
+// paths replace every client fetch, so nothing else names this hydrate dependency there.
 use crate::markdown::EXTERNAL_LINK_REL;
 use crate::model::UiSearchResult;
 use crate::url::browse_index_url;
 use crate::url::search_page_url;
+#[cfg(all(feature = "ssr", feature = "hydrate"))]
+use gloo_net as _;
 
 /// Every page declares the rate-limit class it renders under, so a page cannot reach the router
 /// without a budget: the server-rendered pages run the same work as their JSON counterparts.
