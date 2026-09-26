@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use axum::http::Extensions;
+use peryx_events::security::Event;
 use peryx_identity::{
     BasicCredentials, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier, ServerUser, UserId,
     UserLifecycleEvent, UserState,
 };
-use peryx_storage::meta::{AdministratorBootstrapError, MetaError, MetaStore, UserStoreError};
+use peryx_storage::meta::{AdministratorBootstrapError, MetaError, MetaStore, StoredPasswordVerifier, UserStoreError};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// How many password derivations may run at once by default, chosen well under the request worker
@@ -23,6 +24,14 @@ pub struct UserService {
 
 struct PasswordAdmission {
     permit: Arc<OwnedSemaphorePermit>,
+}
+
+/// An account whose password matched, with the verifier the match was made against so a replacement
+/// can require it to be unchanged.
+struct CheckedPassword {
+    user: ServerUser,
+    verifier: StoredPasswordVerifier,
+    stale: bool,
 }
 
 /// A password derivation that could not complete.
@@ -262,36 +271,89 @@ impl UserService {
             Err(UserStoreError::Store(error)) => return Err(error.into()),
             Err(_) => None,
         };
-        let Some(user) = active else {
-            self.spend_decoy(&admission, password.to_owned()).await;
+        let Some(checked) = self.check_password(&admission, active, password).await? else {
             drop(admission);
             return Ok(None);
         };
-        let Some(verifier) = self.store.get_user_password(&user.id)? else {
-            self.spend_decoy(&admission, password.to_owned()).await;
+        if !checked.stale {
             drop(admission);
+            return Ok(Some(checked.user));
+        }
+        let replacement = self.hash(&admission, password.to_owned()).await?;
+        drop(admission);
+        let replaced = self
+            .store
+            .compare_and_set_user_password(&checked.user.id, &checked.verifier, &replacement)?;
+        Ok(replaced.then_some(checked.user))
+    }
+
+    /// Replace the password of the active account `id` once `current` verifies against it.
+    ///
+    /// The current password is checked exactly as [`Self::authenticate_account`] checks a sign-in, so
+    /// a disabled account, a passwordless account, and a wrong password all return `Ok(false)` at the
+    /// same cost. The new verifier replaces only the one that check read: a password changed by another
+    /// request in between fails this change rather than being overwritten by it.
+    ///
+    /// # Errors
+    /// Returns an unavailable error when lookup, derivation admission, hashing, or conditional
+    /// replacement fails.
+    pub async fn change_password(
+        &self,
+        id: &UserId,
+        current: &str,
+        replacement: &str,
+    ) -> Result<bool, AuthenticationError> {
+        let admission = self.admit()?;
+        let active = self.store.get_user(id)?.filter(|user| user.state == UserState::Active);
+        let Some(checked) = self.check_password(&admission, active, current).await? else {
+            drop(admission);
+            Event::new("password_change", "denied").actor(Some(id.as_str())).emit();
+            return Ok(false);
+        };
+        let replacement = self.hash(&admission, replacement.to_owned()).await?;
+        drop(admission);
+        let changed = self
+            .store
+            .compare_and_set_user_password(&checked.user.id, &checked.verifier, &replacement)?;
+        Event::new("password_change", if changed { "success" } else { "denied" })
+            .actor(Some(id.as_str()))
+            .emit();
+        Ok(changed)
+    }
+
+    /// Whether the account holds a local password, which is what lets it sign in with one and change
+    /// it. An account that only signs in through a provider holds none.
+    ///
+    /// # Errors
+    /// Returns a storage error when the verifier cannot be read.
+    pub fn has_password(&self, id: &UserId) -> Result<bool, MetaError> {
+        Ok(self.store.get_user_password(id)?.is_some())
+    }
+
+    /// Check `password` against the stored verifier of `user`, spending a decoy derivation when there
+    /// is no active account or it holds no password, so every rejection costs the same.
+    async fn check_password(
+        &self,
+        admission: &PasswordAdmission,
+        user: Option<ServerUser>,
+        password: &str,
+    ) -> Result<Option<CheckedPassword>, MetaError> {
+        let Some(user) = user else {
+            self.spend_decoy(admission, password.to_owned()).await;
+            return Ok(None);
+        };
+        let Some(verifier) = self.store.get_user_password(&user.id)? else {
+            self.spend_decoy(admission, password.to_owned()).await;
             return Ok(None);
         };
         tracing::trace!(target: "peryx_driver::users::password_verifier_read", user_id = %user.id);
         let (policy, presented, checked) = (self.policy, password.to_owned(), verifier.verifier().clone());
-        match self.run(&admission, move || checked.check(&presented, &policy)).await {
-            PasswordCheck::Rejected => {
-                drop(admission);
-                Ok(None)
-            }
-            PasswordCheck::Accepted { stale: false } => {
-                drop(admission);
-                Ok(Some(user))
-            }
-            PasswordCheck::Accepted { stale: true } => {
-                let replacement = self.hash(&admission, password.to_owned()).await?;
-                drop(admission);
-                let replaced = self
-                    .store
-                    .compare_and_set_user_password(&user.id, &verifier, &replacement)?;
-                Ok(replaced.then_some(user))
-            }
-        }
+        Ok(
+            match self.run(admission, move || checked.check(&presented, &policy)).await {
+                PasswordCheck::Rejected => None,
+                PasswordCheck::Accepted { stale } => Some(CheckedPassword { user, verifier, stale }),
+            },
+        )
     }
 
     fn admit(&self) -> Result<PasswordAdmission, PasswordDerivationError> {

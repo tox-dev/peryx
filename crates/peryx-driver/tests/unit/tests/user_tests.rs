@@ -12,7 +12,7 @@ use peryx_identity::{
 use peryx_storage::meta::{MetaStore, StoredPasswordVerifier};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-use crate::users::{BootstrapError, EnrollError, UserService};
+use crate::users::{AuthenticationError, BootstrapError, EnrollError, UserService};
 
 fn writer_acl(secret: impl Into<String>) -> IndexAcl {
     IndexAcl {
@@ -397,4 +397,193 @@ async fn test_set_password_reports_an_unknown_user() {
         EnrollError::from(PasswordError::Params),
         EnrollError::Derivation(crate::users::PasswordDerivationError::Hash(_))
     ));
+}
+
+#[tokio::test]
+async fn test_change_password_replaces_the_verifier() {
+    let (_dir, _store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    service.set_password(&user.id, "old password").await.unwrap();
+
+    let changed = service
+        .change_password(&user.id, "old password", "new password")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            changed,
+            service.authenticate("Alice", "new password").await.unwrap(),
+            service.authenticate("Alice", "old password").await.unwrap(),
+        ),
+        (true, Some(user.id), None)
+    );
+}
+
+#[rstest::rstest]
+#[case::wrong_current_password(true, false, false, "not the password")]
+#[case::disabled_account(true, true, false, "old password")]
+#[case::passwordless_account(false, false, false, "old password")]
+#[case::unknown_account(true, false, true, "old password")]
+#[tokio::test]
+async fn test_change_password_rejects_without_touching_the_verifier(
+    #[case] enrolled: bool,
+    #[case] disabled: bool,
+    #[case] unknown: bool,
+    #[case] current: &str,
+) {
+    let (_dir, store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    if enrolled {
+        service.set_password(&user.id, "old password").await.unwrap();
+    }
+    if disabled {
+        service.disable(&user.id).unwrap();
+    }
+    let target = if unknown { UserId::random() } else { user.id.clone() };
+    let before = store
+        .get_user_password(&user.id)
+        .unwrap()
+        .map(|stored| stored.verifier().clone());
+
+    let changed = service.change_password(&target, current, "new password").await.unwrap();
+
+    assert_eq!(
+        (
+            changed,
+            store
+                .get_user_password(&user.id)
+                .unwrap()
+                .map(|stored| stored.verifier().clone()),
+        ),
+        (false, before)
+    );
+}
+
+#[rstest::rstest]
+#[case::reset(ConcurrentPasswordChange::Reset)]
+#[case::clear(ConcurrentPasswordChange::Clear)]
+#[case::enrollment(ConcurrentPasswordChange::Enrollment)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_change_password_loses_to_a_concurrent_password_change(#[case] change: ConcurrentPasswordChange) {
+    let (_dir, store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    service.set_password(&user.id, "old password").await.unwrap();
+    let verifier_read = Arc::new(ThreadBarrier::new(2));
+    let release_login = Arc::new(ThreadBarrier::new(2));
+    let verifier_reads = Arc::new(AtomicUsize::new(0));
+    let changing = {
+        let (service, id) = (service.clone(), user.id.clone());
+        let verifier_read = Arc::clone(&verifier_read);
+        let release_login = Arc::clone(&release_login);
+        let verifier_reads = Arc::clone(&verifier_reads);
+        std::thread::spawn(move || {
+            let subscriber = tracing_subscriber::registry().with(VerifierReadBarrier {
+                verifier_read,
+                release_login,
+                verifier_reads,
+            });
+            tracing::subscriber::with_default(subscriber, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(service.change_password(&id, "old password", "third password"))
+            })
+        })
+    };
+    verifier_read.wait();
+
+    match change {
+        ConcurrentPasswordChange::Reset => service.set_password(&user.id, "new password").await.unwrap(),
+        ConcurrentPasswordChange::Clear => service.clear_password(&user.id).unwrap(),
+        ConcurrentPasswordChange::Enrollment => {
+            service.clear_password(&user.id).unwrap();
+            service.set_password(&user.id, "new password").await.unwrap();
+        }
+    }
+    let password_after_change = store
+        .get_user_password(&user.id)
+        .unwrap()
+        .map(|stored| stored.verifier().clone());
+    release_login.wait();
+
+    assert!(!changing.join().unwrap().unwrap());
+    assert_eq!(
+        store
+            .get_user_password(&user.id)
+            .unwrap()
+            .map(|stored| stored.verifier().clone()),
+        password_after_change
+    );
+}
+
+#[tokio::test]
+async fn test_change_password_reports_an_exhausted_password_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let service = UserService::with_password_settings(store, cheap_policy(), 0);
+    let user = service.create("Alice").unwrap();
+
+    let error = service
+        .change_password(&user.id, "old password", "new password")
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AuthenticationError::Derivation(crate::users::PasswordDerivationError::Overloaded)
+    ));
+}
+
+#[tokio::test]
+async fn test_change_password_fails_when_the_account_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let database = redb::Database::create(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    txn.open_table(redb::TableDefinition::<&str, u64>::new("server_user"))
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+    let service = UserService::with_password_settings(MetaStore::open_existing(path).unwrap(), cheap_policy(), 2);
+
+    let error = service
+        .change_password(&UserId::random(), "old password", "new password")
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AuthenticationError::Store(_)));
+}
+
+/// The record names the account by its stable ID and says whether the change took effect, so an
+/// operator can tell a rotated password from a stolen session guessing at the current one.
+#[rstest::rstest]
+#[case::changed("old password", "success")]
+#[case::wrong_current_password("not the password", "denied")]
+#[tokio::test]
+async fn test_change_password_records_a_security_event(#[case] current: &str, #[case] result: &str) {
+    let captured = crate::capture::Captured::install();
+    let (_dir, _store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    service.set_password(&user.id, "old password").await.unwrap();
+
+    service
+        .change_password(&user.id, current, "new password")
+        .await
+        .unwrap();
+
+    let output = captured.output();
+    let expected = format!(r#"action="password_change" result="{result}" actor="{}""#, user.id);
+    assert!(output.contains(&expected), "{output}");
+}
+
+#[tokio::test]
+async fn test_has_password_reports_whether_a_verifier_is_enrolled() {
+    let (_dir, _store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    let before = service.has_password(&user.id).unwrap();
+
+    service.set_password(&user.id, "correct horse").await.unwrap();
+
+    assert_eq!((before, service.has_password(&user.id).unwrap()), (false, true));
 }
