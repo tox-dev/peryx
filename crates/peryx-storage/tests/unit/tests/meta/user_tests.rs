@@ -9,7 +9,7 @@ use redb::{ReadableDatabase as _, ReadableTable as _, TableDefinition};
 use rstest::rstest;
 
 use super::store;
-use crate::meta::{MetaError, MetaStore, UserStoreError};
+use crate::meta::{MetaError, MetaStore, StoredPasswordVerifier, UserStoreError};
 
 const RAW_DRIVER: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 const RAW_USER: TableDefinition<&str, &[u8]> = TableDefinition::new("server_user");
@@ -35,6 +35,7 @@ fn store_with_incompatible_event_table() -> (tempfile::TempDir, MetaStore, Serve
         name: UserName::new("Alice").unwrap(),
         state: UserState::Active,
         revision: 1,
+        session_epoch: 0,
     };
     let bytes = serde_json::to_vec(&user).unwrap();
     let (dir, store) = raw_store(|txn| {
@@ -604,4 +605,165 @@ fn test_user_names_require_migration_flags_a_stale_version() {
     });
 
     assert!(store.user_names_require_migration().unwrap());
+}
+
+#[test]
+fn test_a_user_record_stored_before_session_epochs_loads_at_epoch_zero() {
+    let (_dir, store) = raw_store(|txn| {
+        let legacy = serde_json::json!({
+            "id": "usr_legacy",
+            "name": { "display": "Alice", "canonical": "alice" },
+            "state": "active",
+            "revision": 4,
+        });
+        txn.open_table(RAW_USER)
+            .unwrap()
+            .insert("usr_legacy", serde_json::to_vec(&legacy).unwrap().as_slice())
+            .unwrap();
+    });
+
+    assert_eq!(
+        store.get_user(&UserId::from_stored("usr_legacy")).unwrap(),
+        Some(ServerUser {
+            id: UserId::from_stored("usr_legacy"),
+            name: UserName::new("Alice").unwrap(),
+            state: UserState::Active,
+            revision: 4,
+            session_epoch: 0,
+        })
+    );
+}
+
+#[test]
+fn test_disabling_a_user_advances_the_session_epoch_and_reactivating_keeps_it() {
+    let (_dir, store) = store();
+    let user = store.create_user("Alice").unwrap();
+
+    let disabled = store.set_user_state(&user.id, UserState::Disabled).unwrap();
+    let reactivated = store.set_user_state(&user.id, UserState::Active).unwrap();
+
+    assert_eq!(
+        (user.session_epoch, disabled.session_epoch, reactivated.session_epoch),
+        (0, 1, 1)
+    );
+}
+
+fn enrolled(store: &MetaStore, policy: &PasswordPolicy) -> (ServerUser, StoredPasswordVerifier) {
+    let user = store.create_user("Alice").unwrap();
+    store
+        .set_user_password(&user.id, &policy.hash("checked").unwrap())
+        .unwrap();
+    let checked = store.get_user_password(&user.id).unwrap().unwrap();
+    (user, checked)
+}
+
+#[test]
+fn test_change_user_password_replaces_the_verifier_and_advances_the_session_epoch() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (user, checked) = enrolled(&store, &policy);
+
+    let changed = store
+        .change_user_password(&user.id, &checked, &policy.hash("replacement").unwrap())
+        .unwrap();
+
+    let stored = store.get_user_password(&user.id).unwrap().unwrap();
+    assert_eq!(
+        (
+            changed.clone(),
+            store.get_user(&user.id).unwrap(),
+            stored.verifier().check("replacement", &policy),
+        ),
+        (
+            Some(ServerUser {
+                session_epoch: 1,
+                ..user
+            }),
+            changed,
+            PasswordCheck::Accepted { stale: false }
+        )
+    );
+}
+
+#[test]
+fn test_change_user_password_changes_nothing_once_the_checked_verifier_is_replaced() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (user, checked) = enrolled(&store, &policy);
+    store
+        .set_user_password(&user.id, &policy.hash("reset").unwrap())
+        .unwrap();
+
+    let changed = store
+        .change_user_password(&user.id, &checked, &policy.hash("replacement").unwrap())
+        .unwrap();
+
+    let stored = store.get_user_password(&user.id).unwrap().unwrap();
+    assert_eq!(
+        (
+            changed,
+            store.get_user(&user.id).unwrap(),
+            stored.verifier().check("reset", &policy)
+        ),
+        (None, Some(user), PasswordCheck::Accepted { stale: false })
+    );
+}
+
+#[test]
+fn test_change_user_password_rejects_an_unknown_user() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (_user, checked) = enrolled(&store, &policy);
+
+    assert_eq!(
+        store
+            .change_user_password(&UserId::random(), &checked, &policy.hash("replacement").unwrap())
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn test_compare_and_set_user_password_keeps_the_session_epoch() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (user, checked) = enrolled(&store, &policy);
+
+    assert!(
+        store
+            .compare_and_set_user_password(&user.id, &checked, &policy.hash("checked").unwrap())
+            .unwrap()
+    );
+    assert_eq!(store.get_user(&user.id).unwrap(), Some(user));
+}
+
+#[test]
+fn test_change_user_password_lets_one_of_two_concurrent_changes_win() {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let (user, checked) = enrolled(&store, &policy);
+    let replacements = [policy.hash("first").unwrap(), policy.hash("second").unwrap()];
+    let barrier = Barrier::new(2);
+
+    let results = std::thread::scope(|scope| {
+        let changes = replacements.each_ref().map(|replacement| {
+            scope.spawn(|| {
+                barrier.wait();
+                store.change_user_password(&user.id, &checked, replacement).unwrap()
+            })
+        });
+        changes.map(|change| change.join().unwrap())
+    });
+
+    let stored = store.get_user_password(&user.id).unwrap().unwrap();
+    assert_eq!(
+        (
+            results.iter().filter(|result| result.is_some()).count(),
+            store.get_user(&user.id).unwrap().unwrap().session_epoch,
+            stored
+                .verifier()
+                .check(["first", "second"][usize::from(results[0].is_none())], &policy),
+        ),
+        (1, 1, PasswordCheck::Accepted { stale: false })
+    );
 }

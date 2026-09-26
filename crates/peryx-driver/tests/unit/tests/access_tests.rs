@@ -4,15 +4,15 @@ use std::sync::Arc;
 use axum::http::{HeaderMap, HeaderValue, header};
 use peryx_core::Ecosystem;
 use peryx_identity::{
-    Action, BasicCredentials, Denial, Glob, Grant, GrantScope, IndexAcl, NamedToken, Principal, ResourceMatch, Role,
-    SESSION_COOKIE, ServerUser, SessionSealer, Signer,
+    Action, BasicCredentials, Denial, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Principal,
+    ResourceMatch, Role, SESSION_COOKIE, ServerUser, SessionSealer, Signer,
 };
 use peryx_search::{SearchAccess, SearchAccessPattern};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 
 use crate::access::{
-    HeaderCredential, InvalidCredential, ReadAccess, VerifiedCredential, origin_matches_host, read_cookie,
+    HeaderCredential, InvalidCredential, ReadAccess, VerifiedCredential, origin_matches_host, read_cookie, session_user,
 };
 use crate::authz::AuthorizationService;
 use crate::users::UserService;
@@ -412,6 +412,56 @@ fn test_session_read_access_needs_a_configured_sealer() {
             .for_index(state.serving.index_at(0))
             .authorize_any_resource()
             .is_err()
+    );
+}
+
+#[test]
+fn test_a_password_change_ends_the_sessions_sealed_before_it() {
+    let (_dir, state) = browser_app(Sealer::Configured);
+    let user = state.serving.users.create("Alice").unwrap();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    state
+        .serving
+        .meta
+        .set_user_password(&user.id, &policy.hash("old password").unwrap())
+        .unwrap();
+    let checked = state.serving.meta.get_user_password(&user.id).unwrap().unwrap();
+    let before = session_user(&state.serving, &session_cookie(&user, FAR_FUTURE));
+
+    let changed = state
+        .serving
+        .meta
+        .change_user_password(&user.id, &checked, &policy.hash("new password").unwrap())
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        (
+            before,
+            session_user(&state.serving, &session_cookie(&user, FAR_FUTURE)),
+            session_user(&state.serving, &session_cookie(&changed, FAR_FUTURE)),
+        ),
+        (Some(user), None, Some(changed.clone()))
+    );
+}
+
+#[test]
+fn test_a_reactivated_user_does_not_regain_the_sessions_it_had_before_it_was_disabled() {
+    let (_dir, state) = browser_app(Sealer::Configured);
+    let user = state.serving.users.create("Alice").unwrap();
+    let headers = session_cookie(&user, FAR_FUTURE);
+    let before = session_user(&state.serving, &headers);
+
+    state.serving.users.disable(&user.id).unwrap();
+    let reactivated = state.serving.users.reactivate(&user.id).unwrap();
+
+    assert_eq!(
+        (
+            before,
+            session_user(&state.serving, &headers),
+            session_user(&state.serving, &session_cookie(&reactivated, FAR_FUTURE)),
+        ),
+        (Some(user), None, Some(reactivated.clone()))
     );
 }
 

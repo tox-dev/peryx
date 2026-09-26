@@ -59,6 +59,7 @@ fn persist_user(txn: &redb::WriteTransaction, id: &UserId) {
         name: UserName::new("Alice").unwrap(),
         state: UserState::Active,
         revision: 1,
+        session_epoch: 0,
     };
     let bytes = serde_json::to_vec(&user).unwrap();
     txn.open_table(RAW_USER)

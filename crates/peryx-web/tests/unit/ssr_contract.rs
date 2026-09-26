@@ -387,6 +387,31 @@ async fn login_contract_reads_signed_session_cookie() {
     assert!(body.contains("Ada Lovelace"), "{body}");
 }
 
+#[tokio::test]
+async fn login_contract_treats_a_session_from_before_a_password_change_as_signed_out() {
+    let (_directory, mut app) = state(Vec::new());
+    let user = app.serving.users.create("Ada Lovelace").unwrap();
+    app.serving.users.set_password(&user.id, PASSWORD).await.unwrap();
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    let cookie = session_cookie(&user);
+    app.serving
+        .users
+        .change_password(&user.id, PASSWORD, "a much longer passphrase")
+        .await
+        .unwrap();
+
+    let (_, _, body) = render(Arc::new(app), "/login", &[(header::COOKIE.as_str(), cookie.as_str())]).await;
+
+    assert_eq!(
+        (
+            body.contains("Signed in as"),
+            body.contains(r#"action="/_/login/password""#)
+        ),
+        (false, true),
+        "{body}"
+    );
+}
+
 #[rstest::rstest]
 #[case::local_password(true)]
 #[case::provider_only(false)]

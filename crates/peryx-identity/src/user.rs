@@ -107,6 +107,10 @@ pub struct ServerUser {
     pub name: UserName,
     pub state: UserState,
     pub revision: u64,
+    /// A browser session opens only while it carries this value, so advancing it ends every session
+    /// sealed before. Records stored before sessions carried an epoch read as 0.
+    #[serde(default)]
+    pub session_epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -28,6 +28,7 @@ fn user() -> ServerUser {
         name: UserName::new("Ada Lovelace").unwrap(),
         state: UserState::Active,
         revision: 1,
+        session_epoch: 0,
     }
 }
 

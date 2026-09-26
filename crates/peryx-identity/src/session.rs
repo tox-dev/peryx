@@ -18,7 +18,8 @@ pub const SESSION_COOKIE: &str = "peryx_session";
 pub const PRE_AUTH_COOKIE: &str = "peryx_login";
 
 const HKDF_SALT: &[u8] = b"peryx-identity-session-hkdf-salt-v1";
-const SESSION_INFO: &[u8] = b"peryx browser session v1";
+// v1 sessions carried no epoch; a fresh key leaves them unopenable rather than trusted without one.
+const SESSION_INFO: &[u8] = b"peryx browser session v2";
 const PRE_AUTH_INFO: &[u8] = b"peryx browser pre-auth v1";
 const GENERATED_KEY_BYTES: usize = 32;
 

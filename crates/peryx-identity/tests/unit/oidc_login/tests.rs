@@ -1531,6 +1531,7 @@ fn resolution() -> ExternalIdentityResolution {
             name: UserName::new("Ada").unwrap(),
             state: UserState::Active,
             revision: 1,
+            session_epoch: 0,
         },
         link_created: true,
         grants_changed: false,

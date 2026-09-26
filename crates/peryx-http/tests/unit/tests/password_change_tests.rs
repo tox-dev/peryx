@@ -54,6 +54,20 @@ fn verifier(state: &AppState, user: &ServerUser) -> Option<PasswordVerifier> {
         .map(|stored| stored.verifier().clone())
 }
 
+async fn session(state: &Arc<AppState>, cookie: &str) -> Value {
+    let response = crate::router(state.clone())
+        .oneshot(
+            Request::get("/_/session")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 #[tokio::test]
 async fn test_password_change_redirects_to_the_changed_status() {
     let fixture = fixture().await;
@@ -73,7 +87,74 @@ async fn test_password_change_redirects_to_the_changed_status() {
         ),
         (StatusCode::SEE_OTHER, "/login?password=changed", "no-store")
     );
-    assert_eq!(set_cookies(&response), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn test_a_password_change_renews_the_session_cookie_of_the_changing_browser() {
+    let fixture = fixture().await;
+
+    let response = change(
+        &fixture.state,
+        &cookie(&fixture.user),
+        change_form(PASSWORD, NEW_PASSWORD, NEW_PASSWORD),
+    )
+    .await;
+
+    let cookies = set_cookies(&response);
+    assert!(
+        cookies[0].ends_with("; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax"),
+        "{cookies:?}"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum Browser {
+    ChangingBeforeTheChange,
+    ChangingAfterTheChange,
+    Other,
+}
+
+/// Another browser may hold a session opened with a leaked password, so only the browser that proved
+/// the current password keeps one.
+#[rstest]
+#[case::changing_browser_before_the_change(Browser::ChangingBeforeTheChange, false)]
+#[case::changing_browser_after_the_change(Browser::ChangingAfterTheChange, true)]
+#[case::other_browser(Browser::Other, false)]
+#[tokio::test]
+async fn test_a_password_change_ends_every_session_but_the_renewed_one(
+    #[case] browser: Browser,
+    #[case] signed_in: bool,
+) {
+    let fixture = fixture().await;
+    let before = format!(
+        "{SESSION_COOKIE}={}",
+        session_value(&sign_in(&fixture.state, form("Ada Lovelace", PASSWORD)).await)
+    );
+    let other = format!(
+        "{SESSION_COOKIE}={}",
+        session_value(&sign_in(&fixture.state, form("Ada Lovelace", PASSWORD)).await)
+    );
+    let response = change(
+        &fixture.state,
+        &before,
+        change_form(PASSWORD, NEW_PASSWORD, NEW_PASSWORD),
+    )
+    .await;
+    let after = format!("{SESSION_COOKIE}={}", session_value(&response));
+
+    let cookie = match browser {
+        Browser::ChangingBeforeTheChange => before,
+        Browser::ChangingAfterTheChange => after,
+        Browser::Other => other,
+    };
+    assert_eq!(
+        session(&fixture.state, &cookie).await["user"]["id"],
+        if signed_in {
+            Value::from(fixture.user.id.as_str())
+        } else {
+            Value::Null
+        }
+    );
 }
 
 #[tokio::test]
@@ -295,17 +376,8 @@ async fn test_session_reports_whether_the_user_holds_a_password(#[case] password
         fixture.state.serving.users.clear_password(&fixture.user.id).unwrap();
     }
 
-    let response = crate::router(fixture.state.clone())
-        .oneshot(
-            Request::get("/_/session")
-                .header(header::COOKIE, cookie(&fixture.user))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(body["user"]["password"], password);
+    assert_eq!(
+        session(&fixture.state, &cookie(&fixture.user)).await["user"]["password"],
+        password
+    );
 }

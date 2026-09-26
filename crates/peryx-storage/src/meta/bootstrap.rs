@@ -57,6 +57,7 @@ impl MetaStore {
             name,
             state: UserState::Active,
             revision: 1,
+            session_epoch: 0,
         };
         let user_bytes = serde_json::to_vec(&user).map_err(MetaError::from)?;
         txn.open_table(USER)

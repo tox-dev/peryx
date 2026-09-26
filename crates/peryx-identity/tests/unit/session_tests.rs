@@ -19,6 +19,7 @@ fn user() -> ServerUser {
         name: UserName::new("Ada Lovelace").unwrap(),
         state: UserState::Active,
         revision: 3,
+        session_epoch: 5,
     }
 }
 
@@ -57,23 +58,42 @@ fn test_a_sealed_session_round_trips_before_it_expires() {
     assert_eq!(sealer.open_session(&cookie, 999), Some(user));
 }
 
-#[test]
-fn test_a_ring_session_remains_compatible() {
-    let user = user();
+fn ring_sealed(info: &[u8], data: &serde_json::Value) -> String {
     let mut material = [0_u8; 32];
     Salt::new(HKDF_SHA256, b"peryx-identity-session-hkdf-salt-v1")
         .extract(KEY)
-        .expand(&[b"peryx browser session v1"], &CHACHA20_POLY1305)
+        .expand(&[info], &CHACHA20_POLY1305)
         .and_then(|key| key.fill(&mut material))
         .unwrap();
     let key = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &material).unwrap());
     let nonce = [7_u8; NONCE_LEN];
-    let mut sealed = serde_json::to_vec(&serde_json::json!({ "exp": 1_000, "data": &user })).unwrap();
+    let mut sealed = serde_json::to_vec(&serde_json::json!({ "exp": 1_000, "data": data })).unwrap();
     key.seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::empty(), &mut sealed)
         .unwrap();
-    let cookie = URL_SAFE_NO_PAD.encode([nonce.as_slice(), sealed.as_slice()].concat());
+    URL_SAFE_NO_PAD.encode([nonce.as_slice(), sealed.as_slice()].concat())
+}
+
+#[test]
+fn test_a_ring_session_remains_compatible() {
+    let user = user();
+    let cookie = ring_sealed(b"peryx browser session v2", &serde_json::to_value(&user).unwrap());
 
     assert_eq!(sealer().open_session(&cookie, 999), Some(user));
+}
+
+/// A session from before epochs existed would read as epoch 0 and match every account whose password
+/// never changed, so it must not open at all.
+#[test]
+fn test_a_session_sealed_before_session_epochs_does_not_open() {
+    let legacy = serde_json::json!({
+        "id": "usr_legacy",
+        "name": { "display": "Ada Lovelace", "canonical": "ada lovelace" },
+        "state": "active",
+        "revision": 1,
+    });
+    let cookie = ring_sealed(b"peryx browser session v1", &legacy);
+
+    assert_eq!(sealer().open_session(&cookie, 999), None);
 }
 
 #[test]

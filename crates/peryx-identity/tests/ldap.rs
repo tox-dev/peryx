@@ -157,6 +157,7 @@ async fn assert_service_link(search_provider: LdapProvider, fry: &ExternalLogin)
                     name: UserName::new("Fry").unwrap(),
                     state: UserState::Active,
                     revision: 1,
+                    session_epoch: 0,
                 },
                 link_created: false,
                 grants_changed: false,

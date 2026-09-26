@@ -7,7 +7,7 @@ use argon2::password_hash::PasswordHasher as _;
 use argon2::{Algorithm, Argon2, Params, Version};
 use peryx_identity::{
     Action, Glob, Grant, IndexAcl, NamedToken, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier,
-    Principal, UserId, UserLifecycleChange, UserState,
+    Principal, ServerUser, UserId, UserLifecycleChange, UserState,
 };
 use peryx_storage::meta::{MetaStore, StoredPasswordVerifier};
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -411,11 +411,52 @@ async fn test_change_password_replaces_the_verifier() {
 
     assert_eq!(
         (
-            changed,
             service.authenticate("Alice", "new password").await.unwrap(),
             service.authenticate("Alice", "old password").await.unwrap(),
         ),
-        (true, Some(user.id), None)
+        (Some(user.id.clone()), None)
+    );
+    assert_eq!(
+        changed,
+        Some(ServerUser {
+            session_epoch: 1,
+            ..user
+        })
+    );
+}
+
+#[tokio::test]
+async fn test_change_password_stores_the_advanced_session_epoch() {
+    let (_dir, _store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    service.set_password(&user.id, "old password").await.unwrap();
+
+    let changed = service
+        .change_password(&user.id, "old password", "new password")
+        .await
+        .unwrap();
+
+    assert_eq!(service.inspect(&user.id).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn test_authenticate_keeps_the_session_epoch_when_it_upgrades_a_stale_verifier() {
+    let (_dir, store, weak) = cheap_service();
+    let user = weak.create("Alice").unwrap();
+    weak.set_password(&user.id, "correct horse").await.unwrap();
+    let tighter = PasswordPolicy::new(16, 2, 1).unwrap();
+    let strong = UserService::with_password_settings(store.clone(), tighter, 2);
+
+    let signed_in = strong.authenticate_account("Alice", "correct horse").await.unwrap();
+
+    let upgraded = store.get_user_password(&user.id).unwrap().unwrap();
+    assert_eq!(
+        (
+            upgraded.verifier().check("correct horse", &tighter),
+            signed_in,
+            strong.inspect(&user.id).unwrap()
+        ),
+        (PasswordCheck::Accepted { stale: false }, Some(user.clone()), Some(user))
     );
 }
 
@@ -455,7 +496,7 @@ async fn test_change_password_rejects_without_touching_the_verifier(
                 .unwrap()
                 .map(|stored| stored.verifier().clone()),
         ),
-        (false, before)
+        (None, before)
     );
 }
 
@@ -506,13 +547,16 @@ async fn test_change_password_loses_to_a_concurrent_password_change(#[case] chan
         .map(|stored| stored.verifier().clone());
     release_login.wait();
 
-    assert!(!changing.join().unwrap().unwrap());
+    assert_eq!(changing.join().unwrap().unwrap(), None);
     assert_eq!(
-        store
-            .get_user_password(&user.id)
-            .unwrap()
-            .map(|stored| stored.verifier().clone()),
-        password_after_change
+        (
+            store
+                .get_user_password(&user.id)
+                .unwrap()
+                .map(|stored| stored.verifier().clone()),
+            service.inspect(&user.id).unwrap()
+        ),
+        (password_after_change, Some(user))
     );
 }
 

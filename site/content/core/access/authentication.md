@@ -273,9 +273,9 @@ cookie.
 classification - accepts the session cookie only when the request carries no `Authorization` header. A header the
 request does carry decides that request on its own: a rejected credential is terminal and never falls back to the
 cookie. Each session-authorized read loads the account and its role grants from metadata, so the cookie contributes an
-identity and never an authority snapshot. A disabled account, a deleted account, and a revoked grant all take effect on
-the next request rather than at cookie expiry, and metadata that cannot be read denies rather than serves the sealed
-copy.
+identity and never an authority snapshot. A disabled account, a deleted account, a changed password, and a revoked grant
+all take effect on the next request rather than at cookie expiry, and metadata that cannot be read denies rather than
+serves the sealed copy.
 
 **Outages.** `request_timeout_secs` bounds discovery, key, token, and user-info requests. Once a session exists, no
 request reaches the provider. A provider outage fails an in-progress browser login with a retryable `503` but leaves
@@ -334,9 +334,12 @@ refuses the change like any other mutation. The route shares the same-origin gua
 budget with the password sign-in form. Each attempt that reaches the current password check emits a `password_change`
 security event whose `actor` is the account's stable ID and whose `result` is `success` or `denied`.
 
-Changing the password ends no session. A session cookie carries no password state and peryx keeps no server-side session
-record, so every session of that user, including one opened with the old password on another device, stays valid until
-its cookie expires or that browser logs out.
+Changing the password ends every other session of that user, including one opened with the old password on another
+device. Each account carries a session epoch that its session cookies are sealed with. The change advances it in the
+same metadata transaction that replaces the verifier, and a cookie sealed under an earlier epoch reads as signed out on
+its next request. The browser that made the change proved the current password, so the redirect sets a fresh session
+cookie under the new epoch and that browser stays signed in. A sign-in that re-enrolls a stale verifier keeps the same
+password and ends no session.
 
 ## Per-index keys
 
@@ -397,9 +400,9 @@ composed Unicode spellings identify the same user. Creating or renaming to an ex
 changing either account. The original display spelling remains available for presentation.
 
 New users are `active`. A disabled user remains inspectable by ID, but the next identity lookup no longer resolves it.
-Reactivation restores lookup. Create, rename, disable, and reactivate operations append actor-neutral lifecycle records
-in the same transaction as the account change. No operation in this lifecycle stores a password, token, role, or
-external identity subject.
+Disabling a user also ends its browser sessions. Reactivation restores lookup but not those sessions. Create, rename,
+disable, and reactivate operations append actor-neutral lifecycle records in the same transaction as the account change.
+No operation in this lifecycle stores a password, token, role, or external identity subject.
 
 Opening an existing metadata store creates the user tables in one metadata transaction. Existing index configuration,
 cached artifact records, and access policy remain in their current tables. If table initialization fails, the

@@ -100,8 +100,9 @@ impl HeaderCredential {
 /// The signed-in account for a browser session, or `None` when the request carries no usable one.
 ///
 /// The sealed cookie holds a snapshot up to a session lifetime old, so the stored account decides:
-/// a disabled or removed user has no session, and an unreadable store denies rather than trusts the
-/// snapshot.
+/// a disabled or removed user has no session, a session sealed before the account's password last
+/// changed or before it was last disabled is over, and an unreadable store denies rather than trusts
+/// the snapshot.
 #[must_use]
 pub fn session_user(state: &ServingState, headers: &HeaderMap) -> Option<ServerUser> {
     let sealer = state.session_sealer()?;
@@ -112,7 +113,7 @@ pub fn session_user(state: &ServingState, headers: &HeaderMap) -> Option<ServerU
         .inspect(&snapshot.id)
         .ok()
         .flatten()
-        .filter(|user| user.state == UserState::Active)
+        .filter(|user| user.state == UserState::Active && user.session_epoch == snapshot.session_epoch)
 }
 
 /// Whether a browser `Origin` names the host the request was sent to: the same host, compared without

@@ -55,6 +55,7 @@ impl MetaStore {
             name,
             state: UserState::Active,
             revision: 1,
+            session_epoch: 0,
         };
         {
             let bytes = serde_json::to_vec(&user).map_err(MetaError::from)?;
@@ -188,6 +189,10 @@ impl MetaStore {
         }
         user.state = state;
         user.revision += 1;
+        // Reactivating an account must not bring back the sessions it had when it was disabled.
+        if state == UserState::Disabled {
+            user.session_epoch += 1;
+        }
         write_user(&txn, &user)?;
         append_event(
             &txn,
@@ -244,7 +249,8 @@ impl MetaStore {
         }))
     }
 
-    /// Replaces the verifier only when it still matches the value the caller checked.
+    /// Replaces the verifier only when it still matches the value the caller checked. Open sessions stay
+    /// valid, which suits re-enrolling the same password under a newer policy.
     ///
     /// # Errors
     /// Returns a store error when the transaction cannot read or replace the row.
@@ -255,19 +261,37 @@ impl MetaStore {
         replacement: &PasswordVerifier,
     ) -> Result<bool, MetaError> {
         let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(USER_VERIFIER)?;
-            if table
-                .get(id.as_str())?
-                .is_none_or(|value| value.value() != expected.serialized)
-            {
-                return Ok(false);
-            }
-            let bytes = serde_json::to_vec(replacement)?;
-            table.insert(id.as_str(), bytes.as_slice())?;
+        if !replace_checked_verifier(&txn, id, expected, replacement)? {
+            return Ok(false);
         }
         txn.commit()?;
         Ok(true)
+    }
+
+    /// Replaces the verifier as [`Self::compare_and_set_user_password`] does and advances the user's
+    /// session epoch in the same transaction, so no crash leaves a new password beside sessions opened
+    /// with the old one. Returns the updated user, or `None` when the user or the checked verifier is
+    /// gone.
+    ///
+    /// # Errors
+    /// Returns a store error when the transaction cannot read or replace the rows.
+    pub fn change_user_password(
+        &self,
+        id: &UserId,
+        expected: &StoredPasswordVerifier,
+        replacement: &PasswordVerifier,
+    ) -> Result<Option<ServerUser>, MetaError> {
+        let txn = self.db.begin_write()?;
+        let Some(mut user) = read_user(&txn, id)? else {
+            return Ok(None);
+        };
+        if !replace_checked_verifier(&txn, id, expected, replacement)? {
+            return Ok(None);
+        }
+        user.session_epoch += 1;
+        write_user(&txn, &user)?;
+        txn.commit()?;
+        Ok(Some(user))
     }
 
     /// Disables password authentication for the user.
@@ -373,6 +397,24 @@ pub(super) fn names_require_migration(txn: &redb::ReadTransaction) -> Result<boo
     Ok(schema
         .get(USER_NAME_SCHEMA_KEY)?
         .is_none_or(|version| version.value() != USER_NAME_CANONICAL_VERSION))
+}
+
+fn replace_checked_verifier(
+    txn: &WriteTransaction,
+    id: &UserId,
+    expected: &StoredPasswordVerifier,
+    replacement: &PasswordVerifier,
+) -> Result<bool, MetaError> {
+    let mut table = txn.open_table(USER_VERIFIER)?;
+    if table
+        .get(id.as_str())?
+        .is_none_or(|value| value.value() != expected.serialized)
+    {
+        return Ok(false);
+    }
+    let bytes = serde_json::to_vec(replacement)?;
+    table.insert(id.as_str(), bytes.as_slice())?;
+    Ok(true)
 }
 
 pub(super) fn read_user(txn: &WriteTransaction, id: &UserId) -> Result<Option<ServerUser>, MetaError> {

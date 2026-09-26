@@ -153,6 +153,10 @@ async fn login_password_inner(state: &AppState, uri: &Uri, headers: &HeaderMap, 
 /// cookie alone cannot change the password. The new password is checked against the length policy and
 /// its confirmation before any derivation runs. The same-origin guard keeps another site from
 /// submitting the form with the victim's cookie.
+///
+/// A change ends every session of the account, including one opened with a leaked old password. The
+/// browser that made the change proved the current password, as a sign-in does, so it gets a fresh
+/// session and stays signed in.
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
     uri: Uri,
@@ -169,7 +173,11 @@ async fn change_password_inner(state: &AppState, uri: &Uri, headers: &HeaderMap,
     let Some(form) = parse_password_change_form(body) else {
         return (StatusCode::BAD_REQUEST, "invalid password form").into_response();
     };
-    let Some(user) = session_user(&state.serving, headers) else {
+    let Some((sealer, user)) = state
+        .serving
+        .session_sealer()
+        .zip(session_user(&state.serving, headers))
+    else {
         return redirect(PASSWORD_REJECTED_PATH, &[]);
     };
     if form.replacement != form.confirmation
@@ -183,8 +191,14 @@ async fn change_password_inner(state: &AppState, uri: &Uri, headers: &HeaderMap,
         .change_password(&user.id, &form.current, &form.replacement)
         .await
     {
-        Ok(true) => redirect(PASSWORD_CHANGED_PATH, &[]),
-        Ok(false) => redirect(PASSWORD_REJECTED_PATH, &[]),
+        Ok(Some(user)) => {
+            let session = sealer.seal_session(&user, (state.serving.clock)() + SESSION_TTL_SECS);
+            redirect(
+                PASSWORD_CHANGED_PATH,
+                &[set_cookie(SESSION_COOKIE, &session, ROOT_PATH, SESSION_TTL_SECS)],
+            )
+        }
+        Ok(None) => redirect(PASSWORD_REJECTED_PATH, &[]),
         Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "password change is unavailable; retry").into_response(),
     }
 }

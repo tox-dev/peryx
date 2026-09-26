@@ -294,6 +294,9 @@ impl UserService {
     /// same cost. The new verifier replaces only the one that check read: a password changed by another
     /// request in between fails this change rather than being overwritten by it.
     ///
+    /// A change advances the account's session epoch with the verifier, ending every browser session
+    /// sealed before it. Returns the updated account, so the caller can seal a session that outlives it.
+    ///
     /// # Errors
     /// Returns an unavailable error when lookup, derivation admission, hashing, or conditional
     /// replacement fails.
@@ -302,20 +305,20 @@ impl UserService {
         id: &UserId,
         current: &str,
         replacement: &str,
-    ) -> Result<bool, AuthenticationError> {
+    ) -> Result<Option<ServerUser>, AuthenticationError> {
         let admission = self.admit()?;
         let active = self.store.get_user(id)?.filter(|user| user.state == UserState::Active);
         let Some(checked) = self.check_password(&admission, active, current).await? else {
             drop(admission);
             Event::new("password_change", "denied").actor(Some(id.as_str())).emit();
-            return Ok(false);
+            return Ok(None);
         };
         let replacement = self.hash(&admission, replacement.to_owned()).await?;
         drop(admission);
         let changed = self
             .store
-            .compare_and_set_user_password(&checked.user.id, &checked.verifier, &replacement)?;
-        Event::new("password_change", if changed { "success" } else { "denied" })
+            .change_user_password(&checked.user.id, &checked.verifier, &replacement)?;
+        Event::new("password_change", if changed.is_some() { "success" } else { "denied" })
             .actor(Some(id.as_str()))
             .emit();
         Ok(changed)

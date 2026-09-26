@@ -171,6 +171,7 @@ fn create_external_user(txn: &WriteTransaction, requested: &UserName) -> Result<
         name,
         state: UserState::Active,
         revision: 1,
+        session_epoch: 0,
     })
 }
 
