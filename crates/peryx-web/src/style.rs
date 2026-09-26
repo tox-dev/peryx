@@ -176,6 +176,17 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   align-items: center; max-width: 48rem;
 }
 .upload-form label { font-weight: 600; }
+.login-form {
+  display: grid; grid-template-columns: minmax(6rem, 8rem) minmax(12rem, 24rem); gap: 0.8rem 1rem;
+  align-items: center; margin: 1rem 0 1.5rem;
+}
+.login-form label { font-weight: 600; }
+.login-form .token { max-width: none; margin: 0; }
+.login-form div { grid-column: 2; }
+.login-form button {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--accent);
+  padding: 0.45rem 0.9rem; cursor: pointer; font-weight: 600;
+}
 .upload-form select, .upload-form input[type='file'] {
   min-width: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text);
   padding: 0.55rem 0.7rem;
@@ -275,7 +286,8 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   .nav-links { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
   .search-controls { grid-template-columns: 1fr 1fr; }
   .search-controls .search { grid-column: 1 / -1; }
-  .upload-form { grid-template-columns: 1fr; }
+  .upload-form, .login-form { grid-template-columns: 1fr; }
+  .login-form div { grid-column: 1; }
   .upload-form .dim, .upload-actions, .upload-form progress, .upload-outcome { grid-column: 1; }
   .policy-filters { grid-template-columns: 1fr 1fr; }
 }

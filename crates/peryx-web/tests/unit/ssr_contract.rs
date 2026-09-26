@@ -379,18 +379,46 @@ async fn login_contract_reads_signed_session_cookie() {
     );
     let app = Arc::new(app);
     let (_, _, anonymous) = render(app.clone(), "/login", &[]).await;
-    assert!(anonymous.contains("No login providers are configured."), "{anonymous}");
+    assert!(anonymous.contains(r#"action="/_/login/password""#), "{anonymous}");
     let (_, _, body) = render(app, "/login", &[(header::COOKIE.as_str(), cookie.as_str())]).await;
 
     assert!(body.contains("Signed in as"), "{body}");
     assert!(body.contains("Ada Lovelace"), "{body}");
 }
 
+#[tokio::test]
+async fn login_contract_reports_a_rejected_password_sign_in() {
+    let (_directory, mut app) = state(Vec::new());
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+
+    let (_, _, body) = render(Arc::new(app), "/login?error=sign-in", &[]).await;
+
+    assert!(body.contains("Sign-in failed. Check the name and password."), "{body}");
+}
+
+#[tokio::test]
+async fn login_contract_without_a_sealer_offers_no_password_form() {
+    let (_directory, app) = state(Vec::new());
+
+    let (_, _, body) = render(Arc::new(app), "/login", &[]).await;
+
+    assert!(body.contains("No login providers are configured."), "{body}");
+}
+
+#[tokio::test]
+async fn header_contract_omits_login_without_a_way_to_sign_in() {
+    let (_directory, app) = state(Vec::new());
+
+    let (_, _, body) = render(Arc::new(app), "/", &[]).await;
+
+    assert!(!body.contains(r#"href="/login""#), "{body}");
+}
+
 #[rstest::rstest]
-#[case::anonymous_without_providers(false)]
+#[case::anonymous_with_local_sign_in(false)]
 #[case::signed_in(true)]
 #[tokio::test]
-async fn header_contract_links_login_only_when_it_offers_sign_in(#[case] signed_in: bool) {
+async fn header_contract_links_login_when_it_offers_sign_in(#[case] signed_in: bool) {
     let (_directory, mut app) = state(Vec::new());
     let user = app.serving.users.create("Ada Lovelace").unwrap();
     app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
@@ -406,7 +434,7 @@ async fn header_contract_links_login_only_when_it_offers_sign_in(#[case] signed_
 
     let (_, _, body) = render(Arc::new(app), "/", headers).await;
 
-    assert_eq!(body.contains(r#"href="/login""#), signed_in, "{body}");
+    assert!(body.contains(r#"href="/login""#), "{body}");
 }
 
 #[tokio::test]

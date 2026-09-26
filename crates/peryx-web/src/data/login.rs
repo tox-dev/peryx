@@ -8,6 +8,7 @@ use super::RequiredOption;
 struct SessionDocument {
     user: RequiredOption<SessionUser>,
     providers: Vec<String>,
+    local: bool,
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
@@ -16,7 +17,7 @@ struct SessionUser {
     name: String,
 }
 
-/// The browser login state: who is signed in and which providers to offer.
+/// The browser login state: who is signed in and how a visitor can sign in.
 ///
 /// # Errors
 ///
@@ -34,6 +35,7 @@ pub async fn load_login() -> Result<UiLoginState, super::LoaderError> {
             Ok(UiLoginState {
                 user: document.user.0.map(|user| user.name),
                 providers: document.providers,
+                local: document.local,
             })
         })
         .await

@@ -1694,19 +1694,60 @@ boundaryCases(test, {
   },
 });
 
-test("header omits login when no provider or session can use it", async ({
+test("header links login when local sign-in is available", async ({
   page,
 }) => {
   await goto(page, "/");
-  await expect(page.locator(".nav-links")).toBeVisible();
-  await expect(page.locator('a[href="/login"]')).toHaveCount(0);
+  await expect(page.locator('.nav-links a[href="/login"]')).toBeVisible();
+});
+
+test("login signs the administrator in with the password form", async ({
+  page,
+}) => {
+  await goto(page, "/login");
+  await page.getByLabel("Name").fill("administrator");
+  await page.getByLabel("Password").fill("browser-admin-secret");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => url.pathname === "/");
+  await goto(page, "/login");
+  await expect(page.getByText("Signed in as")).toContainText("administrator");
+});
+
+test("login rejects a wrong password without naming the cause", async ({
+  page,
+}) => {
+  await goto(page, "/login");
+  await page.getByLabel("Name").fill("administrator");
+  await page.getByLabel("Password").fill("not-the-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => url.search === "?error=sign-in");
+  await expect(page.getByRole("alert")).toHaveText(
+    "Sign-in failed. Check the name and password.",
+  );
+  await expect(page.getByLabel("Password")).toBeVisible();
+});
+
+test("login renders the password form beside providers returned to the hydrated router", async ({
+  page,
+}) => {
+  await page.route("**/_/session", (route) =>
+    route.fulfill({ json: { user: null, providers: ["work"], local: true } }),
+  );
+  await goto(page, "/");
+  await openClientPath(page, "/login");
+  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Sign in with work" }),
+  ).toHaveAttribute("href", "/_/login/work");
 });
 
 test("login renders providers returned to the hydrated router", async ({
   page,
 }) => {
   await page.route("**/_/session", (route) =>
-    route.fulfill({ json: { user: null, providers: ["work", "personal"] } }),
+    route.fulfill({
+      json: { user: null, providers: ["work", "personal"], local: false },
+    }),
   );
   await goto(page, "/");
   await openClientPath(page, "/login");
@@ -1716,12 +1757,13 @@ test("login renders providers returned to the hydrated router", async ({
   await expect(
     page.getByRole("link", { name: "Sign in with personal" }),
   ).toBeVisible();
+  await expect(page.getByLabel("Password")).toHaveCount(0);
 });
 
 test("login renders the current session", async ({ page }) => {
   await page.route("**/_/session", (route) =>
     route.fulfill({
-      json: { user: { name: "Browser User" }, providers: ["work"] },
+      json: { user: { name: "Browser User" }, providers: ["work"], local: true },
     }),
   );
   await goto(page, "/");
@@ -2135,10 +2177,18 @@ test("stats preserves its last values across a malformed poll", async ({
 });
 
 for (const { label, document } of [
-  { label: "a missing provider list", document: { user: null } },
+  { label: "a missing provider list", document: { user: null, local: false } },
   {
     label: "a mistyped provider list",
-    document: { user: null, providers: "work" },
+    document: { user: null, providers: "work", local: false },
+  },
+  {
+    label: "a missing local sign-in flag",
+    document: { user: null, providers: [] },
+  },
+  {
+    label: "a mistyped local sign-in flag",
+    document: { user: null, providers: [], local: "yes" },
   },
 ]) {
   test(`login reports ${label} without claiming providers disappeared`, async ({
@@ -2161,7 +2211,12 @@ for (const { label, document } of [
 test("login accepts an additive document with no providers", async ({ page }) => {
   await page.route("**/_/session", (route) =>
     route.fulfill({
-      json: { user: null, providers: [], future_session_field: true },
+      json: {
+        user: null,
+        providers: [],
+        local: false,
+        future_session_field: true,
+      },
     }),
   );
   await goto(page, "/");
@@ -2195,8 +2250,12 @@ test("login retains its session without reading an error body and recovers", asy
     return route.fulfill({
       json:
         phase === "initial"
-          ? { user: null, providers: ["work"] }
-          : { user: { name: "Recovered User" }, providers: ["work"] },
+          ? { user: null, providers: ["work"], local: false }
+          : {
+              user: { name: "Recovered User" },
+              providers: ["work"],
+              local: false,
+            },
     });
   });
   await goto(page, "/");

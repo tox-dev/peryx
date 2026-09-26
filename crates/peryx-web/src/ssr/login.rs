@@ -15,5 +15,9 @@ pub async fn login_state() -> UiLoginState {
         None => None,
     };
     let providers = app.serving.oidc_providers().into_iter().map(str::to_owned).collect();
-    UiLoginState { user, providers }
+    UiLoginState {
+        user,
+        providers,
+        local: app.serving.session_sealer().is_some(),
+    }
 }
