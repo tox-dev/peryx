@@ -976,7 +976,8 @@ default_anonymous_read = false
 | `token_ttl_secs`         | Lifetime from 1 through 86400 seconds; OCI token realm minimum is 60 | `300`   |
 | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it | `true`  |
 
-Set at most one of `signing_key` and `signing_key_file`. peryx reads the key at startup. Implementations that mint
+Set at most one of `signing_key` and `signing_key_file`. peryx reads the key at startup. A standalone server without one
+generates a key that seals browser sessions only and keeps it in `data_dir/session-key`. Implementations that mint
 tokens cap their lifetime at `token_ttl_secs`. Peryx requires 60 through 86400 when a signing key and OCI index enable
 the OCI token realm. A deployment with no OCI index accepts 1 through 86400. `default_anonymous_read = false` sets the
 anonymous-read default once instead of adding a flag to each index. See

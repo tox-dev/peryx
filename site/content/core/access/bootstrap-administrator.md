@@ -29,6 +29,10 @@ $ peryx serve --data-dir /var/lib/peryx
 The shell variable stays local unless the operator exported it. The `peryx` process receives the password through
 standard input, so tools that inspect process arguments cannot read it.
 
+Once `peryx serve` runs, the administrator signs in to the web UI at `/login` with the same name and password. A
+standalone server needs no signing key for that; a `dc` or `ha` deployment needs `[auth].signing_key` on every node. See
+[local password sign-in](@/core/access/authentication.md#local-password-sign-in).
+
 ## Secret file
 
 Create the file with access limited to the account that runs peryx, then pass its path:

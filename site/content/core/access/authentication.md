@@ -39,9 +39,9 @@ Supported access implementations:
 `GET /+status` classifies version, coarse health, and the basic index list as public. Counters and implementation
 rollups require `operator:read`; upstream hosts, access-token state, and recent writes require `administration:read`.
 `GET /+stats` requires `operator:read` because it names repositories and resources. Discovery endpoints and aggregate
-`GET /metrics` remain public. Restrict `/metrics` at the reverse proxy under the Prometheus security model. OpenID
-Connect can add browser sign-in and a read-only web session. LDAP resolves server users for login consumers but does not
-add an HTTP login route.
+`GET /metrics` remain public. Restrict `/metrics` at the reverse proxy under the Prometheus security model. A local
+password or OpenID Connect adds browser sign-in and a read-only web session. LDAP resolves server users for login
+consumers but does not add an HTTP login route.
 
 ## Server roles and protected responses
 
@@ -141,6 +141,14 @@ characters:
 $ umask 077
 $ openssl rand -hex 32 > peryx-signing-key
 ```
+
+A standalone server (availability mode `none`) without a configured key generates one on first start: 32 random bytes,
+base64url-encoded, written to `session-key` in the data directory with mode `0600`. Later starts reuse the file, so
+browser sessions survive a restart. The generated key seals browser sessions only; the token realm stays off until
+`signing_key` or `signing_key_file` is set. A configured key always wins over the file, and deleting the file signs
+every browser out on the next start. Startup refuses a `session-key` shorter than 32 bytes. A `dc` or `ha` node
+generates no key, because each node must open the cookies its peers seal; configure the same key on every node to enable
+browser sessions there.
 
 Nodes that mint or verify realm tokens or browser state must use the same value. To rotate it, drain those nodes,
 replace the key on each one, restart them, and restore traffic after the final node has the new value. Draining traffic
@@ -252,11 +260,12 @@ peryx re-opens the sealed handoff and validates the response. The `state` must m
 pinned issuer, this client's audience, a matching `nonce`, and a signature from the issuer's current keys, all within
 `clock_skew_secs`. Any mismatch fails the login. A bounded metadata refresh picks up a rotated signing key.
 
-**The session.** A completed login seals the resolved user into a short-lived `peryx_session` cookie with `HttpOnly`,
-`Secure`, and `SameSite=Lax`, then redirects to the dashboard. The session authenticates the read-only web UI. A
-state-changing request still authenticates with an `Authorization` header token. peryx does not accept the session
-cookie as authorization for a mutation, which prevents a CSRF surface. `GET /_/session` reports the signed-in user and
-configured providers for the login page. `POST /_/logout` clears the cookie.
+**The session.** A completed login, through a provider or the local password form, seals the resolved user into a
+short-lived `peryx_session` cookie with `HttpOnly`, `Secure`, and `SameSite=Lax`, then redirects to the dashboard. The
+session authenticates the read-only web UI. A state-changing request still authenticates with an `Authorization` header
+token. peryx does not accept the session cookie as authorization for a mutation, which prevents a CSRF surface.
+`GET /_/session` reports the signed-in user, the configured providers, and whether local password sign-in is available
+for the login page. `POST /_/logout` clears the cookie.
 
 **What a session authorizes.** A protected read - a server-rendered page, the UI JSON endpoint behind it, and the status
 classification - accepts the session cookie only when the request carries no `Authorization` header. A header the
@@ -276,6 +285,30 @@ login instead of reusing a document the provider marked stale.
 `default_anonymous_read = false` makes each index ACL deny anonymous reads by default. An implementation applies that
 default to its protected routes. Public core routes stay open. An index that should stay open sets
 `anonymous_read = true`.
+
+### Local password sign-in
+
+A server user with a local password, such as the administrator `peryx bootstrap-administrator` creates, signs in to the
+web UI from the login page's name and password form. The form is available whenever peryx can seal a session: with a
+configured `signing_key`, or on a standalone server through its generated [signing key](#signing-key). The form posts
+`name` and `password` as `application/x-www-form-urlencoded` to `POST /_/login/password`, which checks them with the
+same [local password authentication](#local-password-authentication) that guards the management API. A match seals the
+session exactly as a provider login does and redirects to the dashboard.
+
+Every rejection redirects to `/login?error=sign-in`, where the page shows one message. An unknown name, a disabled
+account, an account with no password, and a wrong password look the same, and take the same time. A full password check
+queue or an unreadable identity store answers `503 Service Unavailable`. The route draws on the
+`[rate_limit.authentication]` budget with the other login routes.
+
+Signing a browser in is a state change another site could otherwise drive: a hidden form that logs the victim into an
+account the attacker controls. peryx therefore accepts the form only from its own origin and answers anything else with
+`403`. A browser that sends the
+[`Sec-Fetch-Site`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Site) header must send
+`same-origin`. peryx serves its pages with `Referrer-Policy: no-referrer`, so such a browser posts the form with
+`Origin: null` and the fetch metadata is the only origin signal. A client without fetch metadata must send an `Origin`
+that names the host the request was sent to: the `Host` header, or the HTTP/2 `:authority`. A reverse proxy must forward
+the original `Host` for that fallback, as [serving over HTTPS](@/core/operations/serve-https.md) configures it. The OIDC
+provider ID `password` is reserved because this route owns `/_/login/password`.
 
 ## Per-index keys
 
@@ -402,7 +435,8 @@ share this process-wide admission bound.
 Passwords and verifiers are secrets end to end: neither appears in logs, errors, diagnostics, or any serialized account
 view, and debug rendering redacts a verifier. Enrolling again replaces the verifier; clearing it removes password
 authentication entirely. Clearing and then enrolling a new password is the recovery path when a local password is lost.
-peryx provides no self-service reset, password-reset email, or browser session.
+peryx provides no self-service reset or password-reset email. The same check backs the web UI's
+[local password sign-in](#local-password-sign-in).
 
 ## What this does not do
 
