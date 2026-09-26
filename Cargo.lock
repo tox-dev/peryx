@@ -4755,6 +4755,7 @@ dependencies = [
  "cap-std",
  "clap",
  "futures-util",
+ "getrandom 0.4.3",
  "http-body-util",
  "ipnet",
  "mimalloc",

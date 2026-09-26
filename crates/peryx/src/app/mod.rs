@@ -17,6 +17,7 @@ mod retention;
 mod revocation;
 mod secret;
 
+pub(crate) use bootstrap::{INITIAL_ADMINISTRATOR, provision_initial_administrator};
 pub use bootstrap::{bootstrap_administrator, bootstrap_administrator_with_plugins};
 pub use cache::{cache, cache_with_plugins};
 pub(crate) use config::config_check_with_active_plugins;

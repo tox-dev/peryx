@@ -2,7 +2,7 @@ use peryx_identity::{
     GrantScope, PasswordVerifier, Role, RoleGrant, ServerUser, UserId, UserLifecycleChange, UserLifecycleEvent,
     UserName, UserNameError, UserState,
 };
-use redb::ReadableTable as _;
+use redb::ReadableTable;
 
 use super::{MetaError, MetaStore, ROLE_GRANT, USER, USER_EVENT, USER_NAME, USER_VERIFIER};
 
@@ -19,6 +19,15 @@ pub enum AdministratorBootstrapError {
 }
 
 impl MetaStore {
+    /// Reports whether any administrator grant exists, under the same rule
+    /// [`Self::bootstrap_administrator`] refuses by.
+    ///
+    /// # Errors
+    /// Returns a store error when a grant cannot be read or decoded.
+    pub fn administrator_exists(&self) -> Result<bool, MetaError> {
+        holds_administrator(&self.db.begin_read()?.open_table(ROLE_GRANT)?)
+    }
+
     /// Creates the first administrator and its credentials, grant, and lifecycle record atomically.
     /// Redb serialization gives concurrent attempts one winner.
     ///
@@ -32,17 +41,8 @@ impl MetaStore {
     ) -> Result<ServerUser, AdministratorBootstrapError> {
         let name = UserName::new(display_name)?;
         let txn = self.db.begin_write().map_err(MetaError::from)?;
-        {
-            let grants = txn.open_table(ROLE_GRANT).map_err(MetaError::from)?;
-            for entry in grants.iter().map_err(MetaError::from)? {
-                let (_, value) = entry.map_err(MetaError::from)?;
-                (serde_json::from_slice::<RoleGrant>(value.value())
-                    .map_err(MetaError::from)?
-                    .role
-                    != Role::Administrator)
-                    .then_some(())
-                    .ok_or(AdministratorBootstrapError::AdministratorExists)?;
-            }
+        if holds_administrator(&txn.open_table(ROLE_GRANT).map_err(MetaError::from)?)? {
+            return Err(AdministratorBootstrapError::AdministratorExists);
         }
         {
             let names = txn.open_table(USER_NAME).map_err(MetaError::from)?;
@@ -92,4 +92,14 @@ impl MetaStore {
         txn.commit().map_err(MetaError::from)?;
         Ok(user)
     }
+}
+
+fn holds_administrator(grants: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<bool, MetaError> {
+    for entry in grants.iter()? {
+        let (_, value) = entry?;
+        if serde_json::from_slice::<RoleGrant>(value.value())?.role == Role::Administrator {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

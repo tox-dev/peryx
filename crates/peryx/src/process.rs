@@ -337,8 +337,17 @@ fn run_server_with_active_plugins(
         let state = crate::server::build_state_with_active_plugins(config, plugins)?;
         crate::server::recover_job_attempts(&state)?;
         crate::server::recover_blob_uploads(&state).await?;
+        let initial_password = app::provision_initial_administrator(config, &state).await?;
         let availability = prepare_process_availability(config, plugins, &state).await?;
-        let result = run_prepared_process(config, listen_address, state, availability, shutdown).await;
+        let result = run_prepared_process(
+            config,
+            listen_address,
+            state,
+            availability,
+            initial_password.as_deref(),
+            shutdown,
+        )
+        .await;
         if let Some(signal_task) = signal_task {
             signal_task.abort();
         }
@@ -353,6 +362,7 @@ async fn run_prepared_process(
     mut prepared_availability: Option<
         peryx_ha::PreparedAvailability<axum::Router, peryx_ha_distributed::DistributedHandle>,
     >,
+    initial_password: Option<&Path>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     let router = crate::server::router_for(
@@ -365,7 +375,9 @@ async fn run_prepared_process(
         .as_ref()
         .is_some_and(|prepared| prepared.is_replica);
     let mut tasks = ProcessTasks::new(shutdown.clone());
-    let public_server = match prepare_public_server(config, listen_address, router, shutdown.clone()).await {
+    let prepared_public =
+        prepare_public_server(config, listen_address, router, initial_password, shutdown.clone()).await;
+    let public_server = match prepared_public {
         Ok(server) => server,
         Err(error) => {
             return finish_process(
@@ -719,6 +731,7 @@ async fn prepare_public_server(
     config: &Config,
     addr: std::net::SocketAddr,
     router: axum::Router,
+    initial_password: Option<&Path>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<PreparedPublicServer> {
     let listener = public_tcp_listener(
@@ -749,7 +762,7 @@ async fn prepare_public_server(
         }
         Some(config::TlsConfig::Acme(acme)) => prepared_acme(listener, acme, make_service, indexes, shutdown)?,
     };
-    print_banner(&addr, indexes, scheme);
+    print_banner(&addr, indexes, scheme, initial_password);
     Ok(PreparedPublicServer(server))
 }
 
@@ -826,7 +839,7 @@ async fn load_tls_config(cert: &Path, key: &Path) -> std::io::Result<axum_server
     axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await
 }
 
-fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str) {
+fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str, initial_password: Option<&Path>) {
     use std::io::IsTerminal as _;
     let mut stdout = std::io::stdout().lock();
     let terminal = stdout.is_terminal();
@@ -837,6 +850,7 @@ fn print_banner(addr: &std::net::SocketAddr, indexes: usize, scheme: &str) {
         addr,
         indexes,
         scheme,
+        initial_password,
     );
 }
 
@@ -847,8 +861,9 @@ fn write_banner_logged(
     addr: &std::net::SocketAddr,
     indexes: usize,
     scheme: &str,
+    initial_password: Option<&Path>,
 ) {
-    if let Err(error) = write_banner(out, terminal, style, addr, indexes, scheme) {
+    if let Err(error) = write_banner(out, terminal, style, addr, indexes, scheme, initial_password) {
         tracing::warn!(%error, "write startup banner");
     }
 }
@@ -899,6 +914,7 @@ fn write_banner(
     addr: &std::net::SocketAddr,
     indexes: usize,
     scheme: &str,
+    initial_password: Option<&Path>,
 ) -> std::io::Result<()> {
     if !terminal {
         return Ok(());
@@ -934,6 +950,14 @@ fn write_banner(
     let plural = if indexes == 1 { "" } else { "es" };
     let listener = format!("  {colour}{arrow}{reset} {indexes} index{plural}, listening on {scheme}://{addr}");
     writeln!(out, "{listener}")?;
+    if let Some(path) = initial_password {
+        let notice = format!(
+            "  {colour}{arrow}{reset} created administrator {}, password in {}",
+            app::INITIAL_ADMINISTRATOR,
+            path.display()
+        );
+        writeln!(out, "{notice}")?;
+    }
     writeln!(out)
 }
 

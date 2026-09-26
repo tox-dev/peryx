@@ -594,6 +594,7 @@ async fn test_manual_tls_entrypoints_stop_on_cancellation() {
         &config,
         config.listen_address().unwrap(),
         axum::Router::new(),
+        None,
         cancelled(),
     )
     .await
@@ -648,6 +649,7 @@ async fn test_acme_entrypoint_stops_on_cancellation() {
         &config,
         config.listen_address().unwrap(),
         axum::Router::new(),
+        None,
         cancelled(),
     )
     .await
@@ -704,6 +706,7 @@ fn test_banner_rendering_covers_terminal_modes_and_write_failure() {
         &address,
         0,
         "http",
+        None,
     )
     .unwrap();
     assert!(hidden.is_empty());
@@ -725,6 +728,7 @@ fn test_banner_rendering_covers_terminal_modes_and_write_failure() {
             &address,
             indexes,
             "https",
+            None,
         )
         .unwrap();
         assert!(String::from_utf8(output).unwrap().contains(expected));
@@ -740,9 +744,58 @@ fn test_banner_rendering_covers_terminal_modes_and_write_failure() {
         &address,
         1,
         "http",
+        None,
     );
     std::io::Write::flush(&mut FailingWriter).unwrap();
-    print_banner(&address, 1, "http");
+    print_banner(&address, 1, "http", None);
+}
+
+#[test]
+fn test_banner_names_the_initial_administrator_password_file() {
+    let mut output = Vec::new();
+
+    write_banner(
+        &mut output,
+        true,
+        BannerStyle {
+            unicode: false,
+            colour: "",
+        },
+        &"127.0.0.1:8080".parse().unwrap(),
+        1,
+        "http",
+        Some(Path::new("/srv/peryx/initial-admin-password")),
+    )
+    .unwrap();
+
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("-> created administrator admin, password in /srv/peryx/initial-admin-password\n")
+    );
+}
+
+#[test]
+fn test_local_server_creates_the_initial_administrator_only_on_first_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = plugins();
+    let config = local_config(&directory, &plugins);
+    let active = crate::server::activate_plugins(&config, &plugins).unwrap();
+    let path = directory.path().join("initial-admin-password");
+
+    run_server_until_with_active_plugins(&config, &active, cancelled()).unwrap();
+    let password = std::fs::read_to_string(&path).unwrap();
+    run_server_until_with_active_plugins(&config, &active, cancelled()).unwrap();
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), password);
+    let store = peryx_storage::meta::MetaStore::open_existing(directory.path().join("peryx.redb")).unwrap();
+    let authenticated = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(peryx_driver::users::UserService::new(store).authenticate("admin", &password))
+        .unwrap();
+    assert!(authenticated.is_some());
 }
 
 #[test]
@@ -1200,6 +1253,7 @@ async fn test_prepared_process_rolls_back_an_activation_failure() {
         config.listen_address().unwrap(),
         state,
         Some(availability),
+        None,
         cancelled(),
     )
     .await

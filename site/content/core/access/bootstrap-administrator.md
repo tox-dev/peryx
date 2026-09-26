@@ -4,8 +4,35 @@ description = "Create one local administrator from standard input or a mounted s
 weight = 11
 +++
 
-`peryx bootstrap-administrator` creates the first local administrator in a data directory. Run it before `peryx serve`.
-The command opens the metadata store and exits after the transaction; it does not bind a socket or start scheduled jobs.
+`peryx bootstrap-administrator` creates the first local administrator in a data directory. Run it before `peryx serve`
+to choose the administrator's name and password, or on a `dc` or `ha` node, where `peryx serve` never creates one. The
+command opens the metadata store and exits after the transaction; it does not bind a socket or start scheduled jobs.
+
+## Generated administrator
+
+With `availability.mode = "none"` and a writable data directory, `peryx serve` creates an administrator named `admin`
+when the metadata store holds no administrator grant. It draws 192 bits from the operating system CSPRNG, encodes them
+as a 32-character URL-safe password, and writes that password to `initial-admin-password` in the data directory before
+the account commits. On Unix the file has mode `0600`. The account goes through the same transaction as
+`peryx bootstrap-administrator`, so it gets the same Argon2id verifier, server administrator grant, and lifecycle
+record.
+
+The startup banner adds a `created administrator admin, password in <path>` line below the listening address, and the
+log records the same path in its `password_file` field. Neither prints the password. With the default data directory:
+
+```console
+$ cat peryx-data/initial-admin-password
+```
+
+Store the password in a password manager, then delete the file. Peryx does not remove it: once the administrator grant
+exists, later starts skip this step and leave the data directory alone.
+
+Startup fails without creating the account when the file already exists, for example after an interrupted first start
+left it behind. Delete the stale file and start again. Startup also fails when a user named `admin` exists without an
+administrator grant; bootstrap a differently named administrator with `peryx bootstrap-administrator` instead.
+
+A read-only process, a `dc` or `ha` node, and a data directory that already holds an administrator grant, including one
+from `peryx bootstrap-administrator`, create nothing.
 
 The password must contain 15 to 1,024 Unicode characters. Peryx accepts spaces and other Unicode characters without
 composition rules, following the

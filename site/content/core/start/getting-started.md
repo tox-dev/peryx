@@ -24,6 +24,11 @@ peryx serve
 With no config file, the process listens on `http://127.0.0.1:4433` and uses `availability.mode = "none"`. That mode
 starts no availability subsystem.
 
+The first start on an empty data directory creates an administrator named `admin` with a random password and writes the
+password to `peryx-data/initial-admin-password`; the startup banner prints that path, never the password. Store the
+password, then delete the file. [Bootstrap the first administrator](@/core/access/bootstrap-administrator.md) covers
+choosing your own name and password instead.
+
 Check the shared status surface:
 
 ```shell

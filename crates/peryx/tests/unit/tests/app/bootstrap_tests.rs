@@ -221,3 +221,178 @@ impl Read for FailRead {
         Err(std::io::Error::other("read failed"))
     }
 }
+
+#[tokio::test]
+async fn test_provision_initial_administrator_creates_an_authenticating_admin() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+
+    let path = provision_initial_administrator(&config, &state).await.unwrap().unwrap();
+
+    assert_eq!(path, config.data_dir.join("initial-admin-password"));
+    let password = std::fs::read_to_string(&path).unwrap();
+    assert!((15..=1_024).contains(&password.chars().count()), "{}", password.len());
+    let users = UserService::new(state.serving.meta.clone());
+    let admin = users.identify("admin").unwrap().unwrap();
+    assert_eq!(users.authenticate("admin", &password).await.unwrap(), Some(admin.id));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_provision_initial_administrator_writes_an_owner_only_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+
+    let path = provision_initial_administrator(&config, &state).await.unwrap().unwrap();
+
+    assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_draws_a_fresh_password_per_store() {
+    let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (first_config, first_state) = serving(&first, false);
+    let (second_config, second_state) = serving(&second, false);
+
+    let first_path = provision_initial_administrator(&first_config, &first_state)
+        .await
+        .unwrap()
+        .unwrap();
+    let second_path = provision_initial_administrator(&second_config, &second_state)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(
+        std::fs::read_to_string(first_path).unwrap(),
+        std::fs::read_to_string(second_path).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_logs_the_path_but_not_the_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+    let mut log = tempfile::tempfile().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(log.try_clone().unwrap()))
+        .finish();
+
+    let path = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        provision_initial_administrator(&config, &state).await.unwrap().unwrap()
+    };
+
+    let mut text = String::new();
+    std::io::Seek::rewind(&mut log).unwrap();
+    log.read_to_string(&mut text).unwrap();
+    let password = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(&path.display().to_string()), "{text}");
+    assert!(!text.contains(&password), "{text}");
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_leaves_an_existing_admin_and_file_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+    let path = provision_initial_administrator(&config, &state).await.unwrap().unwrap();
+    let password = std::fs::read_to_string(&path).unwrap();
+
+    assert_eq!(provision_initial_administrator(&config, &state).await.unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), password);
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_skips_an_explicitly_bootstrapped_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+    UserService::new(state.serving.meta.clone())
+        .bootstrap_administrator("Alice", "correct horse battery staple")
+        .await
+        .unwrap();
+
+    assert_eq!(provision_initial_administrator(&config, &state).await.unwrap(), None);
+    assert!(!config.data_dir.join("initial-admin-password").exists());
+    assert_eq!(
+        UserService::new(state.serving.meta.clone()).identify("admin").unwrap(),
+        None
+    );
+}
+
+#[rstest]
+#[case::dc(AvailabilityConfig::Dc(primary()))]
+#[case::ha(AvailabilityConfig::Ha(primary()))]
+#[tokio::test]
+async fn test_provision_initial_administrator_skips_replicated_modes(#[case] availability: AvailabilityConfig) {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+    let config = Config { availability, ..config };
+
+    assert_eq!(provision_initial_administrator(&config, &state).await.unwrap(), None);
+    assert!(!config.data_dir.join("initial-admin-password").exists());
+    assert!(!state.serving.meta.administrator_exists().unwrap());
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_skips_a_read_only_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, true);
+
+    assert_eq!(provision_initial_administrator(&config, &state).await.unwrap(), None);
+    assert!(!config.data_dir.join("initial-admin-password").exists());
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_refuses_to_overwrite_a_stale_password_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+    let path = config.data_dir.join("initial-admin-password");
+    std::fs::write(&path, "stale").unwrap();
+
+    let error = provision_initial_administrator(&config, &state).await.unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains(&format!("write initial administrator password {}", path.display())),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "stale");
+    assert!(!state.serving.meta.administrator_exists().unwrap());
+}
+
+#[tokio::test]
+async fn test_provision_initial_administrator_removes_the_file_when_bootstrap_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config, state) = serving(&dir, false);
+    UserService::new(state.serving.meta.clone()).create("admin").unwrap();
+
+    let error = provision_initial_administrator(&config, &state).await.unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("create initial administrator \"admin\": user identity \"admin\" already exists"),
+        "{error:#}"
+    );
+    assert!(!config.data_dir.join("initial-admin-password").exists());
+}
+
+fn serving(dir: &tempfile::TempDir, read_only: bool) -> (Config, std::sync::Arc<peryx_driver::AppState>) {
+    let plugins = crate::tests::support::plugins();
+    let config = Config {
+        data_dir: dir.path().join("data"),
+        read_only,
+        ..Config::with_plugins(&plugins)
+    };
+    let active = crate::server::activate_plugins(&config, &plugins).unwrap();
+    let state = crate::server::build_state_with_active_plugins(&config, &active).unwrap();
+    (config, state)
+}
+
+fn primary() -> crate::config::ReplicationConfig {
+    crate::config::ReplicationConfig::Primary {
+        source: "writer".to_owned(),
+        token: crate::config::SecretSource::Literal("replication-token".to_owned()),
+    }
+}

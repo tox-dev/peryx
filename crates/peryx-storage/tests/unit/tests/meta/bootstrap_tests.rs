@@ -3,6 +3,7 @@ use std::sync::{Arc, Barrier};
 
 use peryx_identity::{GrantScope, PasswordCheck, PasswordPolicy, Role, UserLifecycleChange};
 use redb::{ReadableDatabase as _, ReadableTableMetadata as _, TableDefinition};
+use rstest::rstest;
 
 use super::store;
 use crate::meta::{AdministratorBootstrapError, MetaError, MetaStore};
@@ -161,6 +162,64 @@ fn test_bootstrap_rolls_back_earlier_writes_when_a_later_table_fails() {
     assert_eq!(txn.open_table(RAW_USER_NAME).unwrap().len().unwrap(), 0);
     assert_eq!(txn.open_table(RAW_USER_EVENT).unwrap().len().unwrap(), 0);
     assert_eq!(txn.open_table(RAW_GRANT).unwrap().len().unwrap(), 0);
+}
+
+#[test]
+fn test_administrator_exists_is_false_without_grants() {
+    let (_dir, store) = store();
+
+    assert!(!store.administrator_exists().unwrap());
+}
+
+#[test]
+fn test_administrator_exists_after_bootstrap() {
+    let (_dir, store) = store();
+    store
+        .bootstrap_administrator("Alice", &verifier("administrator password"))
+        .unwrap();
+
+    assert!(store.administrator_exists().unwrap());
+}
+
+#[rstest]
+#[case::repository_administrator(Role::Administrator, true)]
+#[case::server_operator(Role::Operator, false)]
+fn test_administrator_exists_follows_the_granted_role(#[case] role: Role, #[case] expected: bool) {
+    let (_dir, store) = store();
+    let user = store.create_user("Existing").unwrap();
+    store
+        .grant_role(
+            &user.id,
+            role,
+            GrantScope::Repository {
+                name: "team/api".to_owned(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(store.administrator_exists().unwrap(), expected);
+}
+
+#[test]
+fn test_administrator_exists_reports_an_undecodable_grant() {
+    let (dir, store) = store();
+    let path = dir.path().join("peryx.redb");
+    drop(store);
+    let database = redb::Database::open(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    txn.open_table(RAW_GRANT)
+        .unwrap()
+        .insert("broken", b"not json".as_slice())
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+
+    let error = MetaStore::open_existing(&path)
+        .unwrap()
+        .administrator_exists()
+        .unwrap_err();
+
+    assert!(matches!(error, MetaError::Decode(_)), "{error:?}");
 }
 
 fn verifier(password: &str) -> peryx_identity::PasswordVerifier {
