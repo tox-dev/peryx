@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-/// The browser login page's state: the signed-in user's display name, if any, the OIDC providers a
-/// visitor can sign in with, and whether the local name and password form works.
+/// The browser login page's state.
+///
+/// It carries the signed-in user's display name, if any, whether that user holds a local password to
+/// change, the OIDC providers a visitor can sign in with, and whether the local name and password form
+/// works.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiLoginState {
     pub user: Option<String>,
+    pub password: bool,
     pub providers: Vec<String>,
     pub local: bool,
 }

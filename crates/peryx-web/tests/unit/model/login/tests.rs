@@ -15,6 +15,7 @@ fn test_login_state_offers_sign_in(
 ) {
     let state = UiLoginState {
         user: user.map(str::to_owned),
+        password: false,
         providers: providers.iter().map(|&provider| provider.to_owned()).collect(),
         local,
     };

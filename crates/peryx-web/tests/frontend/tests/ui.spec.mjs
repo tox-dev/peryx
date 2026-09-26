@@ -1713,6 +1713,111 @@ test("login signs the administrator in with the password form", async ({
   await expect(page.getByText("Signed in as")).toContainText("administrator");
 });
 
+async function signInAsAdministrator(page) {
+  await goto(page, "/login");
+  await page.getByLabel("Name").fill("administrator");
+  await page.getByLabel("Password").fill("browser-admin-secret");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => url.pathname === "/");
+  await goto(page, "/login");
+}
+
+async function submitPasswordChange(page, current, replacement, confirmation) {
+  await page.getByLabel("Current password").fill(current);
+  await page.getByLabel("New password", { exact: true }).fill(replacement);
+  await page.getByLabel("Confirm new password").fill(confirmation);
+  await page.getByRole("button", { name: "Change password" }).click();
+}
+
+for (const { label, current, confirmation, expected } of [
+  {
+    label: "a wrong current password",
+    current: "not-the-password",
+    confirmation: "a new browser passphrase",
+    expected: "Password not changed. Check the current password.",
+  },
+  {
+    label: "a mismatched confirmation",
+    current: "browser-admin-secret",
+    confirmation: "another browser passphrase",
+    expected:
+      "Password not changed. The new password needs 15 to 1,024 characters and must match its confirmation.",
+  },
+]) {
+  test(`password change rejects ${label} and keeps the password`, async ({
+    page,
+  }) => {
+    await signInAsAdministrator(page);
+    await submitPasswordChange(
+      page,
+      current,
+      "a new browser passphrase",
+      confirmation,
+    );
+    await page.waitForURL((url) => url.pathname === "/login");
+    await expect(page.getByRole("alert")).toHaveText(expected);
+    const status = await page.request.get("/+status", {
+      headers: {
+        authorization: `Basic ${Buffer.from("administrator:browser-admin-secret").toString("base64")}`,
+      },
+    });
+    expect(status.status()).toBe(200);
+  });
+}
+
+test("password change posts the form and reports success", async ({ page }) => {
+  await page.route("**/_/session", (route) =>
+    route.fulfill({
+      json: {
+        user: { name: "Browser User", password: true },
+        providers: [],
+        local: true,
+      },
+    }),
+  );
+  let posted;
+  await page.route("**/_/password", (route) => {
+    posted = new URLSearchParams(route.request().postData());
+    return route.fulfill({
+      status: 303,
+      headers: { location: "/login?password=changed" },
+    });
+  });
+  await goto(page, "/");
+  await openClientPath(page, "/login");
+  await submitPasswordChange(
+    page,
+    "the current secret",
+    "a new browser passphrase",
+    "a new browser passphrase",
+  );
+  await page.waitForURL((url) => url.search === "?password=changed");
+  await expect(page.getByRole("status")).toHaveText("Password changed.");
+  expect(Object.fromEntries(posted)).toEqual({
+    current_password: "the current secret",
+    new_password: "a new browser passphrase",
+    confirmation: "a new browser passphrase",
+  });
+});
+
+test("login offers no password change to an account without a password", async ({
+  page,
+}) => {
+  await page.route("**/_/session", (route) =>
+    route.fulfill({
+      json: {
+        user: { name: "Provider User", password: false },
+        providers: ["work"],
+        local: true,
+      },
+    }),
+  );
+  await goto(page, "/");
+  await openClientPath(page, "/login");
+  await expect(page.getByText("Signed in as")).toContainText("Provider User");
+  await expect(page.getByLabel("Current password")).toHaveCount(0);
+});
+
 test("login rejects a wrong password without naming the cause", async ({
   page,
 }) => {
@@ -1763,7 +1868,11 @@ test("login renders providers returned to the hydrated router", async ({
 test("login renders the current session", async ({ page }) => {
   await page.route("**/_/session", (route) =>
     route.fulfill({
-      json: { user: { name: "Browser User" }, providers: ["work"], local: true },
+      json: {
+        user: { name: "Browser User", password: false },
+        providers: ["work"],
+        local: true,
+      },
     }),
   );
   await goto(page, "/");
@@ -2190,6 +2299,18 @@ for (const { label, document } of [
     label: "a mistyped local sign-in flag",
     document: { user: null, providers: [], local: "yes" },
   },
+  {
+    label: "a missing password flag",
+    document: { user: { name: "Browser User" }, providers: [], local: true },
+  },
+  {
+    label: "a mistyped password flag",
+    document: {
+      user: { name: "Browser User", password: "yes" },
+      providers: [],
+      local: true,
+    },
+  },
 ]) {
   test(`login reports ${label} without claiming providers disappeared`, async ({
     page,
@@ -2252,7 +2373,7 @@ test("login retains its session without reading an error body and recovers", asy
         phase === "initial"
           ? { user: null, providers: ["work"], local: false }
           : {
-              user: { name: "Recovered User" },
+              user: { name: "Recovered User", password: false },
               providers: ["work"],
               local: false,
             },

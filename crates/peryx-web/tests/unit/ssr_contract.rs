@@ -21,7 +21,8 @@ use peryx_driver::state::{AppState, Index, IndexDescription, IndexKind, describe
 use peryx_driver::test_doubles::EcosystemDriverFixture;
 use peryx_events::metrics::{MetricFamily, MetricKind};
 use peryx_identity::{
-    Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role, SESSION_COOKIE, ServerUser, SessionSealer,
+    Action, Glob, Grant, GrantScope, IndexAcl, MAX_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS, NamedToken, Role,
+    SESSION_COOKIE, ServerUser, SessionSealer,
 };
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -384,6 +385,43 @@ async fn login_contract_reads_signed_session_cookie() {
 
     assert!(body.contains("Signed in as"), "{body}");
     assert!(body.contains("Ada Lovelace"), "{body}");
+}
+
+#[rstest::rstest]
+#[case::local_password(true)]
+#[case::provider_only(false)]
+#[tokio::test]
+async fn login_contract_offers_the_password_change_form_only_to_a_local_account(#[case] password: bool) {
+    let (_directory, mut app) = state(Vec::new());
+    let user = app.serving.users.create("Ada Lovelace").unwrap();
+    if password {
+        app.serving.users.set_password(&user.id, PASSWORD).await.unwrap();
+    }
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    let cookie = format!(
+        "{SESSION_COOKIE}={}",
+        SessionSealer::new(SESSION_KEY).seal_session(&user, 4_102_444_800)
+    );
+
+    let (_, _, body) = render(Arc::new(app), "/login", &[(header::COOKIE.as_str(), cookie.as_str())]).await;
+
+    assert_eq!(body.contains(r#"action="/_/password""#), password, "{body}");
+}
+
+/// The page states the policy in prose, so it must name the bounds the server enforces.
+#[tokio::test]
+async fn login_contract_states_the_enforced_password_length() {
+    let (_directory, mut app) = state(Vec::new());
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+
+    let (_, _, body) = render(Arc::new(app), "/login?password=invalid", &[]).await;
+
+    let bounds = format!(
+        "needs {MIN_PASSWORD_CHARACTERS} to {},{:03} characters",
+        MAX_PASSWORD_CHARACTERS / 1_000,
+        MAX_PASSWORD_CHARACTERS % 1_000
+    );
+    assert!(body.contains(&bounds), "{body}");
 }
 
 #[tokio::test]
