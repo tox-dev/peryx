@@ -42,18 +42,36 @@ jobs:
           git config user.email "${APP_USER_ID}+peryx-release[bot]@users.noreply.github.com"
         env:
           APP_USER_ID: ${{ vars.RELEASE_APP_USER_ID }}
-      # A version override makes knope release even without change files, which would ship empty notes.
-      - run: |
-          if ! compgen -G ".changeset/*.md" > /dev/null; then
-            echo "::error::no change files under .changeset; nothing to release"
-            exit 1
-          fi
       # CalVer YYYY.MDD.N: the UTC date, then a counter that allows several releases on one day.
       - id: version
         run: |
           day="$(date -u +%Y).$(date -u +%-m%d)"
           last=$(git tag --list "v${day}.*" | sed "s/^v${day}\.//" | sort -n | tail -n 1)
           echo "version=${day}.$((${last:--1} + 1))" >> "$GITHUB_OUTPUT"
+      # Without change files, each pull request merged since the last release becomes one, as GitHub lists
+      # them for release notes. A version override makes knope release even with none, so an empty list
+      # stops the job instead of shipping empty notes.
+      - run: |
+          if ! compgen -G ".changeset/*.md" > /dev/null; then
+            previous=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+            notes=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="v${VERSION}" -f target_commitish="${GITHUB_SHA}" \
+              ${previous:+-f previous_tag_name="$previous"} --jq .body)
+            mkdir -p .changeset
+            n=0
+            while IFS= read -r line; do
+              n=$((n + 1))
+              entry=$(printf '%s' "${line#\* }" | sed -E 's| by @[^ ]+ in https://github\.com/[^ ]+/pull/([0-9]+)$| (#\1)|')
+              printf -- '---\ndefault: change\n---\n\n# %s\n' "$entry" > ".changeset/pull-${n}.md"
+            done < <(grep '^\* ' <<< "$notes")
+          fi
+          if ! compgen -G ".changeset/*.md" > /dev/null; then
+            echo "::error::no change files and no pull requests since the last release; nothing to release"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
       - run: knope prepare-release --verbose --override-version "$VERSION"
         env:
           VERSION: ${{ steps.version.outputs.version }}

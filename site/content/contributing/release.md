@@ -36,11 +36,12 @@ Inspect the cargo-dist plan for the expected targets, installers, checksums, att
 
 ## Document a change
 
-A pull request that changes what users see adds a change file. Run `knope document-change`, pick the change type, and
-write the summary; knope saves it under `.changeset/`. The change type picks the changelog section: `major` lists under
-breaking changes, `minor` under features, and `patch` under fixes. Release notes come only from these files: knope's
-conventional commit parser rejects subjects that start with an emoji, as squash commits here do, so it would pick up
-only the few older subjects without one.
+A change file is optional. Without any, the release lists each pull request merged since the previous release by its
+title, as GitHub generates release notes. To describe a change in more detail, run `knope document-change`, pick the
+change type, and write the summary; knope saves it under `.changeset/`. The change type picks the changelog section:
+`major` lists under breaking changes, `minor` under features, and `patch` under fixes. Once any change file exists, the
+release uses only the change files. knope's conventional commit parser stays off: it rejects subjects that start with an
+emoji, as squash commits here do, so it would pick up only the few older subjects without one.
 
 ## Publish a release
 
@@ -55,11 +56,12 @@ Start the `Prepare release` workflow from the Actions tab, or from a shell:
 gh workflow run prepare-release.yml --repo tox-dev/peryx
 ```
 
-The workflow stops when `.changeset/` holds no change files. Otherwise it computes the version from the date and the
-existing tags and runs `knope prepare-release`, which writes the version into every manifest, `Cargo.lock`, and
-`site/static/openapi.json`, moves the change files into `CHANGELOG.md`, and commits the result to `main` with a
-`v<version>` tag. One atomic push lands both, and the tag starts `release.yml`, which builds the archives, creates the
-GitHub release with the `CHANGELOG.md` section as its notes, and publishes the PyPI package.
+The workflow computes the version from the date and the existing tags. When `.changeset/` is empty, it asks GitHub for
+the pull requests merged since the last `v*` tag and writes each one as a change file under a Changes section; with no
+change files and no such pull requests it stops. It then runs `knope prepare-release`, which writes the version into
+every manifest, `Cargo.lock`, and `site/static/openapi.json`, moves the change files into `CHANGELOG.md`, and commits
+the result to `main` with a `v<version>` tag. One atomic push lands both, and the tag starts `release.yml`, which builds
+the archives, creates the GitHub release with the `CHANGELOG.md` section as its notes, and publishes the PyPI package.
 
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its

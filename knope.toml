@@ -14,6 +14,7 @@ versioned_files = [
   { path = "site/static/openapi.json", regex = '"version": "(?<version>\d+\.\d+\.\d+)"' },
 ]
 changelog = "CHANGELOG.md"
+extra_changelog_sections = [{ name = "Changes", types = ["change"] }]
 
 # The conventional commit parser rejects subjects that start with an emoji, as squash commits here do, so it
 # would pick up only the few older subjects without one. Change files are the one source of release notes.
