@@ -40,6 +40,19 @@ fn consecutive_free_ports_differ() {
     );
 }
 
+/// Holding the range's first port leaves only later ports to hand out, whichever offset the shared cursor starts at.
+#[test]
+fn a_held_first_port_yields_a_later_port_in_the_range() {
+    let port = |listener: &std::net::TcpListener| listener.local_addr().expect("the listener has an address").port();
+    let mut listeners =
+        [(); 3].map(|()| std::net::TcpListener::bind(("127.0.0.1", 0)).expect("the host has a free port"));
+    listeners.sort_by_key(port);
+    let [first, released, last] = listeners;
+    let (start, end) = (port(&first), port(&last));
+    drop(released);
+    assert!((start + 1..end).contains(&super::free_port_in(start..end).expect("a later port is free")));
+}
+
 #[test]
 fn a_taken_range_reports_no_free_port() {
     let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("the host has a free port");
