@@ -1535,6 +1535,40 @@ async fn test_s3_rejects_a_response_without_an_object_length(#[case] operation: 
     server.await.unwrap();
 }
 
+/// The store assembles whatever the parts carry, and a completed upload is never measured, so a part cut from
+/// the wrong offset only shows up in the bytes each part sends.
+#[tokio::test]
+async fn test_s3_multipart_parts_partition_the_staged_bytes() {
+    let server = MockServer::start().await;
+    mount_multipart(&server).await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_parallel_multipart",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    let mut parts: Vec<(u16, u64)> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method.as_str() == "PUT")
+        .map(|request| {
+            let (_, number) = request.url.query_pairs().find(|(key, _)| key == "partNumber").unwrap();
+            let bytes = request.headers["x-amz-decoded-content-length"].to_str().unwrap();
+            (number.parse().unwrap(), bytes.parse().unwrap())
+        })
+        .collect();
+    parts.sort_unstable();
+    assert_eq!(parts, [(1, 5 << 20), (2, 5 << 20), (3, 5 << 20), (4, 5 << 20), (5, 1)]);
+}
+
 #[tokio::test]
 async fn test_s3_accepts_a_peer_completed_multipart_upload() {
     let server = MockServer::start().await;
