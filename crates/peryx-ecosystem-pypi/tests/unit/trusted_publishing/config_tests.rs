@@ -5,6 +5,7 @@ use peryx_policy::Policy;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
+use sigstore_verify::trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT;
 
 use super::*;
 
@@ -61,13 +62,15 @@ fn test_validate_accepts_a_writable_pypi_repository() {
     assert_eq!(validate(config(&values, &indexes)), Ok(()));
 }
 
-#[test]
-fn test_validate_accepts_the_sigstore_production_root() {
+#[rstest]
+#[case::as_published(SIGSTORE_PRODUCTION_TRUSTED_ROOT.to_owned())]
+#[case::padded_to_the_size_limit(
+    SIGSTORE_PRODUCTION_TRUSTED_ROOT.to_owned()
+        + &" ".repeat(MAX_TRUSTED_ROOT_BYTES - SIGSTORE_PRODUCTION_TRUSTED_ROOT.len())
+)]
+fn test_validate_accepts_the_sigstore_production_root(#[case] root: String) {
     let mut values = publisher();
-    values.insert(
-        "sigstore_trusted_root".to_owned(),
-        toml::Value::String(sigstore_verify::trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT.to_owned()),
-    );
+    values.insert("sigstore_trusted_root".to_owned(), toml::Value::String(root));
     let indexes = [PluginIndexConfig {
         name: "hosted",
         ecosystem: crate::ECOSYSTEM,
