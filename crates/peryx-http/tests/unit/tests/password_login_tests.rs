@@ -124,6 +124,23 @@ async fn test_password_sign_in_redirects_home_with_a_sealed_session() {
     );
 }
 
+#[rstest]
+#[case::last_second(NOW + 43_199, true)]
+#[case::at_expiry(NOW + 43_200, false)]
+#[tokio::test]
+async fn test_a_password_session_lasts_twelve_hours_from_sign_in(#[case] at: i64, #[case] valid: bool) {
+    let fixture = fixture().await;
+
+    let response = sign_in(&fixture.state, form("Ada Lovelace", PASSWORD)).await;
+
+    assert_eq!(
+        SessionSealer::new(KEY)
+            .open_session(&session_value(&response), at)
+            .is_some(),
+        valid
+    );
+}
+
 #[tokio::test]
 async fn test_password_sign_in_sets_the_session_cookie_attributes() {
     let fixture = fixture().await;
