@@ -107,6 +107,28 @@ async fn test_a_password_change_renews_the_session_cookie_of_the_changing_browse
     );
 }
 
+#[rstest]
+#[case::last_second(NOW + 43_199, true)]
+#[case::at_expiry(NOW + 43_200, false)]
+#[tokio::test]
+async fn test_a_renewed_session_lasts_twelve_hours_from_the_change(#[case] at: i64, #[case] valid: bool) {
+    let fixture = fixture().await;
+
+    let response = change(
+        &fixture.state,
+        &cookie(&fixture.user),
+        change_form(PASSWORD, NEW_PASSWORD, NEW_PASSWORD),
+    )
+    .await;
+
+    assert_eq!(
+        SessionSealer::new(KEY)
+            .open_session(&session_value(&response), at)
+            .is_some(),
+        valid
+    );
+}
+
 #[derive(Clone, Copy)]
 enum Browser {
     ChangingBeforeTheChange,
