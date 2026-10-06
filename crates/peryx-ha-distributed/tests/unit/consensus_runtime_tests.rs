@@ -1890,6 +1890,9 @@ async fn test_replacing_a_voter_keeps_it_until_the_learner_catches_up() {
     let west_dir = tempfile::tempdir().unwrap();
     let (east, _, east_served) = mounted_leader(&east_dir).await;
     let (west, west_listener, west_router) = peer_node(&west_dir, "west").await;
+    // OpenRaft elects a sole voter on its next tick. Keep east in charge until it receives the
+    // uniform membership acknowledgement and returns the replacement receipt.
+    west.raft().runtime_config().elect(false);
     let group = Arc::new(OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned())));
     let mut metrics = east.metrics();
     let mut replacing = tokio::spawn({
@@ -1935,6 +1938,24 @@ async fn test_replacing_a_voter_keeps_it_until_the_learner_catches_up() {
         (vec!["east".to_owned()], vec!["west".to_owned()])
     );
     stop_mounted(&east, east_served).await;
+    west.raft().runtime_config().elect(true);
+    west.raft().trigger().elect().await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        west.metrics()
+            .wait_for(|metrics| metrics.current_leader == Some(voter_id("west"))),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let west_group = OwnershipGroup::new(west.clone(), DatacenterId("west".to_owned()));
+    assert_eq!(
+        west_group.claim_home("proj").await.unwrap(),
+        HomeClaim {
+            home: "west".to_owned(),
+            epoch: 1,
+        }
+    );
     stop_mounted(&west, west_served).await;
 }
 
