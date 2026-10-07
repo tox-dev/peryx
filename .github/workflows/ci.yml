@@ -155,14 +155,15 @@ jobs:
       - uses: $/.github/actions/setup
         with:
           tools: just
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: coverage-native
-          path: .tox/coverage
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: coverage-frontend
-          path: .tox/coverage
+      - parallel:
+          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+            with:
+              name: coverage-native
+              path: .tox/coverage
+          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+            with:
+              name: coverage-frontend
+              path: .tox/coverage
       - run: just coverage-lines
 
   frontend:
@@ -184,25 +185,24 @@ jobs:
           targets: wasm32-unknown-unknown
           tools: >-
             just jq node aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest github:leptos-rs/cargo-leptos
-      - run: just frontend-deps
-      - name: Install LLVM 22
-        run: |
-          curl --fail --location --output "$RUNNER_TEMP/llvm.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
-          fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" | awk -F: '$1 == "fpr" { print $10; exit }')
-          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
-          sudo install -m 644 "$RUNNER_TEMP/llvm.asc" /etc/apt/keyrings/llvm.asc
-          repository='https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main'
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] $repository" | sudo tee /etc/apt/sources.list.d/llvm.list
-          # Refresh only the list this step just wrote. A plain `apt-get update` reads every list on
-          # the runner image, so a third party serving a corrupt index fails the whole command: on
-          # 2026-09-09 Google's Chrome repository returned a Packages.gz whose hash did not match its
-          # Release file, exit 100, and clang was never installed even though apt.llvm.org was healthy.
-          sudo apt-get update \
-            -o Dir::Etc::sourcelist=sources.list.d/llvm.list \
-            -o Dir::Etc::sourceparts=- \
-            -o APT::Get::List-Cleanup=0
-          sudo apt-get install --yes clang-22 lcov
-          echo "CLANG=clang-22" >> "$GITHUB_ENV"
+      - parallel:
+          - run: just frontend-deps
+          - name: Install LLVM 22
+            run: |
+              curl --fail --location --output "$RUNNER_TEMP/llvm.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+              fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" |
+                awk -F: '$1 == "fpr" { print $10; exit }')
+              test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+              sudo install -m 644 "$RUNNER_TEMP/llvm.asc" /etc/apt/keyrings/llvm.asc
+              repository='https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main'
+              echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] $repository" | sudo tee /etc/apt/sources.list.d/llvm.list
+              # Other runner repositories can serve invalid hashes; refresh only the LLVM index.
+              sudo apt-get update \
+                -o Dir::Etc::sourcelist=sources.list.d/llvm.list \
+                -o Dir::Etc::sourceparts=- \
+                -o APT::Get::List-Cleanup=0
+              sudo apt-get install --yes clang-22 lcov
+              echo "CLANG=clang-22" >> "$GITHUB_ENV"
       - run: just coverage-frontend
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
