@@ -1,3 +1,5 @@
+default_language_version:
+  python: python3.15
 ci:
   autoupdate_schedule: monthly
   # GitHub Actions runs the Rust hooks with the repository toolchain.
