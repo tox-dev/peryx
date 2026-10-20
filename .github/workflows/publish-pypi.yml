@@ -40,6 +40,10 @@ jobs:
         with:
           targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
           tools: just maturin ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
       - name: Build wheel
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
@@ -54,6 +58,11 @@ jobs:
           [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
           [[ -z $USE_ZIG ]] || args+=(--zig)
           just package-wheel "${args[@]}"
+      - name: Check wheel metadata
+        run: uvx --from 'twine>=7' twine check dist/*.whl
+      - name: Check wheel contents
+        # Peryx installs a console binary, so an empty Python library is expected.
+        run: uvx --from 'check-wheel-contents>=0.6.3' check-wheel-contents --no-config --ignore W007 dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
@@ -71,8 +80,14 @@ jobs:
       - uses: $/.github/actions/setup
         with:
           tools: just maturin
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
       - name: Build sdist
         run: just package-sdist
+      - name: Check sdist metadata
+        run: uvx --from 'twine>=7' twine check dist/*.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-sdist
