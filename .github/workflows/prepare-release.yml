@@ -28,6 +28,12 @@ jobs:
           version: 2026.9.14
           install_args: --locked github:knope-dev/knope prek uv
           cache: false
+      - name: Install locked release tools
+        run: |
+          set -euo pipefail
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+          echo "$RUNNER_TEMP/release-tools/bin" >> "$GITHUB_PATH"
       - id: version
         run: |
           day="$(date -u +%Y).$(date -u +%-m%d)"
@@ -40,7 +46,9 @@ jobs:
           fi
       - name: Assemble release patch
         run: |
+          set -euo pipefail
           knope prepare-release --verbose --override-version "$VERSION"
+          prek run --all-files
           git diff HEAD --binary > "$RUNNER_TEMP/release.patch"
           test -s "$RUNNER_TEMP/release.patch"
         env:
@@ -94,16 +102,9 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
-      - name: Commit and tag release
-        env:
-          VERSION: ${{ needs.assemble.outputs.version }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          APP_USER_ID: ${{ vars.RELEASE_APP_USER_ID }}
-        run: |
-          set -euo pipefail
-          git config user.name "peryx-release[bot]"
-          git config user.email "${APP_USER_ID}+peryx-release[bot]@users.noreply.github.com"
-          git commit --message "🔖 chore(release): v$VERSION"
-          git tag "v$VERSION"
-          gh auth setup-git --hostname github.com --force
-          git push --atomic origin HEAD:main "refs/tags/v$VERSION"
+      - uses: tox-dev/github-workflows/commit-and-tag@65ca97430da17d7c6f3cf636c0fd16dc3474481e
+        with:
+          version: v${{ needs.assemble.outputs.version }}
+          token: ${{ steps.token.outputs.token }}
+          app-slug: ${{ steps.token.outputs.app-slug }}
+          message: "🔖 chore(release): v${{ needs.assemble.outputs.version }}"
