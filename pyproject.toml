@@ -30,6 +30,15 @@ urls.Documentation = "https://peryx.readthedocs.io/"
 urls.Issues = "https://github.com/tox-dev/peryx/issues"
 urls.Source = "https://github.com/tox-dev/peryx"
 
+[dependency-groups]
+release = [
+  "prek>=0.5",
+  "release-creator @ git+https://github.com/tox-dev/release-creator@6377ed5b470b66fca2bf482ca1a73d95e611f517",
+]
+
+[tool.uv.dependency-groups]
+release = { requires-python = ">=3.15" }
+
 [tool.maturin]
 # The wheel carries the compiled `peryx` binary as a console script; there are no Python
 # bindings, so one wheel per platform serves every CPython and PyPy version.
