@@ -6,6 +6,6 @@
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "11.17.0",
     "pagefind": "1.5.2",
-    "puppeteer": "npm:puppeteer-core@25.13.0"
+    "puppeteer": "npm:puppeteer-core@25.15.0"
   }
 }
