@@ -8,6 +8,8 @@ description = "Multi-ecosystem artifact cache and private registry"
 readme = "README.md"
 keywords = [ "artifact-registry", "cache", "mirror", "oci", "pypi", "software-distribution" ]
 license = "MIT"
+license-files = [ "LICENSE" ]
+authors = [ { name = "Bernát Gábor", email = "gaborjbernat@gmail.com" } ]
 requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -26,8 +28,10 @@ classifiers = [
   "Topic :: System :: Software Distribution",
 ]
 dynamic = [ "version" ]
+urls.Changelog = "https://github.com/tox-dev/peryx/blob/main/CHANGELOG.md"
 urls.Documentation = "https://peryx.readthedocs.io/"
 urls.Issues = "https://github.com/tox-dev/peryx/issues"
+urls.Homepage = "https://github.com/tox-dev/peryx"
 urls.Source = "https://github.com/tox-dev/peryx"
 
 [dependency-groups]
@@ -40,6 +44,10 @@ release = [
 release = { requires-python = ">=3.15" }
 
 [tool.maturin]
+include = [
+  { path = "site/content/ecosystems/oci/reference/policy.md", format = "sdist" },
+  { path = "site/static/*.svg", format = "sdist" },
+]
 # The wheel carries the compiled `peryx` binary as a console script; there are no Python
 # bindings, so one wheel per platform serves every CPython and PyPy version.
 bindings = "bin"
