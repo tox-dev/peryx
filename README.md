@@ -1,4 +1,4 @@
-# <img src="site/static/icon.svg" width="28" alt=""> peryx
+# <img src="https://raw.githubusercontent.com/tox-dev/peryx/main/site/static/icon.svg" width="28" alt=""> peryx
 
 [![CI](https://github.com/tox-dev/peryx/actions/workflows/ci.yml/badge.svg)](https://github.com/tox-dev/peryx/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/readthedocs/peryx?logo=readthedocs&logoColor=white)](https://peryx.readthedocs.io/)
@@ -35,7 +35,7 @@ Contributors can [build from a checkout](https://peryx.readthedocs.io/en/latest/
   behavior.
 - [Contributor architecture](https://peryx.readthedocs.io/en/latest/contributing/architecture/) covers code ownership
   and startup lifecycle.
-- [Contributing](CONTRIBUTING.md) lists local and CI checks.
+- [Contributing](https://github.com/tox-dev/peryx/blob/main/CONTRIBUTING.md) lists local and CI checks.
 
 ## License
 
