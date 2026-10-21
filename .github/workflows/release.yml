@@ -476,7 +476,8 @@ jobs:
     outputs:
       source: ${{ github.sha }}
       digest: ${{ steps.manifest.outputs.sha256 }}
-      missing-count: ${{ steps.stage.outputs.missing_count }}
+      missing-count: ${{ steps.stage.outputs.missing-count }}
+      selection-digest: ${{ steps.selection-digest.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -557,22 +558,26 @@ jobs:
           name: python-artifacts-sha256
           path: ${{ runner.temp }}/python-artifacts.sha256
           if-no-files-found: error
-      - name: Install locked release tools
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
       - name: Select missing PyPI artifacts
         id: stage
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@a250ca3524857236e288764651851010939b6f71
+        with:
+          project: peryx
+          version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
+          dist: dist
+          mode: stage
+          missing-dir: ${{ runner.temp }}/missing
+      - name: Hash missing artifact names
+        if: steps.stage.outputs.missing-count != '0'
+        id: selection-digest
         env:
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          "$RUNNER_TEMP/release-tools/bin/release-creator" artifacts --project peryx --version "${RELEASE_TAG#v}" \
-            --dist dist --mode stage --missing-dir "$RUNNER_TEMP/missing" --github-output "$GITHUB_OUTPUT"
-      - if: steps.stage.outputs.missing_count != '0'
+          MANIFEST: ${{ steps.stage.outputs.manifest }}
+        run: echo "sha256=$(sha256sum "$MANIFEST" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - if: steps.stage.outputs.missing-count != '0'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-artifacts-missing
-          path: ${{ runner.temp }}/missing
+          name: python-artifact-selection
+          path: ${{ steps.stage.outputs.manifest }}
           if-no-files-found: error
 
   # PyPI matches the token's job_workflow_ref and the attestation certificate's build config against one
@@ -603,8 +608,8 @@ jobs:
           path: ${{ runner.temp }}/checks
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: python-artifacts-missing
-          path: missing
+          name: python-artifact-selection
+          path: ${{ runner.temp }}/selection
       - name: Verify checked artifacts
         env:
           SOURCE_SHA: ${{ needs.validate-pypi-artifacts.outputs.source }}
@@ -614,13 +619,18 @@ jobs:
           printf '%s  %s\n' "$MANIFEST_SHA256" "$RUNNER_TEMP/checks/python-artifacts.sha256" | sha256sum --check --status
           sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
           test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq "$(wc -l < "$RUNNER_TEMP/checks/python-artifacts.sha256")"
-      - name: Verify staged upload
+      - name: Verify missing artifact names
         env:
-          MISSING_COUNT: ${{ needs.validate-pypi-artifacts.outputs.missing-count }}
+          SELECTION_SHA256: ${{ needs.validate-pypi-artifacts.outputs.selection-digest }}
         run: |
-          test -z "$(find missing -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
-          test "$(find missing -maxdepth 1 -type f | wc -l)" -eq "$MISSING_COUNT"
-          for path in missing/*; do cmp "$path" "dist/${path##*/}"; done
+          printf '%s  %s\n' "$SELECTION_SHA256" "$RUNNER_TEMP/selection/pypi-missing-names.txt" | sha256sum --check --status
+      - name: Select validated files for upload
+        uses: tox-dev/github-workflows/select-pypi-artifacts@a250ca3524857236e288764651851010939b6f71
+        with:
+          dist: dist
+          manifest: ${{ runner.temp }}/selection/pypi-missing-names.txt
+          output-dir: missing
+          expected-count: ${{ needs.validate-pypi-artifacts.outputs.missing-count }}
       - name: Attest Python packages
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -632,7 +642,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: missing
-          skip-existing: false
+          skip-existing: true
 
   verify-pypi-artifacts:
     needs:
@@ -678,16 +688,13 @@ jobs:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: Install locked release tools
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
       - name: Verify complete PyPI release
-        env:
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          "$RUNNER_TEMP/release-tools/bin/release-creator" artifacts --project peryx --version "${RELEASE_TAG#v}" \
-            --dist dist --mode verify --wait-seconds 120
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@a250ca3524857236e288764651851010939b6f71
+        with:
+          project: peryx
+          version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
+          dist: dist
+          mode: verify
 
   announce:
     needs:

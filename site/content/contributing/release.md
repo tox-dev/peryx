@@ -81,10 +81,10 @@ The global build generates the planned CycloneDX manifest and checks every plann
 the plan, source, tag, file set, and archive digests before any release write step runs.
 
 The wheel and sdist jobs install Maturin from the `build` selection in `pylock.toml`. Before PyPI publishing, a job
-without publishing credentials requires all eight wheels and the sdist, checks their metadata and wheel contents, and
-records their hashes. It compares that set with PyPI and stages only missing files. The PyPI job checks the full set
-against those hashes, attests and uploads the missing files, and fails if another upload claimed a filename. A keyless
-job then verifies that PyPI holds all nine files with the expected hashes before the GitHub draft is published.
+without publishing credentials requires the wheel for each platform and the sdist, checks their metadata and wheel
+contents, and records their hashes. It compares that set with PyPI and passes only missing filenames to the PyPI job.
+That job copies the matching validated files, attests them, and uploads them. A retry can skip files already uploaded;
+the following keyless job checks all nine filenames and hashes on PyPI before the GitHub draft is published.
 
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its
