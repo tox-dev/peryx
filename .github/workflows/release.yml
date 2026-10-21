@@ -205,6 +205,7 @@ jobs:
   credits:
     needs: plan
     runs-on: ubuntu-24.04
+    environment: release
     timeout-minutes: 5
     permissions:
       contents: write # GitHub's generate-notes endpoint requires write access without saving a release.
@@ -303,6 +304,7 @@ jobs:
       ${{ always() && needs.plan.result == 'success' && needs.notes.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result
       == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     runs-on: "ubuntu-22.04"
+    environment: release
     timeout-minutes: 20
     permissions:
       "attestations": "write" # Sign release artifacts.
@@ -404,12 +406,61 @@ jobs:
     permissions:
       "contents": "read" # Read the source to build from.
 
+  validate-pypi-artifacts:
+    needs: custom-publish-pypi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ github.sha }}
+      digest: ${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked package checks
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/package-check"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/package-check/bin/python" --group package-check pylock.toml
+      - name: Require eight wheels
+        run: test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 8
+      - name: Require one source distribution
+        run: test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Reject unexpected artifacts
+        run: |
+          test -z "$(find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test -z "$(find dist -maxdepth 1 -type f ! -name '*.whl' ! -name '*.tar.gz' -print -quit)"
+      - name: Check package metadata
+        run: '"$RUNNER_TEMP/package-check/bin/twine" check dist/*'
+      - name: Check wheel contents
+        run: '"$RUNNER_TEMP/package-check/bin/check-wheel-contents" --no-config --ignore W007 dist/*.whl'
+      - name: Hash checked artifacts
+        id: manifest
+        run: |
+          sha256sum dist/* > "$RUNNER_TEMP/python-artifacts.sha256"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/python-artifacts.sha256" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-artifacts-sha256
+          path: ${{ runner.temp }}/python-artifacts.sha256
+          if-no-files-found: error
+
   # PyPI matches the token's job_workflow_ref and the attestation certificate's build config against one
   # trusted publisher; only a job in this top-level workflow makes both name release.yml.
   publish-pypi:
     name: publish to PyPI
     needs:
-      - custom-publish-pypi
+      - validate-pypi-artifacts
     runs-on: "ubuntu-24.04"
     timeout-minutes: 10
     environment: pypi
@@ -425,10 +476,25 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-artifacts-sha256
+          path: ${{ runner.temp }}/checks
+      - name: Verify checked artifacts
+        env:
+          SOURCE_SHA: ${{ needs.validate-pypi-artifacts.outputs.source }}
+          MANIFEST_SHA256: ${{ needs.validate-pypi-artifacts.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$MANIFEST_SHA256" "$RUNNER_TEMP/checks/python-artifacts.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
+          test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq "$(wc -l < "$RUNNER_TEMP/checks/python-artifacts.sha256")"
       - name: Attest Python packages
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*
+      - name: Verify artifacts after attestation
+        run: sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist

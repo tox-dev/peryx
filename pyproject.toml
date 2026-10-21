@@ -35,9 +35,13 @@ urls.Homepage = "https://github.com/tox-dev/peryx"
 urls.Source = "https://github.com/tox-dev/peryx"
 
 [dependency-groups]
+package-check = [
+  "check-wheel-contents>=0.6.3",
+  "twine>=7",
+]
 release = [
   "prek>=0.5",
-  "release-creator @ git+https://github.com/tox-dev/release-creator@dabf2e179270fa135d40e71db7c39f191c47bbb3",
+  "release-creator @ git+https://github.com/tox-dev/release-creator@80ecd0e952a0e0c50d08129ec89aaa8306ea0b05",
 ]
 
 [tool.uv.dependency-groups]

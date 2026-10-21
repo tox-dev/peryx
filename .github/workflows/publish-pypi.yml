@@ -39,11 +39,16 @@ jobs:
       - uses: $/.github/actions/setup
         with:
           targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
-          tools: just maturin ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
+          tools: just ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.15"
           enable-cache: false
+      - name: Install locked build backend
+        shell: bash
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/build-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/build-tools" --group build pylock.toml
       - name: Build wheel
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
@@ -57,12 +62,7 @@ jobs:
           args=(--target "$RUST_TARGET")
           [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
           [[ -z $USE_ZIG ]] || args+=(--zig)
-          just package-wheel "${args[@]}"
-      - name: Check wheel metadata
-        run: uvx --from 'twine>=7' twine check dist/*.whl
-      - name: Check wheel contents
-        # Peryx installs a console binary, so an empty Python library is expected.
-        run: uvx --from 'check-wheel-contents>=0.6.3' check-wheel-contents --no-config --ignore W007 dist
+          uv run --no-project --python "$RUNNER_TEMP/build-tools" just package-wheel "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
@@ -79,15 +79,17 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup
         with:
-          tools: just maturin
+          tools: just
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.15"
           enable-cache: false
+      - name: Install locked build backend
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/build-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/build-tools" --group build pylock.toml
       - name: Build sdist
-        run: just package-sdist
-      - name: Check sdist metadata
-        run: uvx --from 'twine>=7' twine check dist/*.tar.gz
+        run: uv run --no-project --python "$RUNNER_TEMP/build-tools" just package-sdist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-sdist

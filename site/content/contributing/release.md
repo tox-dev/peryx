@@ -45,6 +45,9 @@ here do. CI validates every supplied change file and requires one on human-autho
 `skip news` label. Bot pull requests need one only if their changes warrant news; their supplied files still receive
 validation.
 
+After a bot pull request opens or its files change, the label workflow applies `skip news` if it has no
+`.changeset/*.md` file and removes that label if a change file is added later.
+
 ## Publish a release
 
 peryx uses calendar versions of the form `YYYY.MDD.N`: the UTC year, then the month and zero-padded day, then a counter
@@ -68,11 +71,16 @@ workflow renders the tagged `CHANGELOG.md` section as GitHub notes, keeps cargo-
 verification instructions, and adds a PyPI link when the release publishes there. It rejects a tag whose version has no
 changelog section.
 
+The wheel and sdist jobs install Maturin from the `build` selection in `pylock.toml`. Before PyPI publishing, a job
+without publishing credentials requires all eight wheels and the sdist, checks their metadata and wheel contents, and
+records their hashes. The PyPI job verifies that exact file set again after attestation, just before upload.
+
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its
 client ID in the `RELEASE_APP_CLIENT_ID` variable and its private key in the `RELEASE_APP_PRIVATE_KEY` secret; each run
-mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN` would not start `release.yml`. The PyPI job
-authenticates through a trusted publisher for `release.yml` in the `pypi` environment.
+mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN` would not start `release.yml`. The `release`
+environment gates the jobs that generate contributor credits and create the GitHub release; the `pypi` environment gates
+trusted publishing. Both environments accept only `v*` tags and require no reviewer.
 
 ## Verify a release
 
