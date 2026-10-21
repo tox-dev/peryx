@@ -1294,7 +1294,6 @@ codspeed package mode="simulation": _project-temp
       just codspeed-run "{{ package }}" "{{ mode }}"; \
     done
 
-# Install the build backend from the full project lock.
 package-tools: _project-temp
     uv venv --clear --python 3.15 .tox/tools/build-tools
     uv pip sync --preview-features pylock --python .tox/tools/build-tools --group build pylock.toml

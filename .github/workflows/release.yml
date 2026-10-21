@@ -27,7 +27,7 @@ on:
 jobs:
   plan:
     runs-on: "ubuntu-22.04"
-    timeout-minutes: 20
+    timeout-minutes: 45
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
       tag: ${{ !github.event.pull_request && github.ref_name || '' }}
@@ -56,7 +56,9 @@ jobs:
           fi
       - uses: $/.github/actions/setup
         with:
-          tools: aqua:axodotdev/cargo-dist
+          tools: aqua:axodotdev/cargo-dist prek
+      - name: Check tagged source
+        run: prek run --all-files
       # mise installs dist outside ~/.cargo/bin, where the later jobs restore it from.
       - run: cp "$(mise which dist)" "$RUNNER_TEMP/dist"
       - name: Cache dist
