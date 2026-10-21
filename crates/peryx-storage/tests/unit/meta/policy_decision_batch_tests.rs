@@ -234,3 +234,50 @@ fn test_a_batch_assigns_sequential_ids_and_stamps_each_record_with_its_repositor
         ["pd_0000000000000001", "pd_0000000000000002", "pd_0000000000000003"]
     );
 }
+
+/// The row-at-a-time pruning the ranged deletion replaced, kept as the definition of "the oldest rows".
+fn prune_one_by_one(txn: &redb::WriteTransaction, history_limit: usize) {
+    let mut history = txn.open_table(POLICY_DECISION).unwrap();
+    let excess = usize::try_from(history.len().unwrap())
+        .unwrap()
+        .saturating_sub(history_limit);
+    let stale = history
+        .iter()
+        .unwrap()
+        .take(excess)
+        .map(|entry| entry.unwrap().0.value().to_owned())
+        .collect::<Vec<_>>();
+    for id in &stale {
+        history.remove(id.as_str()).unwrap();
+    }
+}
+
+#[rstest]
+fn test_pruning_deletes_exactly_the_oldest_rows(#[values(0, 1, 5, 39, 40, 41, 100)] limit: usize) {
+    let (_ranged_dir, ranged) = store();
+    let (_single_dir, single) = store();
+    let mut random = Random(9);
+    let chunk = (0..40)
+        .map(|clock| Spec::random(&mut random, clock))
+        .collect::<Vec<_>>();
+    for store in [&ranged, &single] {
+        let txn = store.db.begin_write().unwrap();
+        let mut batch = BatchWriter::new(&txn).unwrap();
+        for decision in &chunk {
+            batch.record(&decision.as_new()).unwrap();
+        }
+        batch.finish().unwrap();
+        txn.commit().unwrap();
+    }
+
+    let txn = ranged.db.begin_write().unwrap();
+    prune_history(&txn, limit).unwrap();
+    txn.commit().unwrap();
+    let txn = single.db.begin_write().unwrap();
+    prune_one_by_one(&txn, limit);
+    txn.commit().unwrap();
+
+    let kept = dump(&ranged).remove(0).1;
+    assert_eq!(kept.len(), 40_usize.min(limit));
+    assert_eq!(kept, dump(&single).remove(0).1);
+}

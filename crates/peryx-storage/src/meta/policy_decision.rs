@@ -730,13 +730,19 @@ pub(super) fn prune_history(txn: &redb::WriteTransaction, history_limit: usize) 
     let excess = usize::try_from(history.len()?)
         .unwrap_or(usize::MAX)
         .saturating_sub(history_limit);
-    let stale = history
+    if excess == 0 {
+        return Ok(());
+    }
+    // The oldest `excess` rows are exactly the keys below the first one kept, so one ranged
+    // deletion replaces a lookup and a rebalance per row. No kept row means every row goes.
+    let first_kept = history
         .iter()?
-        .take(excess)
-        .map(|entry| entry.map(|(id, _)| id.value().to_owned()))
-        .collect::<Result<Vec<_>, _>>()?;
-    for id in &stale {
-        history.remove(id.as_str())?;
+        .nth(excess)
+        .transpose()?
+        .map(|(id, _)| id.value().to_owned());
+    match first_kept {
+        Some(first_kept) => history.retain_in(..first_kept.as_str(), |_, _| false)?,
+        None => history.retain(|_, _| false)?,
     }
     Ok(())
 }
