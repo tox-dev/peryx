@@ -41,8 +41,9 @@ pick the change type, and write the summary; knope saves it under `.changeset/`.
 Changes, `patch` for Fixed, and `major` for Breaking changes. Documentation, Security, Performance, Deprecated, Removed,
 and Packaging have matching custom types in `knope.toml`. A Python support addition or removal belongs under Added.
 Knope's conventional commit parser stays off because it rejects subjects that start with an emoji, as squash commits
-here do. The CI gate checks for a new change file on human-authored pull requests. Bot pull requests need one only if
-their changes warrant news.
+here do. CI validates every supplied change file and requires one on human-authored pull requests without the
+`skip news` label. Bot pull requests need one only if their changes warrant news; their supplied files still receive
+validation.
 
 ## Publish a release
 
@@ -57,20 +58,21 @@ Start the `Prepare release` workflow from the Actions tab, or from a shell:
 gh workflow run prepare-release.yml --repo tox-dev/peryx
 ```
 
-The workflow computes the version from the date and the existing tags. It stops if `.changeset/` has no change files. It
-runs `knope prepare-release` without release credentials to update the manifests, `Cargo.lock`,
-`site/static/openapi.json`, and `CHANGELOG.md`. A second job checks those changes, commits them to `main`, and tags
-`v<version>`. One atomic push lands both, and the tag starts `release.yml`, which builds the archives, creates the
-GitHub release, and publishes the PyPI package. The release workflow renders the tagged `CHANGELOG.md` section as GitHub
-notes, keeps cargo-dist's installer, download, and verification instructions, and adds a PyPI link when the release
-publishes there. It rejects a tag whose version has no changelog section.
+The workflow computes the version from the date and the existing tags. It stops if `.changeset/` has no change files.
+Release-creator links each merged change file to its squash pull request and human authors before Knope collects it.
+Knope updates the manifests, `Cargo.lock`, `site/static/openapi.json`, and `CHANGELOG.md`; release-creator then adds
+stable anchors to each version and category heading. Prek checks the assembled patch without release credentials. A
+second job checks those changes, commits them to `main`, and tags `v<version>`. One atomic push lands both, and the tag
+starts `release.yml`, which builds the archives, creates the GitHub release, and publishes the PyPI package. The release
+workflow renders the tagged `CHANGELOG.md` section as GitHub notes, keeps cargo-dist's installer, download, and
+verification instructions, and adds a PyPI link when the release publishes there. It rejects a tag whose version has no
+changelog section.
 
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its
-client ID in the `RELEASE_APP_CLIENT_ID` variable, its bot user ID in `RELEASE_APP_USER_ID`, and its private key in the
-`RELEASE_APP_PRIVATE_KEY` secret; each run mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN`
-would not start `release.yml`. The PyPI job authenticates through a trusted publisher for `release.yml` in the `pypi`
-environment.
+client ID in the `RELEASE_APP_CLIENT_ID` variable and its private key in the `RELEASE_APP_PRIVATE_KEY` secret; each run
+mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN` would not start `release.yml`. The PyPI job
+authenticates through a trusted publisher for `release.yml` in the `pypi` environment.
 
 ## Verify a release
 

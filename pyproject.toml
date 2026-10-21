@@ -37,7 +37,7 @@ urls.Source = "https://github.com/tox-dev/peryx"
 [dependency-groups]
 release = [
   "prek>=0.5",
-  "release-creator @ git+https://github.com/tox-dev/release-creator@6377ed5b470b66fca2bf482ca1a73d95e611f517",
+  "release-creator @ git+https://github.com/tox-dev/release-creator@dabf2e179270fa135d40e71db7c39f191c47bbb3",
 ]
 
 [tool.uv.dependency-groups]

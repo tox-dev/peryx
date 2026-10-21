@@ -227,22 +227,34 @@ jobs:
 
   changelog:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      - if: github.event_name == 'pull_request'
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        if: github.event_name == 'pull_request'
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+      - name: Validate change files
+        if: github.event_name == 'pull_request'
+        id: news
+        run: echo "count=$("$RUNNER_TEMP/release-tools/bin/release-creator" validate-news --format knope --base "$GITHUB_BASE_REF")" >> "$GITHUB_OUTPUT"
       - name: Require a change file
         if: >-
           github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot' &&
           !contains(github.event.pull_request.labels.*.name, 'skip news')
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          NEWS_COUNT: ${{ steps.news.outputs.count }}
         run: |
-          if ! git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- .changeset |
-            grep -Eq '^\.changeset/[^/]+\.md$'; then
+          if (( NEWS_COUNT == 0 )); then
             echo '::error::add a .changeset/*.md file or apply the skip news label'
             exit 1
           fi
