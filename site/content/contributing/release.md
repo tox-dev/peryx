@@ -4,8 +4,10 @@ description = "Plan, build, publish, and verify a cargo-dist release."
 weight = 30
 +++
 
-Cargo-dist generates `.github/workflows/release.yml` from `dist-workspace.toml`. Do not edit the generated workflow by
-hand. Change the distribution configuration and regenerate it through cargo-dist.
+Cargo-dist plans the release from `dist-workspace.toml`. The repository customizes `.github/workflows/release.yml` to
+check the tagged source, scope credentials, render notes, and publish the Python artifacts. Change `dist-workspace.toml`
+for distribution targets and installers; change the workflow for job order or authentication. Run `just release-plan`
+after either change.
 
 `cargo-dist-version` selects the configuration and generator contract. The `aqua:axodotdev/cargo-dist` entry in
 `mise.toml` installs the CLI, and `mise.lock` records its resolved release with a checksum. Renovate updates the
@@ -68,22 +70,25 @@ The workflow computes the version from the date and the existing tags. It stops 
 Release-creator links each merged change file to its squash pull request and human authors before Knope collects it.
 Knope updates the manifests, `Cargo.lock`, `site/static/openapi.json`, and `CHANGELOG.md`; release-creator then adds
 stable anchors to each version and category heading. Prek checks the assembled patch without release credentials. A
-second job checks those changes, commits them to `main`, and tags `v<version>`. One atomic push lands both, and the tag
-starts `release.yml`, which builds the archives, creates the GitHub release, and publishes the PyPI package. The release
-workflow renders the tagged `CHANGELOG.md` section as GitHub notes, keeps cargo-dist's installer, download, and
-verification instructions, and adds a PyPI link when the release publishes there. It rejects a tag whose version has no
-changelog section.
+second job checks those changes, commits them to `main`, and tags `v<version>`. One atomic push lands both.
+
+The tag starts `release.yml`. Its keyless plan runs prek again on the exact tagged source and rejects a version without
+a changelog section. The workflow builds archives, stages a draft GitHub Release with the tagged notes and assets,
+publishes and verifies the PyPI package, then makes the GitHub Release public. The notes keep cargo-dist's installer,
+download, and verification instructions and link to PyPI when that version is published there.
 
 The wheel and sdist jobs install Maturin from the `build` selection in `pylock.toml`. Before PyPI publishing, a job
 without publishing credentials requires all eight wheels and the sdist, checks their metadata and wheel contents, and
-records their hashes. The PyPI job verifies that exact file set again after attestation, just before upload.
+records their hashes. It compares that set with PyPI and stages only missing files. The PyPI job checks the full set
+against those hashes, attests and uploads the missing files, and fails if another upload claimed a filename. A keyless
+job then verifies that PyPI holds all nine files with the expected hashes before the GitHub draft is published.
 
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its
 client ID in the `RELEASE_APP_CLIENT_ID` variable and its private key in the `RELEASE_APP_PRIVATE_KEY` secret; each run
 mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN` would not start `release.yml`. The `release`
-environment gates the jobs that generate contributor credits and create the GitHub release; the `pypi` environment gates
-trusted publishing. Both environments accept only `v*` tags and require no reviewer.
+environment gates the jobs that generate contributor credits and stage and publish the GitHub release; the `pypi`
+environment gates trusted publishing. Both environments accept only `v*` tags and require no reviewer.
 
 ## Verify a release
 

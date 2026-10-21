@@ -35,7 +35,6 @@ jobs:
     env:
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_NET_RETRY: "10"
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,6 +69,7 @@ jobs:
       # Fork pull requests cannot access target-repository secrets.
       - id: plan
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ !github.event.pull_request && github.ref_name || '' }}
         shell: bash
         run: |
@@ -314,6 +314,8 @@ jobs:
       "id-token": "write" # Bind attestations to this workflow.
     outputs:
       val: ${{ steps.host.outputs.manifest }}
+      source: ${{ github.sha }}
+      notes-digest: ${{ steps.final-notes.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -388,14 +390,27 @@ jobs:
           sed '/^\*\*Full Changelog\*\*:/d' "$RUNNER_TEMP/release-notes/changelog-notes.md" > "$RUNNER_TEMP/release-notes.md"
           cat "$RUNNER_TEMP/install-notes.md" >> "$RUNNER_TEMP/release-notes.md"
           sed -n '/^\*\*Full Changelog\*\*:/p' "$RUNNER_TEMP/release-notes/changelog-notes.md" >> "$RUNNER_TEMP/release-notes.md"
-      - name: Create GitHub Release
+      - name: Hash final release description
+        id: final-notes
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/release-notes.md" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: final-release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+      - name: Stage GitHub Release
+        uses: tox-dev/github-workflows/publish-github-release@d88002302950ed36200e62673f592acc40e6b151
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
-          ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
-          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
-        run: gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/release-notes.md" artifacts/*
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ needs.plan.outputs.tag }}
+          commit: ${{ github.sha }}
+          title: ${{ fromJson(steps.host.outputs.manifest).announcement_title }}
+          notes-file: ${{ runner.temp }}/release-notes.md
+          assets-directory: artifacts
+          prerelease: ${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease }}
+          mode: stage
 
   custom-publish-pypi:
     needs:
@@ -409,7 +424,9 @@ jobs:
       "contents": "read" # Read the source to build from.
 
   validate-pypi-artifacts:
-    needs: custom-publish-pypi
+    needs:
+      - plan
+      - custom-publish-pypi
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -417,6 +434,7 @@ jobs:
     outputs:
       source: ${{ github.sha }}
       digest: ${{ steps.manifest.outputs.sha256 }}
+      missing-count: ${{ steps.stage.outputs.missing_count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -456,6 +474,23 @@ jobs:
           name: python-artifacts-sha256
           path: ${{ runner.temp }}/python-artifacts.sha256
           if-no-files-found: error
+      - name: Install locked release tools
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+      - name: Select missing PyPI artifacts
+        id: stage
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          "$RUNNER_TEMP/release-tools/bin/release-creator" artifacts --project peryx --version "${RELEASE_TAG#v}" \
+            --dist dist --mode stage --missing-dir "$RUNNER_TEMP/missing" --github-output "$GITHUB_OUTPUT"
+      - if: steps.stage.outputs.missing_count != '0'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-artifacts-missing
+          path: ${{ runner.temp }}/missing
+          if-no-files-found: error
 
   # PyPI matches the token's job_workflow_ref and the attestation certificate's build config against one
   # trusted publisher; only a job in this top-level workflow makes both name release.yml.
@@ -463,6 +498,7 @@ jobs:
     name: publish to PyPI
     needs:
       - validate-pypi-artifacts
+    if: needs.validate-pypi-artifacts.outputs.missing-count != '0'
     runs-on: "ubuntu-24.04"
     timeout-minutes: 10
     environment: pypi
@@ -482,6 +518,10 @@ jobs:
         with:
           name: python-artifacts-sha256
           path: ${{ runner.temp }}/checks
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-artifacts-missing
+          path: missing
       - name: Verify checked artifacts
         env:
           SOURCE_SHA: ${{ needs.validate-pypi-artifacts.outputs.source }}
@@ -491,30 +531,130 @@ jobs:
           printf '%s  %s\n' "$MANIFEST_SHA256" "$RUNNER_TEMP/checks/python-artifacts.sha256" | sha256sum --check --status
           sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
           test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq "$(wc -l < "$RUNNER_TEMP/checks/python-artifacts.sha256")"
+      - name: Verify staged upload
+        env:
+          MISSING_COUNT: ${{ needs.validate-pypi-artifacts.outputs.missing-count }}
+        run: |
+          test -z "$(find missing -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test "$(find missing -maxdepth 1 -type f | wc -l)" -eq "$MISSING_COUNT"
+          for path in missing/*; do cmp "$path" "dist/${path##*/}"; done
       - name: Attest Python packages
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: dist/*
+          subject-path: missing/*
       - name: Verify artifacts after attestation
-        run: sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
+        run: |
+          sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
+          for path in missing/*; do cmp "$path" "dist/${path##*/}"; done
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          packages-dir: dist
+          packages-dir: missing
+          skip-existing: false
+
+  verify-pypi-artifacts:
+    needs:
+      - plan
+      - validate-pypi-artifacts
+      - publish-pypi
+    if: >-
+      ${{
+        always() &&
+        needs.validate-pypi-artifacts.result == 'success' &&
+        (needs.publish-pypi.result == 'success' ||
+          (needs.publish-pypi.result == 'skipped' &&
+            needs.validate-pypi-artifacts.outputs.missing-count == '0'))
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-artifacts-sha256
+          path: ${{ runner.temp }}/checks
+      - name: Verify checked artifacts
+        env:
+          SOURCE_SHA: ${{ needs.validate-pypi-artifacts.outputs.source }}
+          MANIFEST_SHA256: ${{ needs.validate-pypi-artifacts.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$MANIFEST_SHA256" "$RUNNER_TEMP/checks/python-artifacts.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
+          test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq "$(wc -l < "$RUNNER_TEMP/checks/python-artifacts.sha256")"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+      - name: Verify complete PyPI release
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          "$RUNNER_TEMP/release-tools/bin/release-creator" artifacts --project peryx --version "${RELEASE_TAG#v}" \
+            --dist dist --mode verify --wait-seconds 120
 
   announce:
     needs:
       - plan
       - host
-      - custom-publish-pypi
-      - publish-pypi
-    # Wait for skipped prerelease jobs, but require host completion.
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-pypi.result == 'skipped' || needs.publish-pypi.result == 'success') }}
+      - verify-pypi-artifacts
+    if: >-
+      ${{
+        always() &&
+        needs.host.result == 'success' &&
+        (needs.verify-pypi-artifacts.result == 'success' ||
+          (needs.verify-pypi-artifacts.result == 'skipped' &&
+            fromJson(needs.plan.outputs.val).announcement_is_prerelease &&
+            !fromJson(needs.plan.outputs.val).publish_prereleases))
+      }}
     runs-on: "ubuntu-22.04"
+    environment: release
     timeout-minutes: 15
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          persist-credentials: false
-          submodules: recursive
+          name: final-release-notes
+          path: ${{ runner.temp }}/release-notes
+      - name: Verify final release description
+        env:
+          SOURCE_SHA: ${{ needs.host.outputs.source }}
+          NOTES_SHA256: ${{ needs.host.outputs.notes-digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/release-notes.md" | sha256sum --check --status
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: Exclude build manifests from release assets
+        run: rm -f artifacts/*-dist-manifest.json
+      - name: Publish GitHub Release
+        uses: tox-dev/github-workflows/publish-github-release@d88002302950ed36200e62673f592acc40e6b151
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ needs.plan.outputs.tag }}
+          commit: ${{ github.sha }}
+          title: ${{ fromJson(needs.host.outputs.val).announcement_title }}
+          notes-file: ${{ runner.temp }}/release-notes/release-notes.md
+          assets-directory: artifacts
+          prerelease: ${{ fromJson(needs.host.outputs.val).announcement_is_prerelease }}
+          mode: publish
