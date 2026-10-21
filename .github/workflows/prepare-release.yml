@@ -18,11 +18,14 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      source: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+      - id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.14
@@ -73,15 +76,19 @@ jobs:
         with:
           name: release-patch
           path: ${{ runner.temp }}/release-patch
-      - name: Validate release patch
+      - name: Apply release patch
         env:
-          VERSION: ${{ needs.assemble.outputs.version }}
+          SOURCE_SHA: ${{ needs.assemble.outputs.source }}
         run: |
           set -euo pipefail
           git fetch origin main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
           git reset --hard origin/main
           git apply --check "$RUNNER_TEMP/release-patch/release.patch"
           git apply --index "$RUNNER_TEMP/release-patch/release.patch"
+      - name: Check release patch paths
+        run: |
+          set -euo pipefail
           while IFS= read -r path; do
             case "$path" in
               Cargo.toml|Cargo.lock|CHANGELOG.md|.changeset/*.md|site/static/openapi.json) ;;
@@ -91,6 +98,20 @@ jobs:
               *) echo "::error::unexpected release path: $path"; exit 1 ;;
             esac
           done < <(git diff --cached --name-only)
+      - name: Check release patch file modes
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' metadata && IFS= read -r -d '' path; do
+            read -ra fields <<< "$metadata"
+            if [[ "${fields[1]}" != 100644 && "${fields[1]}" != 000000 ]]; then
+              echo "::error::unexpected release file mode in $path: ${fields[1]}" >&2
+              exit 1
+            fi
+          done < <(git diff --cached --raw --no-renames -z)
+      - name: Check release version and whitespace
+        env:
+          VERSION: ${{ needs.assemble.outputs.version }}
+        run: |
           grep -Fq "## $VERSION (" CHANGELOG.md
           grep -Fxq "version = \"$VERSION\"" Cargo.toml
           git diff --cached --check
