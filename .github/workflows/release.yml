@@ -56,8 +56,6 @@ jobs:
       - uses: $/.github/actions/setup
         with:
           tools: aqua:axodotdev/cargo-dist prek
-      - name: Check tagged source
-        run: prek run --all-files
       # mise installs dist outside ~/.cargo/bin, where the later jobs restore it from.
       - run: cp "$(mise which dist)" "$RUNNER_TEMP/dist"
       - name: Cache dist
@@ -86,6 +84,8 @@ jobs:
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
+      - name: Check tagged source
+        run: prek run --all-files
 
   build-local-artifacts:
     # An implicit name keeps skipped matrix jobs legible.
