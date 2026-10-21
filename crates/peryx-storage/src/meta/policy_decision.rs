@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};
@@ -490,10 +491,10 @@ impl OwnedDecision {
     }
 }
 
-/// Writes one decision into an open transaction, shared by the direct and batched paths.
+/// Writes one decision into an open transaction, for the direct path.
 ///
-/// The caller prunes history and commits. A batch calls this once per decision in arrival order, so
-/// a repeated subject ends pointing at its last record.
+/// The caller prunes history and commits. `BatchWriter` must leave the tables exactly as repeated
+/// calls to this would, which its equivalence test holds it to.
 pub(super) fn record_in(
     txn: &redb::WriteTransaction,
     decision: &NewPolicyDecision<'_>,
@@ -546,6 +547,120 @@ pub(super) fn record_in(
     }
     current_records.insert(history_id.as_str(), encoded.as_slice())?;
     Ok(record)
+}
+
+/// Serialized exactly as `PolicyDecisionRecord`, without copying the decision's text into one first.
+/// The field order is the stored order, so it must change in step with `PolicyDecisionRecord`.
+#[derive(Serialize)]
+struct PolicyDecisionRecordRef<'a> {
+    id: Uuid,
+    repository: &'a str,
+    resource: &'a str,
+    group: Option<&'a str>,
+    artifact: Option<&'a str>,
+    source: Option<&'a str>,
+    action: PolicyAction,
+    state: PolicyDecisionState,
+    rule: Option<&'a str>,
+    reason: Option<&'a str>,
+    evaluated_at_unix: i64,
+    input_generation: PolicyInputGeneration,
+    next_eligible_at_unix: Option<i64>,
+}
+
+/// Writes many decisions into one open transaction, leaving what `record_in` would leave.
+///
+/// Opens each table once and keeps the handles, reads the serial once and writes it back in
+/// `finish`, and reads each repository's input generation once. The generation cannot change under
+/// the batch: every writer of that table runs in its own write transaction, and redb admits one, so
+/// none can start while this transaction is open. Dropping the writer without `finish` leaves the
+/// serial unwritten, which is correct only because the caller then abandons the transaction.
+pub(super) struct BatchWriter<'txn> {
+    serials: redb::Table<'txn, &'static str, u64>,
+    history: redb::Table<'txn, &'static str, &'static [u8]>,
+    current: redb::Table<'txn, &'static str, &'static str>,
+    current_records: redb::Table<'txn, &'static str, &'static [u8]>,
+    generations: redb::Table<'txn, &'static str, &'static [u8]>,
+    serial: u64,
+    generation_cache: HashMap<String, PolicyInputGeneration>,
+    history_id: String,
+    encoded: Vec<u8>,
+}
+
+impl<'txn> BatchWriter<'txn> {
+    pub(super) fn new(txn: &'txn redb::WriteTransaction) -> Result<Self, MetaError> {
+        let serials = txn.open_table(SERIAL)?;
+        let serial = serials
+            .get(POLICY_DECISION_SERIAL_KEY)?
+            .map_or(0, |value| value.value());
+        Ok(Self {
+            serials,
+            history: txn.open_table(POLICY_DECISION)?,
+            current: txn.open_table(POLICY_DECISION_CURRENT)?,
+            current_records: txn.open_table(POLICY_DECISION_CURRENT_ID)?,
+            generations: txn.open_table(POLICY_INPUT_GENERATION)?,
+            serial,
+            generation_cache: HashMap::new(),
+            history_id: String::new(),
+            encoded: Vec::new(),
+        })
+    }
+
+    pub(super) fn record(&mut self, decision: &NewPolicyDecision<'_>) -> Result<(), MetaError> {
+        self.serial += 1;
+        self.history_id.clear();
+        write!(self.history_id, "pd_{:016x}", self.serial).expect("writing to a String cannot fail");
+        let input_generation = self.input_generation(decision.repository)?;
+        self.encoded.clear();
+        let record = PolicyDecisionRecordRef {
+            id: Uuid::new_v4(),
+            repository: decision.repository,
+            resource: decision.resource,
+            group: decision.group,
+            artifact: decision.artifact,
+            source: decision.source,
+            action: decision.action,
+            state: decision.state,
+            rule: decision.rule,
+            reason: decision.reason,
+            evaluated_at_unix: decision.evaluated_at_unix,
+            input_generation,
+            next_eligible_at_unix: decision.next_eligible_at_unix,
+        };
+        serde_json::to_writer(&mut self.encoded, &record)?;
+        let subject = subject_key(decision)?;
+        self.history.insert(self.history_id.as_str(), self.encoded.as_slice())?;
+        let previous = self
+            .current
+            .insert(subject.as_str(), self.history_id.as_str())?
+            .map(|id| id.value().to_owned());
+        if let Some(previous) = previous {
+            self.current_records.remove(previous.as_str())?;
+        }
+        self.current_records
+            .insert(self.history_id.as_str(), self.encoded.as_slice())?;
+        Ok(())
+    }
+
+    /// Stores the serial of the last decision written.
+    pub(super) fn finish(mut self) -> Result<(), MetaError> {
+        self.serials.insert(POLICY_DECISION_SERIAL_KEY, self.serial)?;
+        Ok(())
+    }
+
+    fn input_generation(&mut self, repository: &str) -> Result<PolicyInputGeneration, MetaError> {
+        if let Some(generation) = self.generation_cache.get(repository) {
+            return Ok(*generation);
+        }
+        let generation = self
+            .generations
+            .get(repository)?
+            .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
+            .transpose()?
+            .unwrap_or_default();
+        self.generation_cache.insert(repository.to_owned(), generation);
+        Ok(generation)
+    }
 }
 
 fn validate_decision(decision: &NewPolicyDecision<'_>) -> Result<(), PolicyDecisionStoreError> {
@@ -655,6 +770,10 @@ fn matches_query(record: &PolicyDecisionRecord, query: &PolicyDecisionQuery) -> 
 fn valid_cursor(cursor: &str) -> bool {
     cursor.len() == 19 && cursor.starts_with("pd_") && cursor[3..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/meta/policy_decision_batch_tests.rs"]
+mod batch_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/meta/policy_decision_fault_tests.rs"]

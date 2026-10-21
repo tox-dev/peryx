@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 
 use super::MetaDatabase;
-use super::policy_decision::{MAX_DECISION_HISTORY, OwnedDecision, prune_history, record_in};
+use super::policy_decision::{BatchWriter, MAX_DECISION_HISTORY, OwnedDecision, prune_history};
 
 /// Bounds memory when the writer lags request traffic. A full queue blocks the sender.
 const QUEUE_CAPACITY: usize = 8_192;
@@ -218,12 +218,13 @@ impl Writer {
         progress: &mut Progress,
     ) -> Result<(), super::MetaError> {
         let txn = self.db.begin_write()?;
-        record_in(&txn, &first.as_new())?;
+        let mut batch = BatchWriter::new(&txn)?;
+        batch.record(&first.as_new())?;
         while progress.processed < self.max_batch {
             match receiver.try_recv() {
                 Ok(Message::Record(next)) => {
                     progress.processed += 1;
-                    record_in(&txn, &next.as_new())?;
+                    batch.record(&next.as_new())?;
                 }
                 Ok(Message::Control(control)) => {
                     progress.control = Some(control);
@@ -232,6 +233,7 @@ impl Writer {
                 Err(_) => break,
             }
         }
+        batch.finish()?;
         prune_history(&txn, self.history_limit)?;
         txn.commit()?;
         Ok(())
