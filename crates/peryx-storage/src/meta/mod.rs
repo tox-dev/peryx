@@ -33,6 +33,7 @@ mod migration;
 mod operation_outcome;
 mod placement;
 mod policy_decision;
+mod policy_decision_queue;
 mod quota;
 mod reclaim_guard;
 mod reclamation;
@@ -276,6 +277,8 @@ pub struct MetaStore {
     clock: Clock,
     reclaim_ownership: Arc<Mutex<()>>,
     repair_ownership: Arc<tokio::sync::Mutex<()>>,
+    /// Shared by every clone, so a read through any handle waits for decisions queued through another.
+    policy_decisions: Arc<policy_decision_queue::DecisionQueue>,
     #[cfg(any(test, feature = "fault-injection"))]
     driver_prefix_scan_fault: Arc<AtomicUsize>,
 }
@@ -298,6 +301,8 @@ struct MetaDatabase {
     backend: MetaDatabaseBackend,
     #[cfg(any(test, feature = "fault-injection"))]
     read_transactions: AtomicUsize,
+    #[cfg(any(test, feature = "fault-injection"))]
+    write_transactions: AtomicUsize,
 }
 
 impl std::fmt::Debug for MetaDatabase {
@@ -321,6 +326,8 @@ impl MetaDatabase {
             backend: MetaDatabaseBackend::ReadWrite(db),
             #[cfg(any(test, feature = "fault-injection"))]
             read_transactions: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "fault-injection"))]
+            write_transactions: AtomicUsize::new(0),
         }
     }
 
@@ -329,6 +336,8 @@ impl MetaDatabase {
             backend: MetaDatabaseBackend::ReadOnly(db),
             #[cfg(any(test, feature = "fault-injection"))]
             read_transactions: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "fault-injection"))]
+            write_transactions: AtomicUsize::new(0),
         }
     }
 
@@ -343,6 +352,8 @@ impl MetaDatabase {
     }
 
     fn begin_write(&self) -> Result<redb::WriteTransaction, redb::TransactionError> {
+        #[cfg(any(test, feature = "fault-injection"))]
+        self.write_transactions.fetch_add(1, Ordering::SeqCst);
         match &self.backend {
             MetaDatabaseBackend::ReadWrite(db) => db.begin_write(),
             MetaDatabaseBackend::ReadOnly(_) => Err(redb::StorageError::from(std::io::Error::new(
@@ -402,8 +413,16 @@ impl MetaStore {
             clock: system_clock(),
             reclaim_ownership: Arc::new(Mutex::new(())),
             repair_ownership: Arc::new(tokio::sync::Mutex::new(())),
+            policy_decisions: Arc::new(policy_decision_queue::DecisionQueue::new()),
             driver_prefix_scan_fault: Arc::new(AtomicUsize::new(DRIVER_PREFIX_SCAN_FAULT_DISABLED)),
         })
+    }
+
+    /// Returns and resets the number of write transactions begun through this database.
+    #[cfg(any(test, feature = "fault-injection"))]
+    #[must_use]
+    pub fn take_write_transaction_count(&self) -> usize {
+        self.db.write_transactions.swap(0, Ordering::SeqCst)
     }
 
     /// Fails a driver transaction prefix scan after `after` matching rows without invalidating its transaction.
@@ -485,9 +504,17 @@ impl MetaStore {
             clock: system_clock(),
             reclaim_ownership: Arc::new(Mutex::new(())),
             repair_ownership: Arc::new(tokio::sync::Mutex::new(())),
+            policy_decisions: Arc::new(policy_decision_queue::DecisionQueue::new()),
             #[cfg(any(test, feature = "fault-injection"))]
             driver_prefix_scan_fault: Arc::new(AtomicUsize::new(DRIVER_PREFIX_SCAN_FAULT_DISABLED)),
         })
+    }
+
+    /// Replaces the policy decision queue with one that has test-sized limits.
+    #[cfg(test)]
+    fn with_policy_decision_queue(mut self, queue: policy_decision_queue::DecisionQueue) -> Self {
+        self.policy_decisions = Arc::new(queue);
+        self
     }
 
     /// Replaces the wall clock that decides whether a blob's reclaim-guard lease has lapsed.
@@ -569,6 +596,7 @@ impl MetaStore {
             clock: system_clock(),
             reclaim_ownership: Arc::new(Mutex::new(())),
             repair_ownership: Arc::new(tokio::sync::Mutex::new(())),
+            policy_decisions: Arc::new(policy_decision_queue::DecisionQueue::new()),
             #[cfg(any(test, feature = "fault-injection"))]
             driver_prefix_scan_fault: Arc::new(AtomicUsize::new(DRIVER_PREFIX_SCAN_FAULT_DISABLED)),
         })
@@ -584,6 +612,7 @@ impl MetaStore {
             clock: system_clock(),
             reclaim_ownership: Arc::new(Mutex::new(())),
             repair_ownership: Arc::new(tokio::sync::Mutex::new(())),
+            policy_decisions: Arc::new(policy_decision_queue::DecisionQueue::new()),
             #[cfg(any(test, feature = "fault-injection"))]
             driver_prefix_scan_fault: Arc::new(AtomicUsize::new(DRIVER_PREFIX_SCAN_FAULT_DISABLED)),
         })

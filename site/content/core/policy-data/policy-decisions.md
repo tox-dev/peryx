@@ -43,6 +43,12 @@ The endpoint accepts `state`, `rule`, `source`, `from`, and `to` filters. Result
 `next_cursor` as `cursor` for the next page. `limit` defaults to 25 and accepts 1 through 100. A cursor belongs to the
 same repository and filter set that produced it; changing filters while reusing a cursor can skip matching records.
 
+A background writer stores the records, so a request does not wait for the metadata write lock. The writer commits
+queued records together in arrival order, and a full queue makes the evaluating request wait instead of dropping a
+record. Every read of decisions, including the endpoint, the browser view, and the freshness lookups on project pages,
+first waits until the writer has stored the records queued before the read. A shutdown stores the queued records before
+the process exits.
+
 Peryx retains 10,000 decision records per metadata store. New records remove the oldest history and any current pointer
 to a removed record. Reasons stop at 2,048 bytes; values for repository, resource, group, artifact, source, or rule stop
 at 512 bytes. Repository, rule, and source query filters use the same 512-byte bound. These limits bound query work and

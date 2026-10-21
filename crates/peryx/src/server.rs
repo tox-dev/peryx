@@ -577,7 +577,7 @@ struct StoredPolicyDecisionRecorder {
 
 impl PolicyDecisionRecorder for StoredPolicyDecisionRecorder {
     fn record(&self, evaluation: PolicyEvaluation<'_>) {
-        if let Err(error) = self.meta.record_policy_decision(NewPolicyDecision {
+        if let Err(error) = self.meta.enqueue_policy_decision(NewPolicyDecision {
             repository: &self.repository,
             resource: evaluation.resource,
             group: evaluation.group,

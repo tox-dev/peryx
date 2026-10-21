@@ -12,7 +12,7 @@ use super::{
     POLICY_INPUT_GENERATION, SERIAL,
 };
 
-const MAX_DECISION_HISTORY: usize = 10_000;
+pub(super) const MAX_DECISION_HISTORY: usize = 10_000;
 const MAX_QUERY_LIMIT: usize = 100;
 const MAX_REASON_BYTES: usize = 2_048;
 const MAX_SUBJECT_BYTES: usize = 512;
@@ -232,69 +232,43 @@ impl MetaStore {
         history_limit: usize,
     ) -> Result<PolicyDecisionRecord, PolicyDecisionStoreError> {
         validate_decision(&decision)?;
+        self.policy_decisions.wait_applied();
         let txn = self.db.begin_write().map_err(MetaError::from)?;
-        let history_id = {
-            let mut serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
-            let next = serials
-                .get(POLICY_DECISION_SERIAL_KEY)
-                .map_err(MetaError::from)?
-                .map_or(0, |value| value.value())
-                + 1;
-            serials
-                .insert(POLICY_DECISION_SERIAL_KEY, next)
-                .map_err(MetaError::from)?;
-            format!("pd_{next:016x}")
-        };
-        let input_generation = {
-            let table = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
-            table
-                .get(decision.repository)
-                .map_err(MetaError::from)?
-                .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
-                .transpose()
-                .map_err(MetaError::from)?
-                .unwrap_or_default()
-        };
-        let record = PolicyDecisionRecord {
-            id: Uuid::new_v4(),
-            repository: decision.repository.to_owned(),
-            resource: decision.resource.to_owned(),
-            group: decision.group.map(str::to_owned),
-            artifact: decision.artifact.map(str::to_owned),
-            source: decision.source.map(str::to_owned),
-            action: decision.action,
-            state: decision.state,
-            rule: decision.rule.map(str::to_owned),
-            reason: decision.reason.map(str::to_owned),
-            evaluated_at_unix: decision.evaluated_at_unix,
-            input_generation,
-            next_eligible_at_unix: decision.next_eligible_at_unix,
-        };
-        let subject = subject_key(&decision).map_err(MetaError::from)?;
-        let encoded = serde_json::to_vec(&record).map_err(MetaError::from)?;
-        {
-            txn.open_table(POLICY_DECISION)
-                .map_err(MetaError::from)?
-                .insert(history_id.as_str(), encoded.as_slice())
-                .map_err(MetaError::from)?;
-            let previous = {
-                let mut current = txn.open_table(POLICY_DECISION_CURRENT).map_err(MetaError::from)?;
-                current
-                    .insert(subject.as_str(), history_id.as_str())
-                    .map_err(MetaError::from)?
-                    .map(|id| id.value().to_owned())
-            };
-            let mut current_records = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
-            if let Some(previous) = previous {
-                current_records.remove(previous.as_str()).map_err(MetaError::from)?;
-            }
-            current_records
-                .insert(history_id.as_str(), encoded.as_slice())
-                .map_err(MetaError::from)?;
-        }
+        let record = record_in(&txn, &decision)?;
         prune_history(&txn, history_limit)?;
         txn.commit().map_err(MetaError::from)?;
         Ok(record)
+    }
+
+    /// Queues a decision for the background writer, which commits many in one transaction.
+    ///
+    /// Blocks while the queue is full instead of dropping the decision. A later read of any policy
+    /// decision waits until this one is applied. A queue that has shut down writes the decision
+    /// directly.
+    ///
+    /// # Errors
+    /// Returns a validation error for an oversized subject or reason, or, after shutdown, the store
+    /// error of the direct write. A failure inside the writer is logged there.
+    pub fn enqueue_policy_decision(&self, decision: NewPolicyDecision<'_>) -> Result<(), PolicyDecisionStoreError> {
+        validate_decision(&decision)?;
+        if self
+            .policy_decisions
+            .enqueue(&self.db, OwnedDecision::new(&decision))
+            .is_err()
+        {
+            self.record_policy_decision(decision)?;
+        }
+        Ok(())
+    }
+
+    /// Waits until every decision queued before this call is committed.
+    pub fn flush_policy_decisions(&self) {
+        self.policy_decisions.wait_applied();
+    }
+
+    /// Commits the queued decisions and stops the writer thread. Later decisions are written directly.
+    pub fn shutdown_policy_decisions(&self) {
+        self.policy_decisions.shutdown();
     }
 
     /// # Errors
@@ -308,6 +282,7 @@ impl MetaStore {
         subject: NewPolicyDecision<'_>,
     ) -> Result<Option<PolicyDecisionRecord>, PolicyDecisionStoreError> {
         validate_subject(&subject)?;
+        self.policy_decisions.wait_applied();
         let txn = self.db.begin_read().map_err(MetaError::from)?;
         let current = txn.open_table(POLICY_DECISION_CURRENT).map_err(MetaError::from)?;
         let key = subject_key(&subject).map_err(MetaError::from)?;
@@ -357,6 +332,7 @@ impl MetaStore {
             return Ok(HashMap::new());
         }
 
+        self.policy_decisions.wait_applied();
         let txn = self.db.begin_read().map_err(MetaError::from)?;
         let current = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
@@ -407,6 +383,7 @@ impl MetaStore {
         query: &PolicyDecisionQuery,
     ) -> Result<PolicyDecisionPage, PolicyDecisionQueryError> {
         query.validate()?;
+        self.policy_decisions.wait_applied();
         let txn = self.db.begin_read().map_err(MetaError::from)?;
         let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
@@ -462,6 +439,113 @@ pub(super) fn advance_repository_generations(
         generations.insert(repository.as_str(), encoded.as_slice())?;
     }
     Ok(())
+}
+
+/// A queued decision that owns its text, because the caller's borrows end before the writer runs.
+pub(super) struct OwnedDecision {
+    repository: String,
+    resource: String,
+    group: Option<String>,
+    artifact: Option<String>,
+    source: Option<String>,
+    action: PolicyAction,
+    state: PolicyDecisionState,
+    rule: Option<String>,
+    reason: Option<String>,
+    evaluated_at_unix: i64,
+    next_eligible_at_unix: Option<i64>,
+}
+
+impl OwnedDecision {
+    pub(super) fn new(decision: &NewPolicyDecision<'_>) -> Self {
+        Self {
+            repository: decision.repository.to_owned(),
+            resource: decision.resource.to_owned(),
+            group: decision.group.map(str::to_owned),
+            artifact: decision.artifact.map(str::to_owned),
+            source: decision.source.map(str::to_owned),
+            action: decision.action,
+            state: decision.state,
+            rule: decision.rule.map(str::to_owned),
+            reason: decision.reason.map(str::to_owned),
+            evaluated_at_unix: decision.evaluated_at_unix,
+            next_eligible_at_unix: decision.next_eligible_at_unix,
+        }
+    }
+
+    pub(super) fn as_new(&self) -> NewPolicyDecision<'_> {
+        NewPolicyDecision {
+            repository: &self.repository,
+            resource: &self.resource,
+            group: self.group.as_deref(),
+            artifact: self.artifact.as_deref(),
+            source: self.source.as_deref(),
+            action: self.action,
+            state: self.state,
+            rule: self.rule.as_deref(),
+            reason: self.reason.as_deref(),
+            evaluated_at_unix: self.evaluated_at_unix,
+            next_eligible_at_unix: self.next_eligible_at_unix,
+        }
+    }
+}
+
+/// Writes one decision into an open transaction, shared by the direct and batched paths.
+///
+/// The caller prunes history and commits. A batch calls this once per decision in arrival order, so
+/// a repeated subject ends pointing at its last record.
+pub(super) fn record_in(
+    txn: &redb::WriteTransaction,
+    decision: &NewPolicyDecision<'_>,
+) -> Result<PolicyDecisionRecord, MetaError> {
+    let history_id = {
+        let mut serials = txn.open_table(SERIAL)?;
+        let next = serials
+            .get(POLICY_DECISION_SERIAL_KEY)?
+            .map_or(0, |value| value.value())
+            + 1;
+        serials.insert(POLICY_DECISION_SERIAL_KEY, next)?;
+        format!("pd_{next:016x}")
+    };
+    let input_generation = {
+        let table = txn.open_table(POLICY_INPUT_GENERATION)?;
+        table
+            .get(decision.repository)?
+            .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
+            .transpose()?
+            .unwrap_or_default()
+    };
+    let record = PolicyDecisionRecord {
+        id: Uuid::new_v4(),
+        repository: decision.repository.to_owned(),
+        resource: decision.resource.to_owned(),
+        group: decision.group.map(str::to_owned),
+        artifact: decision.artifact.map(str::to_owned),
+        source: decision.source.map(str::to_owned),
+        action: decision.action,
+        state: decision.state,
+        rule: decision.rule.map(str::to_owned),
+        reason: decision.reason.map(str::to_owned),
+        evaluated_at_unix: decision.evaluated_at_unix,
+        input_generation,
+        next_eligible_at_unix: decision.next_eligible_at_unix,
+    };
+    let subject = subject_key(decision)?;
+    let encoded = serde_json::to_vec(&record)?;
+    txn.open_table(POLICY_DECISION)?
+        .insert(history_id.as_str(), encoded.as_slice())?;
+    let previous = {
+        let mut current = txn.open_table(POLICY_DECISION_CURRENT)?;
+        current
+            .insert(subject.as_str(), history_id.as_str())?
+            .map(|id| id.value().to_owned())
+    };
+    let mut current_records = txn.open_table(POLICY_DECISION_CURRENT_ID)?;
+    if let Some(previous) = previous {
+        current_records.remove(previous.as_str())?;
+    }
+    current_records.insert(history_id.as_str(), encoded.as_slice())?;
+    Ok(record)
 }
 
 fn validate_decision(decision: &NewPolicyDecision<'_>) -> Result<(), PolicyDecisionStoreError> {
@@ -521,23 +605,24 @@ fn decode_policy_decision(bytes: &[u8]) -> Result<PolicyDecisionRecord, serde_js
     serde_json::from_slice(bytes)
 }
 
-/// Drops the oldest audit row once the log crosses its bound.
+/// Drops the oldest audit rows once the log crosses its bound.
 ///
+/// A batch inserts many rows before this runs, so it removes every row over the bound, not one.
 /// Current decisions live in their own table, so an evicted row never takes a subject's live state
 /// with it - not even a subject in another repository, whose rows interleave with these by serial.
-fn prune_history(txn: &redb::WriteTransaction, history_limit: usize) -> Result<(), MetaError> {
-    let stale_id = {
-        let history = txn.open_table(POLICY_DECISION)?;
-        (history.len()? > history_limit as u64)
-            .then(|| history.first())
-            .transpose()?
-            .flatten()
-            .map(|(id, _)| id.value().to_owned())
-    };
-    let Some(stale_id) = stale_id else {
-        return Ok(());
-    };
-    txn.open_table(POLICY_DECISION)?.remove(stale_id.as_str())?;
+pub(super) fn prune_history(txn: &redb::WriteTransaction, history_limit: usize) -> Result<(), MetaError> {
+    let mut history = txn.open_table(POLICY_DECISION)?;
+    let excess = usize::try_from(history.len()?)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(history_limit);
+    let stale = history
+        .iter()?
+        .take(excess)
+        .map(|entry| entry.map(|(id, _)| id.value().to_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
+    for id in &stale {
+        history.remove(id.as_str())?;
+    }
     Ok(())
 }
 

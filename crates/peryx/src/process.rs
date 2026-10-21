@@ -238,6 +238,7 @@ struct ProcessTasks {
     scheduler: Option<tokio::task::JoinHandle<()>>,
     journal_retention: Option<tokio::task::JoinHandle<()>>,
     cache_warming: Vec<tokio::task::JoinHandle<anyhow::Result<()>>>,
+    policy_decisions: Option<peryx_storage::meta::MetaStore>,
 }
 
 impl ProcessTasks {
@@ -248,6 +249,7 @@ impl ProcessTasks {
             scheduler: None,
             journal_retention: None,
             cache_warming: Vec::new(),
+            policy_decisions: None,
         }
     }
 
@@ -267,7 +269,8 @@ impl ProcessTasks {
             self.cache_warming.len()
                 + usize::from(self.scheduler.is_some())
                 + usize::from(self.journal_retention.is_some())
-                + usize::from(self.webhooks.is_some()),
+                + usize::from(self.webhooks.is_some())
+                + usize::from(self.policy_decisions.is_some()),
         );
         if let Some(webhooks) = self.webhooks {
             let result = webhooks.shutdown().await.map_err(anyhow::Error::from);
@@ -292,6 +295,14 @@ impl ProcessTasks {
                 .and_then(std::convert::identity);
             log_shutdown_result("cache warming", &result);
             results.push(("cache warming", result));
+        }
+        // Last, because the tasks above can still evaluate policy until they have stopped.
+        if let Some(meta) = self.policy_decisions {
+            let result = tokio::task::spawn_blocking(move || meta.shutdown_policy_decisions())
+                .await
+                .context("join policy decision writer");
+            log_shutdown_result("policy decision writer", &result);
+            results.push(("policy decision writer", result));
         }
         combined_results(results)
     }
@@ -452,6 +463,7 @@ fn start_process_tasks(
 ) {
     if !state.serving.read_only {
         tasks.webhooks = peryx_events::webhook::kick(state.serving.clone());
+        tasks.policy_decisions = Some(state.serving.meta.clone());
     }
     if !state.serving.read_only && config.jobs.mode == config::JobsMode::Local {
         let scheduler = std::sync::Arc::new(peryx_driver::jobs::JobScheduler::new(
