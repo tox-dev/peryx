@@ -58,8 +58,6 @@ jobs:
         run: knope prepare-release --verbose --override-version "$VERSION"
       - name: Add stable changelog anchors
         run: release-creator anchors --changelog CHANGELOG.md
-      - name: Check release patch
-        run: prek run --all-files
       - name: Write release patch
         run: |
           git diff HEAD --binary > "$RUNNER_TEMP/release.patch"
@@ -69,6 +67,10 @@ jobs:
           name: release-patch
           path: ${{ runner.temp }}/release.patch
           if-no-files-found: error
+      - name: Check release patch
+        run: prek run --all-files
+      - name: Reject hook changes to release patch
+        run: git diff HEAD --binary | cmp - "$RUNNER_TEMP/release.patch"
   push:
     needs: assemble
     runs-on: ubuntu-24.04
