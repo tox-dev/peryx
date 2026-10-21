@@ -23,5 +23,5 @@ build:
           mkdir -p ~/.local/bin &&
           tar --extract --xz --file "/tmp/$archive" --to-stdout mise/bin/mise > ~/.local/bin/mise &&
           chmod 0755 ~/.local/bin/mise
-        - MISE_SAFE=1 ~/.local/bin/mise install --locked just node zola
+        - MISE_SAFE=1 ~/.local/bin/mise install --locked just node uv zola
         - MISE_EXEC_AUTO_INSTALL=0 MISE_SAFE=1 ~/.local/bin/mise exec -- just site-readthedocs

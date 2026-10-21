@@ -45,10 +45,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked build backend
-        shell: bash
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/build-tools"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/build-tools" --group build pylock.toml
+        run: just package-tools
       - name: Build wheel
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
@@ -62,7 +59,7 @@ jobs:
           args=(--target "$RUST_TARGET")
           [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
           [[ -z $USE_ZIG ]] || args+=(--zig)
-          uv run --no-project --python "$RUNNER_TEMP/build-tools" just package-wheel "${args[@]}"
+          just --no-deps package-wheel "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
@@ -85,11 +82,9 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked build backend
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/build-tools"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/build-tools" --group build pylock.toml
+        run: just package-tools
       - name: Build sdist
-        run: uv run --no-project --python "$RUNNER_TEMP/build-tools" just package-sdist
+        run: just --no-deps package-sdist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-sdist

@@ -41,7 +41,7 @@ package-check = [
 ]
 release = [
   "prek>=0.5",
-  "release-creator @ git+https://github.com/tox-dev/release-creator@80ecd0e952a0e0c50d08129ec89aaa8306ea0b05",
+  "release-creator @ git+https://github.com/tox-dev/release-creator@a68e1cac50755c8d8fbb2be85fa1a35eeb78d577",
 ]
 
 [tool.uv.dependency-groups]

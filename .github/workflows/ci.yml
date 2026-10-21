@@ -221,7 +221,7 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup
         with:
-          tools: jq just node prek zola
+          tools: jq just node prek uv zola
       - run: just lint-docs
       - run: just docs
 

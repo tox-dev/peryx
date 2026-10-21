@@ -48,6 +48,9 @@ validation.
 After a bot pull request opens or its files change, the label workflow applies `skip news` if it has no
 `.changeset/*.md` file and removes that label if a change file is added later.
 
+Pull request documentation builds show current change files under Draft on the changelog page. The release workflow
+moves those entries into a versioned section when it prepares the release.
+
 ## Publish a release
 
 peryx uses calendar versions of the form `YYYY.MDD.N`: the UTC year, then the month and zero-padded day, then a counter
