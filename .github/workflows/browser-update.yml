@@ -6,14 +6,22 @@ on:
   workflow_dispatch:
 
 permissions: {}
+concurrency:
+  group: browser-update
+  cancel-in-progress: false
 
 jobs:
-  update:
+  generate:
+    name: Generate browser update
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+      source: ${{ steps.patch.outputs.source }}
+      digest: ${{ steps.patch.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -22,8 +30,84 @@ jobs:
         with:
           tools: just node
       - run: just browser-update
+      - name: Store browser update patch
+        id: patch
+        run: |
+          set -euo pipefail
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff HEAD --binary --no-ext-diff --no-textconv > "$RUNNER_TEMP/browser-update.patch"
+          if [[ -s "$RUNNER_TEMP/browser-update.patch" ]]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo "source=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "digest=$(sha256sum "$RUNNER_TEMP/browser-update.patch" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.patch.outputs.changed == 'true'
+        with:
+          name: browser-update-patch
+          path: ${{ runner.temp }}/browser-update.patch
+          if-no-files-found: error
+          retention-days: 1
+  update:
+    name: Open browser update PR
+    needs: generate
+    if: needs.generate.outputs.changed == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: release-auth
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.generate.outputs.source }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: browser-update-patch
+          path: ${{ runner.temp }}/browser-update
+      - name: Verify generated patch
+        env:
+          SOURCE_SHA: ${{ needs.generate.outputs.source }}
+          PATCH_SHA256: ${{ needs.generate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -f "$RUNNER_TEMP/browser-update/browser-update.patch"
+          test ! -L "$RUNNER_TEMP/browser-update/browser-update.patch"
+          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/browser-update/browser-update.patch" | sha256sum --check --status
+      - name: Apply generated patch
+        run: |
+          git apply --check "$RUNNER_TEMP/browser-update/browser-update.patch"
+          git apply --index "$RUNNER_TEMP/browser-update/browser-update.patch"
+      - name: Check browser update paths and modes
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              mise.browser.toml|mise.browser.lock|site/package.json|site/package-lock.json) ;;
+              crates/peryx-web/tests/frontend/package.json|crates/peryx-web/tests/frontend/package-lock.json) ;;
+              crates/peryx-ecosystem-pypi/tests/frontend/package.json|crates/peryx-ecosystem-pypi/tests/frontend/package-lock.json) ;;
+              crates/peryx-ecosystem-oci/tests/frontend/package.json|crates/peryx-ecosystem-oci/tests/frontend/package-lock.json) ;;
+              site/static/diagrams/*.svg) ;;
+              *) echo "::error::unexpected browser update path: $path" >&2; exit 1 ;;
+            esac
+            git cat-file -e "HEAD:$path"
+          done < <(git diff --cached --name-only -z)
+          while IFS= read -r -d '' metadata && IFS= read -r -d '' path; do
+            read -ra fields <<< "$metadata"
+            if [[ "${fields[1]}" != 100644 ]]; then
+              echo "::error::unexpected browser update mode: $path" >&2
+              exit 1
+            fi
+          done < <(git diff --cached --raw --no-renames -z)
+          git diff --cached --check
       - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          token: ${{ github.token }}
+          base: main
           assignees: gaborbernat
           branch: automation/browser-dependencies
           commit-message: "⬆️ build(deps): update browser tools"
