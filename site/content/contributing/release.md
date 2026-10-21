@@ -77,6 +77,9 @@ a changelog section. The workflow builds archives, stages a draft GitHub Release
 publishes and verifies the PyPI package, then makes the GitHub Release public. The notes keep cargo-dist's installer,
 download, and verification instructions and link to PyPI when that version is published there.
 
+The global build generates the planned CycloneDX manifest and checks every planned file before upload. The host checks
+the plan, source, tag, file set, and archive digests before any release write step runs.
+
 The wheel and sdist jobs install Maturin from the `build` selection in `pylock.toml`. Before PyPI publishing, a job
 without publishing credentials requires all eight wheels and the sdist, checks their metadata and wheel contents, and
 records their hashes. It compares that set with PyPI and stages only missing files. The PyPI job checks the full set
