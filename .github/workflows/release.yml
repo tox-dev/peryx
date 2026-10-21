@@ -202,16 +202,106 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+  credits:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # GitHub's generate-notes endpoint requires write access without saving a release.
+    outputs:
+      source: ${{ github.sha }}
+      previous: ${{ steps.previous.outputs.tag }}
+      digest: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - name: Find previous release
+        id: previous
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          previous=$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags?per_page=100" --jq '.[].name' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | awk -v tag="$RELEASE_TAG" '$0 == tag { print previous; exit } { previous = $0 }')
+          echo "tag=$previous" >> "$GITHUB_OUTPUT"
+      - name: Read generated contributor credits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+        run: |
+          args=(-f "tag_name=$RELEASE_TAG")
+          [[ -z "$PREVIOUS_TAG" ]] || args+=(-f "previous_tag_name=$PREVIOUS_TAG")
+          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body > "$RUNNER_TEMP/generated-notes.md"
+      - name: Hash generated credits
+        id: digest
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/generated-notes.md" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generated-credits
+          path: ${{ runner.temp }}/generated-notes.md
+          if-no-files-found: error
+
+  notes:
+    needs:
+      - plan
+      - credits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ github.sha }}
+      digest: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: generated-credits
+          path: ${{ runner.temp }}/credits
+      - name: Verify generated credits
+        env:
+          SOURCE_SHA: ${{ needs.credits.outputs.source }}
+          CREDITS_SHA256: ${{ needs.credits.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$CREDITS_SHA256" "$RUNNER_TEMP/credits/generated-notes.md" | sha256sum --check --status
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+      - name: Render changelog notes
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PREVIOUS_TAG: ${{ needs.credits.outputs.previous }}
+          PUBLISH_PYPI: "${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}"
+        run: |
+          args=(--changelog CHANGELOG.md --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" --generated-notes "$RUNNER_TEMP/credits/generated-notes.md")
+          [[ -z "$PREVIOUS_TAG" ]] || args+=(--previous "$PREVIOUS_TAG")
+          [[ "$PUBLISH_PYPI" != true ]] || args+=(--artifact-url "https://pypi.org/project/peryx/${RELEASE_TAG#v}/")
+          "$RUNNER_TEMP/release-tools/bin/release-creator" notes "${args[@]}" > "$RUNNER_TEMP/changelog-notes.md"
+      - name: Hash changelog notes
+        id: digest
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/changelog-notes.md" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: changelog-notes
+          path: ${{ runner.temp }}/changelog-notes.md
+          if-no-files-found: error
+
   host:
     needs:
       - plan
+      - notes
       - build-local-artifacts
       - build-global-artifacts
     if:
-      ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result
+      ${{ always() && needs.plan.result == 'success' && needs.notes.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result
       == 'skipped' || needs.build-local-artifacts.result == 'success') }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
     timeout-minutes: 20
     permissions:
@@ -226,6 +316,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           submodules: recursive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: changelog-notes
+          path: ${{ runner.temp }}/release-notes
+      - name: Verify changelog notes
+        env:
+          SOURCE_SHA: ${{ needs.notes.outputs.source }}
+          NOTES_SHA256: ${{ needs.notes.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/changelog-notes.md" | sha256sum --check --status
       - name: Install cached dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         env:
@@ -244,6 +345,7 @@ jobs:
           merge-multiple: true
       - id: host
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.plan.outputs.tag }}
         shell: bash
         run: |
@@ -271,39 +373,6 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/*
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          python-version: "3.15"
-          enable-cache: false
-      - name: Install locked release tools
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
-      - name: Find previous release
-        id: previous
-        env:
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          previous=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | awk -v tag="$RELEASE_TAG" '$0 == tag { print previous; exit } { previous = $0 }')
-          echo "tag=$previous" >> "$GITHUB_OUTPUT"
-      - name: Read generated contributor credits
-        env:
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
-        run: |
-          args=(-f "tag_name=$RELEASE_TAG")
-          [[ -z "$PREVIOUS_TAG" ]] || args+=(-f "previous_tag_name=$PREVIOUS_TAG")
-          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body > "$RUNNER_TEMP/generated-notes.md"
-      - name: Render changelog notes
-        env:
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
-          PUBLISH_PYPI: "${{ !fromJson(steps.host.outputs.manifest).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}"
-        run: |
-          args=(--changelog CHANGELOG.md --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" --generated-notes "$RUNNER_TEMP/generated-notes.md")
-          [[ -z "$PREVIOUS_TAG" ]] || args+=(--previous "$PREVIOUS_TAG")
-          [[ "$PUBLISH_PYPI" != true ]] || args+=(--artifact-url "https://pypi.org/project/peryx/${RELEASE_TAG#v}/")
-          "$RUNNER_TEMP/release-tools/bin/release-creator" notes "${args[@]}" > "$RUNNER_TEMP/changelog-notes.md"
       - name: Keep installer and verification instructions
         env:
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
@@ -312,11 +381,12 @@ jobs:
           test -s "$RUNNER_TEMP/install-notes.md"
       - name: Assemble release description
         run: |
-          sed '/^\*\*Full Changelog\*\*:/d' "$RUNNER_TEMP/changelog-notes.md" > "$RUNNER_TEMP/release-notes.md"
+          sed '/^\*\*Full Changelog\*\*:/d' "$RUNNER_TEMP/release-notes/changelog-notes.md" > "$RUNNER_TEMP/release-notes.md"
           cat "$RUNNER_TEMP/install-notes.md" >> "$RUNNER_TEMP/release-notes.md"
-          sed -n '/^\*\*Full Changelog\*\*:/p' "$RUNNER_TEMP/changelog-notes.md" >> "$RUNNER_TEMP/release-notes.md"
+          sed -n '/^\*\*Full Changelog\*\*:/p' "$RUNNER_TEMP/release-notes/changelog-notes.md" >> "$RUNNER_TEMP/release-notes.md"
       - name: Create GitHub Release
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           RELEASE_COMMIT: "${{ github.sha }}"

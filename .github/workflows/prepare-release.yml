@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read # Resolve each merged change file to its pull request author.
     outputs:
       version: ${{ steps.version.outputs.version }}
       source: ${{ steps.source.outputs.sha }}

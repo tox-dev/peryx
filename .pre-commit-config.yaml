@@ -1,7 +1,7 @@
 default_language_version:
   python: python3.15
 ci:
-  autoupdate_schedule: monthly
+  autoupdate_schedule: weekly
   # GitHub Actions runs the Rust hooks with the repository toolchain.
   skip: [cargo-fmt, cargo-clippy]
 
