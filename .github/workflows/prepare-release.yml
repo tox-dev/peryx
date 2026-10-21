@@ -144,7 +144,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
-      - uses: tox-dev/github-workflows/commit-and-tag@a1e1b8e419fea6c7c9d9923f9297c43d8c316927
+      - uses: tox-dev/github-workflows/commit-and-tag@8db87d4730353b61630d66cbc592d6bed0c85d2b
         with:
           version: v${{ needs.assemble.outputs.version }}
           token: ${{ steps.token.outputs.token }}

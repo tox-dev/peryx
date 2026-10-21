@@ -264,9 +264,34 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.nightly
     uses: $/.github/workflows/nightly.yml
 
+  hook-update-cooldown:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: tox-dev/github-workflows/check-hook-update-cooldown@8db87d4730353b61630d66cbc592d6bed0c85d2b
+        with:
+          repository: ${{ github.repository }}
+          pull-request: ${{ github.event.pull_request.number }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+
   ci-gate:
     if: always()
-    needs: [automation, changelog, changes, contracts, coverage, coverage-lines, docs, frontend, platform, source]
+    needs:
+      - automation
+      - changelog
+      - changes
+      - contracts
+      - coverage
+      - coverage-lines
+      - docs
+      - frontend
+      - hook-update-cooldown
+      - platform
+      - source
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -275,6 +300,8 @@ jobs:
           needs.automation.result != 'success' || needs.changelog.result != 'success' ||
           needs.changes.result != 'success' ||
           needs.docs.result != 'success' || needs.source.result != 'success' ||
+          (github.event_name == 'pull_request' && needs['hook-update-cooldown'].result != 'success') ||
+          (github.event_name != 'pull_request' && needs['hook-update-cooldown'].result != 'skipped') ||
           !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) ||
           !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) ||
           !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) ||
