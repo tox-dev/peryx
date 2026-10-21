@@ -37,10 +37,12 @@ Inspect the cargo-dist plan for the expected targets, installers, checksums, att
 ## Document a change
 
 Each pull request needs a change file unless a maintainer applies the `skip news` label. Run `knope document-change`,
-pick the change type, and write the summary; knope saves it under `.changeset/`. The change type picks the changelog
-section: `major` lists under breaking changes, `minor` under features, and `patch` under fixes. knope's conventional
-commit parser stays off: it rejects subjects that start with an emoji, as squash commits here do, so it would pick up
-only the few older subjects without one. The CI gate checks for a new change file on each pull request.
+pick the change type, and write the summary; knope saves it under `.changeset/`. Use `minor` for Added, `change` for
+Changes, `patch` for Fixed, and `major` for Breaking changes. Documentation, Security, Performance, Deprecated, Removed,
+and Packaging have matching custom types in `knope.toml`. A Python support addition or removal belongs under Added.
+Knope's conventional commit parser stays off because it rejects subjects that start with an emoji, as squash commits
+here do. The CI gate checks for a new change file on human-authored pull requests. Bot pull requests need one only if
+their changes warrant news.
 
 ## Publish a release
 
@@ -59,8 +61,9 @@ The workflow computes the version from the date and the existing tags. It stops 
 runs `knope prepare-release` without release credentials to update the manifests, `Cargo.lock`,
 `site/static/openapi.json`, and `CHANGELOG.md`. A second job checks those changes, commits them to `main`, and tags
 `v<version>`. One atomic push lands both, and the tag starts `release.yml`, which builds the archives, creates the
-GitHub release with the `CHANGELOG.md` section as its notes, and publishes the PyPI package. The release workflow
-rejects a tag whose version has no section in `CHANGELOG.md`.
+GitHub release, and publishes the PyPI package. The release workflow renders the tagged `CHANGELOG.md` section as GitHub
+notes, keeps cargo-dist's installer, download, and verification instructions, and adds a PyPI link when the release
+publishes there. It rejects a tag whose version has no changelog section.
 
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its

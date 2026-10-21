@@ -271,28 +271,57 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/*
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        run: |
+          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
+          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+      - name: Find previous release
+        id: previous
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          previous=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | awk -v tag="$RELEASE_TAG" '$0 == tag { print previous; exit } { previous = $0 }')
+          echo "tag=$previous" >> "$GITHUB_OUTPUT"
+      - name: Read generated contributor credits
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+        run: |
+          args=(-f "tag_name=$RELEASE_TAG")
+          [[ -z "$PREVIOUS_TAG" ]] || args+=(-f "previous_tag_name=$PREVIOUS_TAG")
+          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body > "$RUNNER_TEMP/generated-notes.md"
+      - name: Render changelog notes
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          PUBLISH_PYPI: "${{ !fromJson(steps.host.outputs.manifest).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}"
+        run: |
+          args=(--changelog CHANGELOG.md --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" --generated-notes "$RUNNER_TEMP/generated-notes.md")
+          [[ -z "$PREVIOUS_TAG" ]] || args+=(--previous "$PREVIOUS_TAG")
+          [[ "$PUBLISH_PYPI" != true ]] || args+=(--artifact-url "https://pypi.org/project/peryx/${RELEASE_TAG#v}/")
+          "$RUNNER_TEMP/release-tools/bin/release-creator" notes "${args[@]}" > "$RUNNER_TEMP/changelog-notes.md"
+      - name: Keep installer and verification instructions
+        env:
+          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
+        run: |
+          printf '%s\n' "$ANNOUNCEMENT_BODY" | sed -n '/^## Install /,$p' | sed '/^\[PyPI release\]/d; /^\*\*Full Changelog\*\*:/d' > "$RUNNER_TEMP/install-notes.md"
+          test -s "$RUNNER_TEMP/install-notes.md"
+      - name: Assemble release description
+        run: |
+          sed '/^\*\*Full Changelog\*\*:/d' "$RUNNER_TEMP/changelog-notes.md" > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/install-notes.md" >> "$RUNNER_TEMP/release-notes.md"
+          sed -n '/^\*\*Full Changelog\*\*:/p' "$RUNNER_TEMP/changelog-notes.md" >> "$RUNNER_TEMP/release-notes.md"
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
-          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
           RELEASE_COMMIT: "${{ github.sha }}"
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
-          PUBLISH_PYPI: "${{ !fromJson(steps.host.outputs.manifest).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}"
-        run: |
-          set -euo pipefail
-          printf '%s\n' "$ANNOUNCEMENT_BODY" > "$RUNNER_TEMP/notes.txt"
-          if [[ "$PUBLISH_PYPI" == "true" ]]; then
-            printf '\n[PyPI release](https://pypi.org/project/peryx/%s/)\n' "${RELEASE_TAG#v}" >> "$RUNNER_TEMP/notes.txt"
-          fi
-          previous=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | awk -v tag="$RELEASE_TAG" '$0 == tag { print previous; exit } { previous = $0 }')
-          if [[ -n "$previous" ]]; then
-            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$previous" "$RELEASE_TAG" >> "$RUNNER_TEMP/notes.txt"
-          else
-            printf '\n**Full Changelog**: https://github.com/%s/commits/%s\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG" >> "$RUNNER_TEMP/notes.txt"
-          fi
-
-          gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+        run: gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/release-notes.md" artifacts/*
 
   custom-publish-pypi:
     needs:

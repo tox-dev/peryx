@@ -234,7 +234,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Require a change file
-        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip news')
+        if: >-
+          github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot' &&
+          !contains(github.event.pull_request.labels.*.name, 'skip news')
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
