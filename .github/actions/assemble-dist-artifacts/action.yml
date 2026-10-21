@@ -36,7 +36,7 @@ runs:
           (.releases | length) == 1 and
           .releases[0].app_version == ($tag | ltrimstr("v")) and
           (.ci.github.artifacts_matrix.include | length) > 0
-        ' "$PLAN" > /dev/null
+        ' "$PLAN" >/dev/null
     - name: Check local artifact directories
       shell: bash
       env:
@@ -47,9 +47,9 @@ runs:
         test -z "$(find "$LOCAL_DIRECTORY" -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
         test -z "$(find "$LOCAL_DIRECTORY" -mindepth 2 ! -type f -print -quit)"
         jq -r '.ci.github.artifacts_matrix.include[] | "artifacts-build-local-" + (.targets | join("_"))' \
-          "$PLAN" | sort > "$RUNNER_TEMP/expected-local-directories.txt"
+          "$PLAN" | sort >"$RUNNER_TEMP/expected-local-directories.txt"
         find "$LOCAL_DIRECTORY" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort \
-          > "$RUNNER_TEMP/actual-local-directories.txt"
+          >"$RUNNER_TEMP/actual-local-directories.txt"
         diff -u "$RUNNER_TEMP/expected-local-directories.txt" "$RUNNER_TEMP/actual-local-directories.txt"
     - name: Check local artifact files
       shell: bash
@@ -60,18 +60,18 @@ runs:
       run: |
         set -euo pipefail
         jq -r '.artifacts | to_entries[] | select(.value.kind == "executable-zip") | .key, .value.checksum' \
-          "$PLAN" > "$RUNNER_TEMP/expected-local-files.txt"
+          "$PLAN" >"$RUNNER_TEMP/expected-local-files.txt"
         jq -r '.ci.github.artifacts_matrix.include[] | (.targets | join("-")) + "-dist-manifest.json"' \
-          "$PLAN" >> "$RUNNER_TEMP/expected-local-files.txt"
+          "$PLAN" >>"$RUNNER_TEMP/expected-local-files.txt"
         sort -o "$RUNNER_TEMP/expected-local-files.txt" "$RUNNER_TEMP/expected-local-files.txt"
         find "$LOCAL_DIRECTORY" -mindepth 2 -maxdepth 2 -type f -printf '%f\n' | sort \
-          > "$RUNNER_TEMP/actual-local-files.txt"
+          >"$RUNNER_TEMP/actual-local-files.txt"
         diff -u "$RUNNER_TEMP/expected-local-files.txt" "$RUNNER_TEMP/actual-local-files.txt"
         for manifest in "$LOCAL_DIRECTORY"/*/*-dist-manifest.json; do
           jq -e --arg tag "$TAG" --slurpfile plan "$PLAN" '
             .announcement_tag == $tag and
             (.artifacts | keys) == ($plan[0].artifacts | keys)
-          ' "$manifest" > /dev/null
+          ' "$manifest" >/dev/null
         done
     - name: Check global artifact files
       if: inputs.global-directory != ''
@@ -83,18 +83,18 @@ runs:
       run: |
         set -euo pipefail
         test -z "$(find "$GLOBAL_DIRECTORY" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
-        jq -r '.artifacts | keys[]' "$PLAN" | sort > "$RUNNER_TEMP/all-release-files.txt"
+        jq -r '.artifacts | keys[]' "$PLAN" | sort >"$RUNNER_TEMP/all-release-files.txt"
         comm -23 "$RUNNER_TEMP/all-release-files.txt" "$RUNNER_TEMP/expected-local-files.txt" \
-          > "$RUNNER_TEMP/expected-global-files.txt"
-        printf '%s\n' global-dist-manifest.json >> "$RUNNER_TEMP/expected-global-files.txt"
+          >"$RUNNER_TEMP/expected-global-files.txt"
+        printf '%s\n' global-dist-manifest.json >>"$RUNNER_TEMP/expected-global-files.txt"
         sort -o "$RUNNER_TEMP/expected-global-files.txt" "$RUNNER_TEMP/expected-global-files.txt"
         find "$GLOBAL_DIRECTORY" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort \
-          > "$RUNNER_TEMP/actual-global-files.txt"
+          >"$RUNNER_TEMP/actual-global-files.txt"
         diff -u "$RUNNER_TEMP/expected-global-files.txt" "$RUNNER_TEMP/actual-global-files.txt"
         jq -e --arg tag "$TAG" --slurpfile plan "$PLAN" '
           .announcement_tag == $tag and
           (.artifacts | keys) == ($plan[0].artifacts | keys)
-        ' "$GLOBAL_DIRECTORY/global-dist-manifest.json" > /dev/null
+        ' "$GLOBAL_DIRECTORY/global-dist-manifest.json" >/dev/null
     - name: Assemble checked files
       shell: bash
       env:
@@ -123,9 +123,9 @@ runs:
         done
         if [[ -n "$GLOBAL_DIRECTORY" ]]; then
           jq -r '.artifacts | to_entries[] | select(.value.checksum != null) | .key' \
-            "$PLAN" | sort > "$RUNNER_TEMP/expected-checksums.txt"
+            "$PLAN" | sort >"$RUNNER_TEMP/expected-checksums.txt"
           awk 'NF >= 2 {sub(/^\*/, "", $2); print $2}' "$OUTPUT_DIRECTORY/sha256.sum" | sort \
-            > "$RUNNER_TEMP/actual-checksums.txt"
+            >"$RUNNER_TEMP/actual-checksums.txt"
           diff -u "$RUNNER_TEMP/expected-checksums.txt" "$RUNNER_TEMP/actual-checksums.txt"
           (cd "$OUTPUT_DIRECTORY" && sha256sum --check --status sha256.sum)
         fi

@@ -1,15 +1,12 @@
 name: Browser dependencies
-
 on:
   schedule:
     - cron: "0 12 * * 2"
   workflow_dispatch:
-
 permissions: {}
 concurrency:
   group: browser-update
   cancel-in-progress: false
-
 jobs:
   generate:
     name: Generate browser update
@@ -35,11 +32,11 @@ jobs:
         run: |
           set -euo pipefail
           test -z "$(git ls-files --others --exclude-standard)"
-          git diff HEAD --binary --no-ext-diff --no-textconv > "$RUNNER_TEMP/browser-update.patch"
+          git diff HEAD --binary --no-ext-diff --no-textconv >"$RUNNER_TEMP/browser-update.patch"
           if [[ -s "$RUNNER_TEMP/browser-update.patch" ]]; then
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-            echo "source=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-            echo "digest=$(sha256sum "$RUNNER_TEMP/browser-update.patch" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+            echo 'changed=true' >>"$GITHUB_OUTPUT"
+            echo "source=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+            echo "digest=$(sha256sum "$RUNNER_TEMP/browser-update.patch" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.patch.outputs.changed == 'true'
@@ -87,17 +84,20 @@ jobs:
           set -euo pipefail
           while IFS= read -r -d '' path; do
             case "$path" in
-              mise.browser.toml|mise.browser.lock|site/package.json|site/package-lock.json) ;;
-              crates/peryx-web/tests/frontend/package.json|crates/peryx-web/tests/frontend/package-lock.json) ;;
-              crates/peryx-ecosystem-pypi/tests/frontend/package.json|crates/peryx-ecosystem-pypi/tests/frontend/package-lock.json) ;;
-              crates/peryx-ecosystem-oci/tests/frontend/package.json|crates/peryx-ecosystem-oci/tests/frontend/package-lock.json) ;;
-              site/static/diagrams/*.svg) ;;
-              *) echo "::error::unexpected browser update path: $path" >&2; exit 1 ;;
+            mise.browser.toml | mise.browser.lock | site/package.json | site/package-lock.json) ;;
+            crates/peryx-web/tests/frontend/package.json | crates/peryx-web/tests/frontend/package-lock.json) ;;
+            crates/peryx-ecosystem-pypi/tests/frontend/package.json | crates/peryx-ecosystem-pypi/tests/frontend/package-lock.json) ;;
+            crates/peryx-ecosystem-oci/tests/frontend/package.json | crates/peryx-ecosystem-oci/tests/frontend/package-lock.json) ;;
+            site/static/diagrams/*.svg) ;;
+            *)
+              echo "::error::unexpected browser update path: $path" >&2
+              exit 1
+              ;;
             esac
             git cat-file -e "HEAD:$path"
           done < <(git diff --cached --name-only -z)
           while IFS= read -r -d '' metadata && IFS= read -r -d '' path; do
-            read -ra fields <<< "$metadata"
+            read -ra fields <<<"$metadata"
             if [[ "${fields[1]}" != 100644 ]]; then
               echo "::error::unexpected browser update mode: $path" >&2
               exit 1

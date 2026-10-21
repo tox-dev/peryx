@@ -1,12 +1,9 @@
 name: Label bot news
-
 on:
   workflow_run: # zizmor: ignore[dangerous-triggers] The resolver verifies the run and current PR head; no PR code runs here.
     workflows: [News label source]
     types: [completed]
-
 permissions: {}
-
 jobs:
   label:
     if: github.event.workflow_run.event == 'pull_request'

@@ -8,13 +8,10 @@ on:
         required: true
         type: string
   workflow_dispatch:
-
 permissions: {}
-
 concurrency:
   group: publish-pypi-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   wheels:
     name: wheel ${{ matrix.platform.os }}-${{ matrix.platform.target }}
@@ -24,14 +21,14 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true }
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
-          - { os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin }
-          - { os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin }
-          - { os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc }
-          - { os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc }
+          - {os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true}
+          - {os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true}
+          - {os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true}
+          - {os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true}
+          - {os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin}
+          - {os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin}
+          - {os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc}
+          - {os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,7 +63,6 @@ jobs:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
           if-no-files-found: error
-
   sdist:
     name: sdist
     runs-on: ubuntu-24.04
