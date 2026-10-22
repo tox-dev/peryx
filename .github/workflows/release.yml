@@ -290,9 +290,9 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked release tools
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/release-tools"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/release-tools/bin/python" --group release pylock.toml
+        uses: tox-dev/github-workflows/install-locked-tools@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
+        with:
+          venv: ${{ runner.temp }}/release-tools
       - name: Render changelog notes
         env:
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
@@ -521,7 +521,7 @@ jobs:
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
           diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Stage GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@2b4ed19340a7ec97020f4fd0a403531845c49356
+        uses: tox-dev/github-workflows/publish-github-release@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -611,9 +611,10 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked package checks
-        run: |
-          uv venv --python 3.15 "$RUNNER_TEMP/package-check"
-          uv pip sync --preview-features pylock --python "$RUNNER_TEMP/package-check/bin/python" --group package-check pylock.toml
+        uses: tox-dev/github-workflows/install-locked-tools@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
+        with:
+          venv: ${{ runner.temp }}/package-check
+          groups: package-check
       - name: Require eight wheels
         run: test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 8
       - name: Require one source distribution
@@ -638,7 +639,7 @@ jobs:
           if-no-files-found: error
       - name: Select missing PyPI artifacts
         id: stage
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@2b4ed19340a7ec97020f4fd0a403531845c49356
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
         with:
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
@@ -702,7 +703,7 @@ jobs:
         run: |
           printf '%s  %s\n' "$SELECTION_SHA256" "$RUNNER_TEMP/selection/pypi-missing-names.txt" | sha256sum --check --status
       - name: Select validated files for upload
-        uses: tox-dev/github-workflows/select-pypi-artifacts@2b4ed19340a7ec97020f4fd0a403531845c49356
+        uses: tox-dev/github-workflows/select-pypi-artifacts@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
         with:
           dist: dist
           manifest: ${{ runner.temp }}/selection/pypi-missing-names.txt
@@ -765,7 +766,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Verify complete PyPI release
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@2b4ed19340a7ec97020f4fd0a403531845c49356
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
         with:
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
@@ -831,7 +832,7 @@ jobs:
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
           diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Publish GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@2b4ed19340a7ec97020f4fd0a403531845c49356
+        uses: tox-dev/github-workflows/publish-github-release@24e7c78489b6e2adb7b8f881761a5c2dbfe03fee
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

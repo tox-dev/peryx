@@ -41,7 +41,7 @@ package-check = [
 ]
 release = [
   "prek>=0.5",
-  "release-creator>=0.5.0",
+  "release-creator>=0.5.1",
 ]
 
 [tool.uv.dependency-groups]
