@@ -227,8 +227,9 @@ jobs:
           enable-cache: false
       - name: Install locked release tools
         if: github.event_name == 'pull_request'
-        uses: tox-dev/github-workflows/install-locked-tools@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/install-locked-tools@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          groups: release-notes
           venv: ${{ runner.temp }}/release-tools
       - name: Validate change files
         if: github.event_name == 'pull_request'
@@ -256,7 +257,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: tox-dev/github-workflows/check-hook-update-cooldown@33db207c963ad07b8d2bff4099143593fd4100b2
+      - uses: tox-dev/github-workflows/check-hook-update-cooldown@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           repository: ${{ github.repository }}
           pull-request: ${{ github.event.pull_request.number }}

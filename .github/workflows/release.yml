@@ -290,8 +290,9 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked release tools
-        uses: tox-dev/github-workflows/install-locked-tools@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/install-locked-tools@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          groups: release-notes
           venv: ${{ runner.temp }}/release-tools
       - name: Render changelog notes
         env:
@@ -521,7 +522,7 @@ jobs:
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
           diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Stage GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/publish-github-release@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -611,7 +612,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Install locked package checks
-        uses: tox-dev/github-workflows/install-locked-tools@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/install-locked-tools@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           venv: ${{ runner.temp }}/package-check
           groups: package-check
@@ -639,8 +640,9 @@ jobs:
           if-no-files-found: error
       - name: Select missing PyPI artifacts
         id: stage
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          tool-group: release-notes
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
           dist: dist
@@ -703,7 +705,7 @@ jobs:
         run: |
           printf '%s  %s\n' "$SELECTION_SHA256" "$RUNNER_TEMP/selection/pypi-missing-names.txt" | sha256sum --check --status
       - name: Select validated files for upload
-        uses: tox-dev/github-workflows/select-pypi-artifacts@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/select-pypi-artifacts@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
           dist: dist
           manifest: ${{ runner.temp }}/selection/pypi-missing-names.txt
@@ -766,8 +768,9 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Verify complete PyPI release
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         with:
+          tool-group: release-notes
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
           dist: dist
@@ -832,7 +835,7 @@ jobs:
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
           diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Publish GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@33db207c963ad07b8d2bff4099143593fd4100b2
+        uses: tox-dev/github-workflows/publish-github-release@fcba1cc52c8e8bbb8c3305ee5e4bc454b9ab0c50
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

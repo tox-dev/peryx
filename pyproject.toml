@@ -43,9 +43,36 @@ release = [
   "prek>=0.5",
   "release-creator>=0.5.1",
 ]
+release-check = [
+  "prek>=0.5",
+]
+
+release-notes = [
+  "release-creator>=0.5.1",
+]
+
+release-news = [
+  "release-creator>=0.5.1",
+]
+
+release-prepare = [
+  "prek>=0.5",
+  "release-creator>=0.5.1",
+]
+
+release-validate = [
+  "prek>=0.5",
+  "release-creator>=0.5.1",
+]
+
 
 [tool.uv.dependency-groups]
 release = { requires-python = ">=3.15" }
+release-check = { requires-python = ">=3.15" }
+release-notes = { requires-python = ">=3.15" }
+release-news = { requires-python = ">=3.15" }
+release-prepare = { requires-python = ">=3.15" }
+release-validate = { requires-python = ">=3.15" }
 
 [tool.maturin]
 include = [
