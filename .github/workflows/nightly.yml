@@ -1,25 +1,19 @@
 name: Nightly
-
 on:
   workflow_call:
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
-
 permissions:
   contents: read
-
 env:
   # mise-action hashes the sorted tool arguments into its cache key.
   # https://github.com/jdx/mise-action/blob/c2a87611a18de5b3828c5652fe268e992400cb5c/src/index.ts#L1273-L1321
   MUTATION_TOOLS: >-
-    just jq uv cargo:cargo-mutants github:nextest-rs/nextest
-    github:Shopify/toxiproxy
-
+    just jq uv cargo:cargo-mutants github:nextest-rs/nextest github:Shopify/toxiproxy
 concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   analysis:
     name: ${{ matrix.recipe }}
@@ -41,7 +35,6 @@ jobs:
       - run: just "$RECIPE"
         env:
           RECIPE: ${{ matrix.recipe }}
-
   sanitizer-build:
     name: sanitizer-address build
     runs-on: ubuntu-24.04
@@ -63,7 +56,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
   sanitizer:
     name: sanitizer-address (${{ matrix.partition }}/8)
     needs: sanitizer-build
@@ -101,7 +93,6 @@ jobs:
       - run: just sanitizer-run .tox/sanitizer/sanitizer-address.tar.zst "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
-
   mutation-baseline-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -130,7 +121,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
   mutation-baseline:
     name: mutation baseline (${{ matrix.partition }}/8)
     needs: mutation-baseline-build
@@ -166,7 +156,6 @@ jobs:
       - run: just mutation-baseline-run .tox/mutation-baseline/mutation-baseline.tar.zst "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
-
   mutation:
     name: mutation (${{ matrix.shard }}/${{ needs.mutation-baseline-build.outputs.shard_count }})
     needs: [mutation-baseline-build, mutation-baseline]
@@ -214,7 +203,6 @@ jobs:
           name: mutation-${{ matrix.shard }}-${{ needs.mutation-baseline-build.outputs.shard_count }}
           path: .tox/mutants
           if-no-files-found: error
-
   fuzz:
     name: fuzz (${{ matrix.target }})
     strategy:
@@ -241,7 +229,6 @@ jobs:
         env:
           PACKAGE: ${{ matrix.package }}
           TARGET: ${{ matrix.target }}
-
   live-client:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -253,7 +240,6 @@ jobs:
         with:
           tools: just uv github:nextest-rs/nextest
       - run: just e2e-live
-
   nightly-gate:
     if: always()
     needs:
@@ -273,14 +259,7 @@ jobs:
       # it, which lost 89 of them.
       - env:
           RESULTS: >-
-            analysis=${{ needs.analysis.result }}
-            sanitizer-build=${{ needs.sanitizer-build.result }}
-            sanitizer=${{ needs.sanitizer.result }}
-            mutation-baseline-build=${{ needs.mutation-baseline-build.result }}
-            mutation-baseline=${{ needs.mutation-baseline.result }}
-            mutation=${{ needs.mutation.result }}
-            fuzz=${{ needs.fuzz.result }}
-            live-client=${{ needs.live-client.result }}
+            analysis=${{ needs.analysis.result }} sanitizer-build=${{ needs.sanitizer-build.result }} sanitizer=${{ needs.sanitizer.result }} mutation-baseline-build=${{ needs.mutation-baseline-build.result }} mutation-baseline=${{ needs.mutation-baseline.result }} mutation=${{ needs.mutation.result }} fuzz=${{ needs.fuzz.result }} live-client=${{ needs.live-client.result }}
         run: |
           printf '%s\n' $RESULTS
           unmet=""

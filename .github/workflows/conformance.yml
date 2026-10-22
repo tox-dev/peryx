@@ -1,18 +1,14 @@
 name: OCI conformance
-
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: conformance-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
-
 jobs:
   changes:
     runs-on: ubuntu-24.04
@@ -53,13 +49,11 @@ jobs:
               - 'justfile'
             oci:
               - 'crates/peryx-ecosystem-oci/**'
-
   conformance:
     name: distribution-spec conformance
     needs: changes
     if: >-
-      needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' ||
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -81,7 +75,6 @@ jobs:
         with:
           tool: just
       - run: just conformance "$RUNNER_TEMP/conformance.test"
-
   conformance-gate:
     if: always()
     needs: [changes, conformance]
@@ -89,6 +82,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - if: >-
-          needs.changes.result != 'success' ||
-          (needs.conformance.result != 'success' && needs.conformance.result != 'skipped')
+          needs.changes.result != 'success' || (needs.conformance.result != 'success' && needs.conformance.result != 'skipped')
         run: exit 1
