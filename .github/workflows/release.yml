@@ -521,7 +521,7 @@ jobs:
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
           diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Stage GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@9a4e76e2f4901856f2784f6c0efc89278c518b1f
+        uses: tox-dev/github-workflows/publish-github-release@a32ce094895292b19eea422fc6500f1ef1ae8d5f
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -638,7 +638,7 @@ jobs:
           if-no-files-found: error
       - name: Select missing PyPI artifacts
         id: stage
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@9a4e76e2f4901856f2784f6c0efc89278c518b1f
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@a32ce094895292b19eea422fc6500f1ef1ae8d5f
         with:
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
@@ -702,7 +702,7 @@ jobs:
         run: |
           printf '%s  %s\n' "$SELECTION_SHA256" "$RUNNER_TEMP/selection/pypi-missing-names.txt" | sha256sum --check --status
       - name: Select validated files for upload
-        uses: tox-dev/github-workflows/select-pypi-artifacts@9a4e76e2f4901856f2784f6c0efc89278c518b1f
+        uses: tox-dev/github-workflows/select-pypi-artifacts@a32ce094895292b19eea422fc6500f1ef1ae8d5f
         with:
           dist: dist
           manifest: ${{ runner.temp }}/selection/pypi-missing-names.txt
@@ -765,7 +765,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: Verify complete PyPI release
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@9a4e76e2f4901856f2784f6c0efc89278c518b1f
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@a32ce094895292b19eea422fc6500f1ef1ae8d5f
         with:
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
@@ -831,7 +831,7 @@ jobs:
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
           diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Publish GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@9a4e76e2f4901856f2784f6c0efc89278c518b1f
+        uses: tox-dev/github-workflows/publish-github-release@a32ce094895292b19eea422fc6500f1ef1ae8d5f
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
