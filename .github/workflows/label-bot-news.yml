@@ -14,12 +14,12 @@ jobs:
       pull-requests: read
     steps:
       - id: pr
-        uses: tox-dev/github-workflows/resolve-pr-from-run@961281cba49418a682b2bb123ae4a1c4d22f74ff
+        uses: tox-dev/github-workflows/resolve-pr-from-run@a040f8eb1c335676f3f97db2010a1a39a3cea1ac
         with:
           run-id: ${{ github.event.workflow_run.id }}
           workflow-path: .github/workflows/news-label-source.yml
       - if: steps.pr.outputs.bot-author == 'true'
-        uses: tox-dev/github-workflows/label-bot-news@961281cba49418a682b2bb123ae4a1c4d22f74ff
+        uses: tox-dev/github-workflows/label-bot-news@a040f8eb1c335676f3f97db2010a1a39a3cea1ac
         with:
           pull-request: ${{ steps.pr.outputs.number }}
           bot-author: "true"
