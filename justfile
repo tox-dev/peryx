@@ -1178,7 +1178,7 @@ site: docs
 # Zola reads only files under site/, and cargo-dist reads release notes from root CHANGELOG.md.
 _site-changelog:
     uv venv --clear --python 3.15 .tox/site/release-tools
-    uv pip sync --preview-features pylock --python .tox/site/release-tools --group release pylock.toml
+    uv pip sync --preview-features pylock --python .tox/site/release-tools --group release-notes pylock.toml
     uv run --no-project --python .tox/site/release-tools release-creator changelog --format knope --changelog CHANGELOG.md \
       --config knope.toml --fragments .changeset --output site/data/changelog.md
 
