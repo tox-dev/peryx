@@ -42,28 +42,28 @@ package-check = [
 ]
 release = [
   "prek>=0.5",
-  "release-creator>=0.6.0",
+  "release-creator>=0.6.5",
 ]
 release-check = [
   "prek>=0.5",
 ]
 
 release-notes = [
-  "release-creator>=0.6.0",
+  "release-creator>=0.6.5",
 ]
 
 release-news = [
-  "release-creator>=0.6.0",
+  "release-creator>=0.6.5",
 ]
 
 release-prepare = [
   "prek>=0.5",
-  "release-creator>=0.6.0",
+  "release-creator>=0.6.5",
 ]
 
 release-validate = [
   "prek>=0.5",
-  "release-creator>=0.6.0",
+  "release-creator>=0.6.5",
 ]
 
 
@@ -99,7 +99,7 @@ platforms = [ "linux_x86_64", "linux_aarch64", "macos_arm64", "windows_amd64" ]
 
 [[tool.nab.package-rules]]
 match = [ "nab", "nab-index", "nab-markersets", "nab-project", "nab-provider", "nab-resolver" ]
-uploaded-prior-to = "2026-10-19T00:00:00Z"
+uploaded-prior-to = "2026-10-18T05:45:09Z"
 
 [tool.nab.packages.release-creator]
-uploaded-prior-to = "2026-10-23T02:44:40Z"
+uploaded-prior-to = "2026-10-23T19:54:50Z"
