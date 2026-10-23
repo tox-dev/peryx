@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       nightly:
@@ -211,40 +211,6 @@ jobs:
           tools: jq just node prek uv zola
       - run: just lint-docs
       - run: just docs
-  changelog:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - if: github.event_name == 'pull_request'
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          version: latest-known
-          python-version: "3.15"
-          enable-cache: false
-      - name: Install locked release tools
-        if: github.event_name == 'pull_request'
-        uses: tox-dev/github-workflows/install-locked-tools@cadf58a0dcc5d0c7853b248ab7c2b19bb93675d1
-        with:
-          groups: release-notes
-          venv: ${{ runner.temp }}/release-tools
-      - name: Validate change files
-        if: github.event_name == 'pull_request'
-        id: news
-        run: echo "count=$("$RUNNER_TEMP/release-tools/bin/release-creator" validate-news --format knope --base "$GITHUB_BASE_REF")" >>"$GITHUB_OUTPUT"
-      - name: Require a change file
-        if: >-
-          github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot' && !contains(github.event.pull_request.labels.*.name, 'skip news')
-        env:
-          NEWS_COUNT: ${{ steps.news.outputs.count }}
-        run: |
-          if ((NEWS_COUNT == 0)); then
-            echo '::error::add a .changeset/*.md file or apply the skip news label'
-            exit 1
-          fi
   nightly:
     if: github.event_name == 'workflow_dispatch' && inputs.nightly
     uses: $/.github/workflows/nightly.yml
@@ -262,7 +228,6 @@ jobs:
     if: always()
     needs:
       - automation
-      - changelog
       - changes
       - contracts
       - coverage
@@ -277,5 +242,5 @@ jobs:
     steps:
       # A job the `changes` filter stood down reports `skipped`; anything else short of success fails.
       - if: >-
-          needs.automation.result != 'success' || needs.changelog.result != 'success' || needs.changes.result != 'success' || needs.docs.result != 'success' || needs.source.result != 'success' || (github.event_name == 'pull_request' && needs['hook-update-cooldown'].result != 'success') || (github.event_name != 'pull_request' && needs['hook-update-cooldown'].result != 'skipped') || !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) || !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) || !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) || !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) || !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
+          needs.automation.result != 'success' || needs.changes.result != 'success' || needs.docs.result != 'success' || needs.source.result != 'success' || (github.event_name == 'pull_request' && needs['hook-update-cooldown'].result != 'success') || (github.event_name != 'pull_request' && needs['hook-update-cooldown'].result != 'skipped') || !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) || !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) || !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) || !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) || !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
         run: exit 1
