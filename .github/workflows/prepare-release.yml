@@ -34,8 +34,6 @@ jobs:
         with:
           groups: release-prepare
           venv: ${{ runner.temp }}/release-tools
-      - name: Add installed tools to PATH
-        run: echo "$RUNNER_TEMP/release-tools/bin" >>"$GITHUB_PATH"
       - id: version
         run: |
           day="$(date -u +%Y).$(date -u +%-m%d)"
