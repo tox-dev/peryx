@@ -35,34 +35,35 @@ urls.Homepage = "https://github.com/tox-dev/peryx"
 urls.Source = "https://github.com/tox-dev/peryx"
 
 [dependency-groups]
+lock-tools = [ "nab==0.0.22" ]
 package-check = [
   "check-wheel-contents>=0.6.3",
   "twine>=7",
 ]
 release = [
   "prek>=0.5",
-  "release-creator>=0.5.1",
+  "release-creator>=0.6.0",
 ]
 release-check = [
   "prek>=0.5",
 ]
 
 release-notes = [
-  "release-creator>=0.5.1",
+  "release-creator>=0.6.0",
 ]
 
 release-news = [
-  "release-creator>=0.5.1",
+  "release-creator>=0.6.0",
 ]
 
 release-prepare = [
   "prek>=0.5",
-  "release-creator>=0.5.1",
+  "release-creator>=0.6.0",
 ]
 
 release-validate = [
   "prek>=0.5",
-  "release-creator>=0.5.1",
+  "release-creator>=0.6.0",
 ]
 
 
@@ -83,3 +84,22 @@ include = [
 # bindings, so one wheel per platform serves every CPython and PyPy version.
 bindings = "bin"
 manifest-path = "crates/peryx/Cargo.toml"
+
+[tool.nab]
+mode = "universal"
+base-group = "project-runtime"
+build-group = "build"
+default-groups = []
+uploaded-prior-to = "P7D"
+decision-order = "stable"
+
+[tool.nab.matrix]
+python = ">=3.15,<3.16"
+platforms = [ "linux_x86_64", "linux_aarch64", "macos_arm64", "windows_amd64" ]
+
+[[tool.nab.package-rules]]
+match = [ "nab", "nab-index", "nab-markersets", "nab-project", "nab-provider", "nab-resolver" ]
+uploaded-prior-to = "2026-10-19T00:00:00Z"
+
+[tool.nab.packages.release-creator]
+uploaded-prior-to = "2026-10-23T02:44:40Z"
