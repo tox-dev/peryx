@@ -251,8 +251,6 @@ jobs:
         uses: tox-dev/github-workflows/select-previous-tag@cadf58a0dcc5d0c7853b248ab7c2b19bb93675d1
         with:
           tag: ${{ needs.plan.outputs.tag }}
-          executable: ${{ runner.temp }}/release-tools/bin/release-creator
-          stable-only: "true"
       - name: Read generated contributor credits
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
