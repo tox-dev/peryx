@@ -45,8 +45,11 @@ jobs:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: Install locked build backend
-        run: just package-tools
+      - name: Install checked build backend
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: build
+          venv: .tox/tools/build-tools
       - name: Build wheel
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
@@ -84,8 +87,11 @@ jobs:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
-      - name: Install locked build backend
-        run: just package-tools
+      - name: Install checked build backend
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: build
+          venv: .tox/tools/build-tools
       - name: Build sdist
         run: just --no-deps package-sdist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

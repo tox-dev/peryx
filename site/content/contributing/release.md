@@ -47,9 +47,6 @@ here do. CI validates every supplied change file and requires one on human-autho
 `skip news` label. Bot pull requests need one only if their changes warrant news; their supplied files still receive
 validation.
 
-After a bot pull request opens or its files change, the label workflow applies `skip news` if it has no
-`.changeset/*.md` file and removes that label if a change file is added later.
-
 Pull request documentation builds show current change files under Draft on the changelog page. The release workflow
 moves those entries into a versioned section when it prepares the release.
 

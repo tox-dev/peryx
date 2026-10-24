@@ -123,6 +123,7 @@ impl Helper {
             .unwrap();
     }
 
+    #[allow(unsafe_code)]
     fn process_signal(&self) -> ProcessSignal {
         assert!(Command::new("mkfifo").arg(&self.requests).status().unwrap().success());
         let read = rustix::fs::open(
@@ -138,7 +139,8 @@ impl Helper {
         )
         .unwrap();
         ProcessSignal {
-            fifo: AsyncFd::new(File::from(read)).unwrap(),
+            // SAFETY: File owns the open descriptor for the AsyncFd lifetime.
+            fifo: unsafe { AsyncFd::register(File::from(read)) }.unwrap(),
             guard: Some(File::from(guard)),
         }
     }
@@ -150,16 +152,20 @@ impl Helper {
     }
 }
 
+#[allow(unsafe_code)]
 fn fifo(path: &Path) -> AsyncFd<File> {
     assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
-    AsyncFd::new(File::from(
-        rustix::fs::open(
-            path,
-            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .unwrap(),
-    ))
+    // SAFETY: File owns the open descriptor for the AsyncFd lifetime.
+    unsafe {
+        AsyncFd::register(File::from(
+            rustix::fs::open(
+                path,
+                rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .unwrap(),
+        ))
+    }
     .unwrap()
 }
 

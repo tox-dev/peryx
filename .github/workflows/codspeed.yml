@@ -79,6 +79,7 @@ jobs:
           mode: simulation
           run: just codspeed-run "${{ matrix.package }}" simulation
   codspeed-gate:
+    name: ${{ github.event_name == 'pull_request' && 'codspeed-gate' || 'codspeed-gate (non-PR)' }}
     if: always()
     needs: [changes, benchmarks]
     runs-on: ubuntu-24.04

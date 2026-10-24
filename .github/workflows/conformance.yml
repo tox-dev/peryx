@@ -76,6 +76,7 @@ jobs:
           tool: just
       - run: just conformance "$RUNNER_TEMP/conformance.test"
   conformance-gate:
+    name: ${{ github.event_name == 'pull_request' && 'conformance-gate' || 'conformance-gate (non-PR)' }}
     if: always()
     needs: [changes, conformance]
     runs-on: ubuntu-24.04

@@ -41,28 +41,28 @@ package-check = [
 ]
 release = [
   "prek>=0.5",
-  "release-creator>=1.0.0",
+  "release-creator>=1.1.0",
 ]
 release-check = [
   "prek>=0.5",
 ]
 
 release-notes = [
-  "release-creator>=1.0.0",
+  "release-creator>=1.1.0",
 ]
 
 release-news = [
-  "release-creator>=1.0.0",
+  "release-creator>=1.1.0",
 ]
 
 release-prepare = [
   "prek>=0.5",
-  "release-creator>=1.0.0",
+  "release-creator>=1.1.0",
 ]
 
 release-validate = [
   "prek>=0.5",
-  "release-creator>=1.0.0",
+  "release-creator>=1.1.0",
 ]
 
 
@@ -84,21 +84,5 @@ include = [
 bindings = "bin"
 manifest-path = "crates/peryx/Cargo.toml"
 
-[tool.nab]
-mode = "universal"
-base-group = "project-runtime"
-build-group = "build"
-default-groups = []
-uploaded-prior-to = "P7D"
-decision-order = "stable"
-
-[tool.nab.matrix]
-python = ">=3.15,<3.16"
-platforms = [ "linux_x86_64", "linux_aarch64", "macos_arm64", "windows_amd64" ]
-
-[[tool.nab.package-rules]]
-match = [ "nab", "nab-index", "nab-markersets", "nab-project", "nab-provider", "nab-resolver" ]
-uploaded-prior-to = "2026-10-18T05:45:09Z"
-
-[tool.nab.packages.release-creator]
-uploaded-prior-to = "2026-10-24T06:07:46Z"
+[tool.release-creator.locks]
+exclude-newer-package = { release-creator = "2026-10-24T09:08:40Z" }
