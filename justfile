@@ -1175,9 +1175,12 @@ site-links: _project-temp _site-changelog
 # Build the documentation site.
 site: docs
 
-# Zola reads only files under site/, and cargo-dist reads the release notes from the root CHANGELOG.md.
+# Zola reads only files under site/, and cargo-dist reads release notes from root CHANGELOG.md.
 _site-changelog:
-    cp CHANGELOG.md site/data/changelog.md
+    uv venv --clear --python 3.15 .tox/site/release-tools
+    uv pip sync --preview-features pylock --python .tox/site/release-tools --group release-notes pylock.toml
+    uv run --no-project --python .tox/site/release-tools release-creator changelog --changelog CHANGELOG.md \
+      --config knope.toml --fragments .changeset --output site/data/changelog.md
 
 # Build the documentation site for Read the Docs.
 site-readthedocs: _site-changelog
@@ -1291,13 +1294,17 @@ codspeed package mode="simulation": _project-temp
       just codspeed-run "{{ package }}" "{{ mode }}"; \
     done
 
+package-tools: _project-temp
+    uv venv --clear --python 3.15 .tox/tools/build-tools
+    uv pip sync --preview-features pylock --python .tox/tools/build-tools --group build pylock.toml
+
 # Build a local Python wheel.
-package-wheel +args: _project-temp
-    maturin build --release --locked --out dist {{ args }}
+package-wheel +args: package-tools
+    uv run --no-project --python .tox/tools/build-tools maturin build --release --locked --out dist {{ args }}
 
 # Build a local source distribution.
-package-sdist output="dist": _project-temp
-    maturin sdist --out "{{ output }}"
+package-sdist output="dist": package-tools
+    uv run --no-project --python .tox/tools/build-tools maturin sdist --out "{{ output }}"
 
 # Measure native Rust coverage.
 coverage-native output=".tox/coverage/native.lcov" gaps=".tox/coverage/native-gaps.json": test-deps _docker-ready

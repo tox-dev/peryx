@@ -8,6 +8,8 @@ description = "Multi-ecosystem artifact cache and private registry"
 readme = "README.md"
 keywords = [ "artifact-registry", "cache", "mirror", "oci", "pypi", "software-distribution" ]
 license = "MIT"
+license-files = [ "LICENSE" ]
+authors = [ { name = "Bernát Gábor", email = "gaborjbernat@gmail.com" } ]
 requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -26,12 +28,61 @@ classifiers = [
   "Topic :: System :: Software Distribution",
 ]
 dynamic = [ "version" ]
+urls.Changelog = "https://github.com/tox-dev/peryx/blob/main/CHANGELOG.md"
 urls.Documentation = "https://peryx.readthedocs.io/"
 urls.Issues = "https://github.com/tox-dev/peryx/issues"
+urls.Homepage = "https://github.com/tox-dev/peryx"
 urls.Source = "https://github.com/tox-dev/peryx"
 
+[dependency-groups]
+package-check = [
+  "check-wheel-contents>=0.6.3",
+  "twine>=7",
+]
+release = [
+  "prek>=0.5",
+  "release-creator>=1.1.0",
+]
+release-check = [
+  "prek>=0.5",
+]
+
+release-notes = [
+  "release-creator>=1.1.0",
+]
+
+release-news = [
+  "release-creator>=1.1.0",
+]
+
+release-prepare = [
+  "prek>=0.5",
+  "release-creator>=1.1.0",
+]
+
+release-validate = [
+  "prek>=0.5",
+  "release-creator>=1.1.0",
+]
+
+
+[tool.uv.dependency-groups]
+release = { requires-python = ">=3.15" }
+release-check = { requires-python = ">=3.15" }
+release-notes = { requires-python = ">=3.15" }
+release-news = { requires-python = ">=3.15" }
+release-prepare = { requires-python = ">=3.15" }
+release-validate = { requires-python = ">=3.15" }
+
 [tool.maturin]
+include = [
+  { path = "site/content/ecosystems/oci/reference/policy.md", format = "sdist" },
+  { path = "site/static/*.svg", format = "sdist" },
+]
 # The wheel carries the compiled `peryx` binary as a console script; there are no Python
 # bindings, so one wheel per platform serves every CPython and PyPy version.
 bindings = "bin"
 manifest-path = "crates/peryx/Cargo.toml"
+
+[tool.release-creator.locks]
+exclude-newer-package = { release-creator = "2026-10-24T09:08:40Z" }

@@ -438,47 +438,6 @@ checksum = "sha256:759f16fb7aa17c5c8b9594b6d4a8c1a6630dfd042cf2b3ff84841454d3d18
 url = "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/500511374"
 
-[[tools.maturin]]
-version = "1.15.0"
-backend = "github:PyO3/maturin"
-
-[tools.maturin."platforms.linux-arm64"]
-checksum = "sha256:cd287a2c9dc69ab559670d245bfc9d3f5b0c9f184aa98ad0d8f826abc90c78dd"
-url = "https://github.com/PyO3/maturin/releases/download/v1.15.0/maturin-aarch64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562231"
-provenance = "github-attestations"
-
-[tools.maturin."platforms.linux-x64"]
-checksum = "sha256:5a7d5226e83598b0c85881a0a03be16393ee2c0924b6f9d752951795825ac806"
-url = "https://github.com/PyO3/maturin/releases/download/v1.15.0/maturin-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562222"
-provenance = "github-attestations"
-
-[tools.maturin."platforms.macos-arm64"]
-checksum = "sha256:d7a9ce82389e75aeaef8fdda43d35dbc956fac6a4b143a4c7b447b6ffadc7eaf"
-url = "https://github.com/PyO3/maturin/releases/download/v1.15.0/maturin-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562235"
-provenance = "github-attestations"
-provenance_verified = true
-
-[tools.maturin."platforms.macos-x64"]
-checksum = "sha256:d72809b92806a53bdc22074aeedc83af66f8bdb391e2c60bc72547c40ec10629"
-url = "https://github.com/PyO3/maturin/releases/download/v1.15.0/maturin-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562233"
-provenance = "github-attestations"
-
-[tools.maturin."platforms.windows-arm64"]
-checksum = "sha256:bbb9361d2101039a81423cd3d66d6b3e94365640104bb553ee25591989010953"
-url = "https://github.com/PyO3/maturin/releases/download/v1.15.0/maturin-aarch64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562225"
-provenance = "github-attestations"
-
-[tools.maturin."platforms.windows-x64"]
-checksum = "sha256:c645dc55f848205210552e77f744685c90c35ae81fd03e47a9887ebdc8ae8299"
-url = "https://github.com/PyO3/maturin/releases/download/v1.15.0/maturin-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/PyO3/maturin/releases/assets/527562239"
-provenance = "github-attestations"
-
 [[tools.node]]
 version = "26.10.0"
 backend = "core:node"

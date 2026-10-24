@@ -1,27 +1,23 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       nightly:
         description: Run nightly checks
         default: false
         type: boolean
-
 permissions:
   actions: read
   contents: read
-
 # A push to main keeps its run: cancelling it whenever the next merge lands is what left main without a
 # verdict and without a cache write for every job that had not finished yet.
 concurrency:
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   # A pull request that touches only the site, Markdown, or the Read the Docs and Renovate manifests
   # cannot change a compiled artifact, so the Rust jobs stand down for it. The exception is a document
@@ -52,7 +48,6 @@ jobs:
               - 'site/content/ecosystems/oci/reference/policy.md'
               - 'site/static/icon.svg'
               - 'site/static/mark.svg'
-
   source:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -65,7 +60,6 @@ jobs:
           tools: just aqua:EmbarkStudios/cargo-deny
       - run: just lint-source
       - run: just lint-deps
-
   automation:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -77,7 +71,6 @@ jobs:
         with:
           tools: just node prek
       - run: just lint-automation
-
   contracts:
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
@@ -96,7 +89,6 @@ jobs:
             just jq uv aqua:axodotdev/cargo-dist aqua:mitsuhiko/insta github:nextest-rs/nextest
       - run: just snapshots
       - run: just release-plan
-
   platform:
     name: platform (${{ matrix.os }})
     needs: changes
@@ -117,7 +109,6 @@ jobs:
         with:
           tools: just github:nextest-rs/nextest
       - run: just platform-test
-
   coverage:
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
@@ -130,8 +121,7 @@ jobs:
       - uses: $/.github/actions/setup
         with:
           tools: >-
-            just uv aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest
-            github:Shopify/toxiproxy
+            just uv aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest github:Shopify/toxiproxy
       - run: just coverage-native
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -141,7 +131,6 @@ jobs:
             .tox/coverage/native.lcov
             .tox/coverage/native-gaps.json
           if-no-files-found: error
-
   # A body reached only from the browser runs in the target `frontend` measures, so the two halves are
   # unioned here rather than each gating alone. Both artifacts are small, so this waits on them both
   # and adds a minute rather than serialising the two long jobs.
@@ -166,7 +155,6 @@ jobs:
               name: coverage-frontend
               path: .tox/coverage
       - run: just coverage-lines
-
   frontend:
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
@@ -203,7 +191,7 @@ jobs:
                 -o Dir::Etc::sourceparts=- \
                 -o APT::Get::List-Cleanup=0
               sudo apt-get install --yes clang-22 lcov
-              echo "CLANG=clang-22" >> "$GITHUB_ENV"
+              echo "CLANG=clang-22" >>"$GITHUB_ENV"
       - run: just coverage-frontend
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -211,7 +199,6 @@ jobs:
           name: coverage-frontend
           path: .tox/coverage/frontend-*.lcov
           if-no-files-found: error
-
   docs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -221,48 +208,42 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/setup
         with:
-          tools: jq just node prek zola
+          tools: jq just node prek uv zola
       - run: just lint-docs
       - run: just docs
-
-  changelog:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Require a change file
-        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip news')
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if ! git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- .changeset |
-            grep -Eq '^\.changeset/[^/]+\.md$'; then
-            echo '::error::add a .changeset/*.md file or apply the skip news label'
-            exit 1
-          fi
-
   nightly:
     if: github.event_name == 'workflow_dispatch' && inputs.nightly
     uses: $/.github/workflows/nightly.yml
-
+  hook-update-cooldown:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: tox-dev/github-workflows/check-hook-update-cooldown@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          release-app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
   ci-gate:
+    name: ${{ github.event_name == 'pull_request' && 'ci-gate' || 'ci-gate (non-PR)' }}
     if: always()
-    needs: [automation, changelog, changes, contracts, coverage, coverage-lines, docs, frontend, platform, source]
+    needs:
+      - automation
+      - changes
+      - contracts
+      - coverage
+      - coverage-lines
+      - docs
+      - frontend
+      - hook-update-cooldown
+      - platform
+      - source
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       # A job the `changes` filter stood down reports `skipped`; anything else short of success fails.
       - if: >-
-          needs.automation.result != 'success' || needs.changelog.result != 'success' ||
-          needs.changes.result != 'success' ||
-          needs.docs.result != 'success' || needs.source.result != 'success' ||
-          !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
+          needs.automation.result != 'success' || needs.changes.result != 'success' || needs.docs.result != 'success' || needs.source.result != 'success' || (github.event_name == 'pull_request' && needs['hook-update-cooldown'].result != 'success') || (github.event_name != 'pull_request' && needs['hook-update-cooldown'].result != 'skipped') || !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) || !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) || !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) || !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) || !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
         run: exit 1

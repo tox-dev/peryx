@@ -74,7 +74,6 @@ skip = [
   { crate = "tower-http@0.6.11", reason = "Leptos Axum 0.8 requires tower-http 0.6." },
   { crate = "unicode-width@0.1.14", reason = "miette 7.6 requires unicode-width 0.1." },
   { crate = "untrusted@0.7.1", reason = "aws-lc-rs 1.18 requires untrusted 0.7." },
-  { crate = "webpki-roots@0.26.11", reason = "async-web-client 0.6 requires webpki-roots 0.26." },
   { crate = "windows@0.61.3", reason = "homedir 0.3 requires windows 0.61." },
   { crate = "windows-collections@0.2.0", reason = "windows 0.61 requires windows-collections 0.2." },
   { crate = "windows-core@0.61.2", reason = "windows 0.61 requires windows-core 0.61." },
@@ -95,4 +94,5 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
   "https://github.com/fgardt/proc-macro-error-2",
+  "https://github.com/joshtriplett/async-web-client",
 ]

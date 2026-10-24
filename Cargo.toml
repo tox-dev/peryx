@@ -146,6 +146,8 @@ hdrhistogram = { version = "7.6", default-features = false }
 uv-netrc = "0.0.86"
 
 [patch.crates-io]
+# https://github.com/FlorianUekermann/async-web-client/pull/20 removes a distrusted TLS root.
+async-web-client = { git = "https://github.com/joshtriplett/async-web-client", rev = "a01e6269761d9e8772f55514b483a140d2c19a5b" }
 # https://github.com/GnomedDev/proc-macro-error-2/pull/14 fixes Rust 1.96 future incompatibility.
 proc-macro-error2 = { git = "https://github.com/fgardt/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
 

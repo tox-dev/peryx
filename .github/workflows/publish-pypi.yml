@@ -8,13 +8,10 @@ on:
         required: true
         type: string
   workflow_dispatch:
-
 permissions: {}
-
 concurrency:
   group: publish-pypi-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   wheels:
     name: wheel ${{ matrix.platform.os }}-${{ matrix.platform.target }}
@@ -24,22 +21,35 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true }
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
-          - { os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin }
-          - { os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin }
-          - { os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc }
-          - { os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc }
+          - {os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true}
+          - {os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true}
+          - {os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true}
+          - {os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true}
+          - {os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin}
+          - {os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin}
+          - {os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc}
+          - {os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set source timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
       - uses: $/.github/actions/setup
         with:
           targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
-          tools: just maturin ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
+          tools: just ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install checked build backend
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: build
+          venv: .tox/tools/build-tools
       - name: Build wheel
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
@@ -53,13 +63,12 @@ jobs:
           args=(--target "$RUST_TARGET")
           [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
           [[ -z $USE_ZIG ]] || args+=(--zig)
-          just package-wheel "${args[@]}"
+          just --no-deps package-wheel "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
           if-no-files-found: error
-
   sdist:
     name: sdist
     runs-on: ubuntu-24.04
@@ -68,11 +77,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set source timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
       - uses: $/.github/actions/setup
         with:
-          tools: just maturin
+          tools: just
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install checked build backend
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: build
+          venv: .tox/tools/build-tools
       - name: Build sdist
-        run: just package-sdist
+        run: just --no-deps package-sdist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-sdist

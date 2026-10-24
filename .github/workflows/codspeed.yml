@@ -1,18 +1,14 @@
 name: CodSpeed
-
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: codspeed-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   # Benchmarks measure compiled code, so a pull request that changes only tests, the site or Markdown
   # skips them. Every push to main still runs them, which keeps the CodSpeed baseline continuous.
@@ -41,7 +37,6 @@ jobs:
               - '.github/workflows/codspeed.yml'
               - '!crates/**/tests/**'
               - '!**/*.md'
-
   benchmarks:
     name: ${{ matrix.ecosystem }} benchmarks
     needs: changes
@@ -83,14 +78,13 @@ jobs:
           exclude-allocations: true
           mode: simulation
           run: just codspeed-run "${{ matrix.package }}" simulation
-
   codspeed-gate:
+    name: ${{ github.event_name == 'pull_request' && 'codspeed-gate' || 'codspeed-gate (non-PR)' }}
     if: always()
     needs: [changes, benchmarks]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - if: >-
-          needs.changes.result != 'success' ||
-          !contains(fromJSON('["success", "skipped"]'), needs.benchmarks.result)
+          needs.changes.result != 'success' || !contains(fromJSON('["success", "skipped"]'), needs.benchmarks.result)
         run: exit 1

@@ -1,0 +1,57 @@
+name: Changelog
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  changelog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: github.event_name == 'pull_request'
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        if: github.event_name == 'pull_request'
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: release-notes
+          venv: ${{ runner.temp }}/release-tools
+      - name: Validate change files
+        if: github.event_name == 'pull_request'
+        id: news
+        run: echo "count=$("$RUNNER_TEMP/release-tools/bin/release-creator" validate-news --format knope --base "$GITHUB_BASE_REF")" >>"$GITHUB_OUTPUT"
+      - name: Require a change file
+        if: >-
+          github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot' && !contains(github.event.pull_request.labels.*.name, 'skip news')
+        env:
+          NEWS_COUNT: ${{ steps.news.outputs.count }}
+        run: |
+          if ((NEWS_COUNT == 0)); then
+            echo '::error::add a .changeset/*.md file or apply the skip news label'
+            exit 1
+          fi
+      - id: lock-change
+        name: Check whether release inputs changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-only "origin/$BASE_REF...HEAD" -- pyproject.toml pylock.toml nab.toml)
+          if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
+      - name: Check the release lock against the project
+        if: steps.lock-change.outputs.changed == 'true'
+        uses: tox-dev/github-workflows/refresh-release-lock@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          lock-groups: release-check release-notes release-news release-prepare release-validate package-check
+          mode: check

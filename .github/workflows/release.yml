@@ -3,39 +3,34 @@
 # Copyright 2022-2024, axodotdev
 # SPDX-License-Identifier: MIT or Apache-2.0
 #
-
 name: Release
 permissions:
   "contents": "read"
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
-
 env:
   CARGO_HTTP_MULTIPLEXING: "false"
   CARGO_NET_RETRY: "10"
   GIT_CONFIG_COUNT: "1"
   GIT_CONFIG_KEY_0: init.defaultBranch
   GIT_CONFIG_VALUE_0: main
-
 on:
   push:
     tags:
       - "**[0-9]+.[0-9]+.[0-9]+*"
-
 jobs:
   plan:
     runs-on: "ubuntu-22.04"
-    timeout-minutes: 20
+    timeout-minutes: 45
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
       tag: ${{ !github.event.pull_request && github.ref_name || '' }}
+      source: ${{ github.sha }}
       publishing: ${{ !github.event.pull_request }}
     env:
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_NET_RETRY: "10"
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,7 +51,7 @@ jobs:
           fi
       - uses: $/.github/actions/setup
         with:
-          tools: aqua:axodotdev/cargo-dist
+          tools: aqua:axodotdev/cargo-dist prek
       # mise installs dist outside ~/.cargo/bin, where the later jobs restore it from.
       - run: cp "$(mise which dist)" "$RUNNER_TEMP/dist"
       - name: Cache dist
@@ -68,23 +63,34 @@ jobs:
       # Fork pull requests cannot access target-repository secrets.
       - id: plan
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ !github.event.pull_request && github.ref_name || '' }}
         shell: bash
         run: |
           if [[ -n "$TAG" ]]; then
-            dist host --steps=create --tag="$TAG" --output-format=json > plan-dist-manifest.json
+            dist host --steps=create --tag="$TAG" --output-format=json >plan-dist-manifest.json
           else
-            dist plan --output-format=json > plan-dist-manifest.json
+            dist plan --output-format=json >plan-dist-manifest.json
           fi
           echo "dist ran successfully"
           cat plan-dist-manifest.json
-          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >>"$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
-
+      - uses: tox-dev/github-workflows/verify-frozen-hooks@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+      - name: Check tagged source
+        env:
+          UV_EXCLUDE_NEWER: 7 days
+          UV_NO_CONFIG: "1"
+          UV_NO_SOURCES: "1"
+        run: |
+          unset UV_CONFIG_FILE UV_INDEX UV_INDEX_URL UV_DEFAULT_INDEX UV_EXTRA_INDEX_URL
+          unset UV_FIND_LINKS UV_EXCLUDE_NEWER_PACKAGE
+          unset UV_INSECURE_HOST UV_SYSTEM_CERTS SSL_CERT_FILE SSL_CERT_DIR
+          prek run --all-files
   build-local-artifacts:
     # An implicit name keeps skipped matrix jobs legible.
     needs:
@@ -115,9 +121,8 @@ jobs:
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
-          pattern: artifacts-*
+          name: artifacts-plan-dist-manifest
           path: target/distrib/
-          merge-multiple: true
       - name: Build artifacts
         env:
           TAG: ${{ needs.plan.outputs.tag }}
@@ -128,16 +133,16 @@ jobs:
           if [[ -n "$TAG" ]]; then
             args+=(--tag="$TAG")
           fi
-          dist "${args[@]}" > dist-manifest.json
+          dist "${args[@]}" >dist-manifest.json
           echo "dist ran successfully"
       - id: cargo-dist
         name: Post-build
         # Bash writes action outputs consistently across runner platforms.
         shell: bash
         run: |
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "paths<<EOF" >>"$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >>"$GITHUB_OUTPUT"
+          echo "EOF" >>"$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
@@ -147,7 +152,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
-
+          if-no-files-found: error
   build-global-artifacts:
     needs:
       - plan
@@ -162,6 +167,9 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - uses: $/.github/actions/setup
+        with:
+          tools: cargo:cargo-cyclonedx
       - name: Install cached dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         env:
@@ -170,14 +178,26 @@ jobs:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
-      - name: Fetch local artifacts
+      - name: Fetch release plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
-          pattern: artifacts-*
+          name: artifacts-plan-dist-manifest
           path: target/distrib/
-          merge-multiple: true
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: artifacts-build-local-*
+          path: ${{ runner.temp }}/local-artifacts
+      - name: Check local artifact handoff
+        uses: $/.github/actions/assemble-dist-artifacts
+        with:
+          plan: target/distrib/plan-dist-manifest.json
+          local-directory: ${{ runner.temp }}/local-artifacts
+          output-directory: target/distrib
+          source: ${{ needs.plan.outputs.source }}
+          tag: ${{ needs.plan.outputs.tag }}
       - id: cargo-dist
         env:
           TAG: ${{ needs.plan.outputs.tag }}
@@ -187,14 +207,20 @@ jobs:
           if [[ -n "$TAG" ]]; then
             args+=(--tag="$TAG")
           fi
-          dist "${args[@]}" > dist-manifest.json
+          dist "${args[@]}" >dist-manifest.json
           echo "dist ran successfully"
 
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "paths<<EOF" >>"$GITHUB_OUTPUT"
+          jq --raw-output ".upload_files[]" dist-manifest.json >>"$GITHUB_OUTPUT"
+          echo "EOF" >>"$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Generate planned CycloneDX manifest
+        run: |
+          cargo cyclonedx --manifest-path crates/peryx/Cargo.toml --format xml --target all --override-filename peryx.cdx
+          cp crates/peryx/peryx.cdx.xml target/distrib/peryx.cdx.xml
+      - name: Check planned global files
+        run: jq -r '.upload_files[]' dist-manifest.json | while IFS= read -r path; do test -s "$path"; done
       - name: "Upload artifacts"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -202,30 +228,157 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
+  credits:
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 5
+    permissions:
+      contents: write # GitHub's generate-notes endpoint requires write access without saving a release.
+    outputs:
+      source: ${{ github.sha }}
+      previous: ${{ steps.previous.outputs.previous }}
+      digest: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify contributor source
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: release-notes
+          venv: ${{ runner.temp }}/release-tools
+      - name: Find previous release
+        id: previous
+        uses: tox-dev/github-workflows/select-previous-tag@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          tag: ${{ needs.plan.outputs.tag }}
+      - name: Read generated contributor credits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.previous }}
+        run: |
+          args=(-f "tag_name=$RELEASE_TAG")
+          [[ -z "$PREVIOUS_TAG" ]] || args+=(-f "previous_tag_name=$PREVIOUS_TAG")
+          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body >"$RUNNER_TEMP/generated-notes.md"
+      - name: Verify generated credits use the release source
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          SOURCE_SHA: ${{ needs.plan.outputs.source }}
+        run: |
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$SOURCE_SHA"
+      - name: Hash generated credits
+        id: digest
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/generated-notes.md" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generated-credits
+          path: ${{ runner.temp }}/generated-notes.md
+          if-no-files-found: error
+  notes:
+    needs:
+      - plan
+      - credits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ github.sha }}
+      digest: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: generated-credits
+          path: ${{ runner.temp }}/credits
+      - name: Verify generated credits
+        env:
+          SOURCE_SHA: ${{ needs.credits.outputs.source }}
+          CREDITS_SHA256: ${{ needs.credits.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$CREDITS_SHA256" "$RUNNER_TEMP/credits/generated-notes.md" | sha256sum --check --status
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked release tools
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          groups: release-notes
+          venv: ${{ runner.temp }}/release-tools
+      - name: Render changelog notes
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PREVIOUS_TAG: ${{ needs.credits.outputs.previous }}
+          PUBLISH_PYPI: "${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}"
+        run: |
+          args=(--changelog CHANGELOG.md --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" --generated-notes "$RUNNER_TEMP/credits/generated-notes.md")
+          [[ -z "$PREVIOUS_TAG" ]] || args+=(--previous "$PREVIOUS_TAG")
+          [[ "$PUBLISH_PYPI" != true ]] || args+=(--artifact-url "https://pypi.org/project/peryx/${RELEASE_TAG#v}/")
+          "$RUNNER_TEMP/release-tools/bin/release-creator" notes "${args[@]}" >"$RUNNER_TEMP/changelog-notes.md"
+      - name: Hash changelog notes
+        id: digest
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/changelog-notes.md" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: changelog-notes
+          path: ${{ runner.temp }}/changelog-notes.md
+          if-no-files-found: error
   host:
     needs:
       - plan
+      - notes
       - build-local-artifacts
       - build-global-artifacts
-    if:
-      ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result
-      == 'skipped' || needs.build-local-artifacts.result == 'success') }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.notes.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     runs-on: "ubuntu-22.04"
     timeout-minutes: 20
     permissions:
-      "attestations": "write" # Sign release artifacts.
-      "contents": "write" # Create the GitHub release.
-      "id-token": "write" # Bind attestations to this workflow.
+      contents: read
     outputs:
       val: ${{ steps.host.outputs.manifest }}
+      source: ${{ github.sha }}
+      notes-digest: ${{ steps.final-notes.outputs.sha256 }}
+      assets-digest: ${{ steps.assets.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
           submodules: recursive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: changelog-notes
+          path: ${{ runner.temp }}/release-notes
+      - name: Verify changelog notes
+        env:
+          SOURCE_SHA: ${{ needs.notes.outputs.source }}
+          NOTES_SHA256: ${{ needs.notes.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/changelog-notes.md" | sha256sum --check --status
       - name: Install cached dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         env:
@@ -234,83 +387,292 @@ jobs:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
-      - name: Fetch artifacts
+      - name: Fetch release plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
-          pattern: artifacts-*
+          name: artifacts-plan-dist-manifest
           path: target/distrib/
-          merge-multiple: true
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: artifacts-build-local-*
+          path: ${{ runner.temp }}/local-artifacts
+      - name: Fetch global artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: artifacts-build-global
+          path: ${{ runner.temp }}/global-artifacts
+      - name: Check release artifact handoff
+        uses: $/.github/actions/assemble-dist-artifacts
+        with:
+          plan: target/distrib/plan-dist-manifest.json
+          local-directory: ${{ runner.temp }}/local-artifacts
+          global-directory: ${{ runner.temp }}/global-artifacts
+          output-directory: target/distrib
+          source: ${{ needs.plan.outputs.source }}
+          tag: ${{ needs.plan.outputs.tag }}
+      - name: Select planned release assets
+        id: assets
+        run: |
+          mkdir artifacts
+          jq -r '.artifacts | keys[]' target/distrib/plan-dist-manifest.json | while IFS= read -r name; do
+            case "$name" in '' | .* | */*)
+              echo "::error::invalid release asset: $name" >&2
+              exit 1
+              ;;
+            esac
+            test -f "target/distrib/$name" && test ! -L "target/distrib/$name"
+            cp "target/distrib/$name" artifacts/
+          done
+          sha256sum artifacts/* >"$RUNNER_TEMP/release-assets.sha256"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/release-assets.sha256" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - id: host
         env:
           TAG: ${{ needs.plan.outputs.tag }}
         shell: bash
         run: |
-          dist host --tag="$TAG" --steps=upload --steps=release --output-format=json > dist-manifest.json
-          echo "artifacts uploaded and released successfully"
-          cat dist-manifest.json
-          echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
+          dist host --tag="$TAG" --steps=upload --steps=release --output-format=json >dist-manifest.json
+          echo "manifest=$(jq -c "." dist-manifest.json)" >>"$GITHUB_OUTPUT"
+      - name: Check selected release assets
+        run: sha256sum --check --status "$RUNNER_TEMP/release-assets.sha256"
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: artifacts-dist-manifest
           path: dist-manifest.json
-      - name: "Download GitHub Artifacts"
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        env:
-          NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          pattern: artifacts-*
+          name: release-assets
           path: artifacts
-          merge-multiple: true
-      - name: Cleanup
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-sha256
+          path: ${{ runner.temp }}/release-assets.sha256
+          if-no-files-found: error
+      - name: Keep installer and verification instructions
+        env:
+          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
         run: |
-          rm -f artifacts/*-dist-manifest.json
+          printf '%s\n' "$ANNOUNCEMENT_BODY" | sed -n '/^## Install /,$p' | sed '/^\[PyPI release\]/d; /^\*\*Full Changelog\*\*:/d' >"$RUNNER_TEMP/install-notes.md"
+          test -s "$RUNNER_TEMP/install-notes.md"
+      - name: Assemble release description
+        run: |
+          sed '/^\*\*Full Changelog\*\*:/d' "$RUNNER_TEMP/release-notes/changelog-notes.md" >"$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/install-notes.md" >>"$RUNNER_TEMP/release-notes.md"
+          sed -n '/^\*\*Full Changelog\*\*:/p' "$RUNNER_TEMP/release-notes/changelog-notes.md" >>"$RUNNER_TEMP/release-notes.md"
+      - name: Hash final release description
+        id: final-notes
+        run: echo "sha256=$(sha256sum "$RUNNER_TEMP/release-notes.md" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: final-release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+  attest-release-assets:
+    needs: host
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 10
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-sha256
+          path: ${{ runner.temp }}/assets
+      - name: Verify assets before attestation
+        env:
+          SOURCE_SHA: ${{ needs.host.outputs.source }}
+          ASSETS_SHA256: ${{ needs.host.outputs.assets-digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test -f "$RUNNER_TEMP/assets/release-assets.sha256" && test ! -L "$RUNNER_TEMP/assets/release-assets.sha256"
+          test "$(find "$RUNNER_TEMP/assets" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          printf '%s  %s\n' "$ASSETS_SHA256" "$RUNNER_TEMP/assets/release-assets.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/assets/release-assets.sha256"
+          test -z "$(find artifacts -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          awk '{print $2}' "$RUNNER_TEMP/assets/release-assets.sha256" | sort >"$RUNNER_TEMP/expected-assets.txt"
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
       - name: Attest release artifacts
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: artifacts/*
-      - name: Create GitHub Release
-        env:
-          PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
-          ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
-          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
-          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
-          PUBLISH_PYPI: "${{ !fromJson(steps.host.outputs.manifest).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}"
-        run: |
-          set -euo pipefail
-          printf '%s\n' "$ANNOUNCEMENT_BODY" > "$RUNNER_TEMP/notes.txt"
-          if [[ "$PUBLISH_PYPI" == "true" ]]; then
-            printf '\n[PyPI release](https://pypi.org/project/peryx/%s/)\n' "${RELEASE_TAG#v}" >> "$RUNNER_TEMP/notes.txt"
-          fi
-          previous=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | awk -v tag="$RELEASE_TAG" '$0 == tag { print previous; exit } { previous = $0 }')
-          if [[ -n "$previous" ]]; then
-            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$previous" "$RELEASE_TAG" >> "$RUNNER_TEMP/notes.txt"
-          else
-            printf '\n**Full Changelog**: https://github.com/%s/commits/%s\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG" >> "$RUNNER_TEMP/notes.txt"
-          fi
-
-          gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
-
-  custom-publish-pypi:
+      - name: Verify assets after attestation
+        run: sha256sum --check --status "$RUNNER_TEMP/assets/release-assets.sha256"
+  stage-github-release:
     needs:
       - plan
       - host
+      - attest-release-assets
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: final-release-notes
+          path: ${{ runner.temp }}/release-notes
+      - name: Verify final release description
+        env:
+          SOURCE_SHA: ${{ needs.host.outputs.source }}
+          NOTES_SHA256: ${{ needs.host.outputs.notes-digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test -f "$RUNNER_TEMP/release-notes/release-notes.md" && test ! -L "$RUNNER_TEMP/release-notes/release-notes.md"
+          test "$(find "$RUNNER_TEMP/release-notes" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/release-notes.md" | sha256sum --check --status
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-sha256
+          path: ${{ runner.temp }}/assets
+      - name: Verify staged release assets
+        env:
+          SOURCE_SHA: ${{ needs.host.outputs.source }}
+          ASSETS_SHA256: ${{ needs.host.outputs.assets-digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test -f "$RUNNER_TEMP/assets/release-assets.sha256" && test ! -L "$RUNNER_TEMP/assets/release-assets.sha256"
+          test "$(find "$RUNNER_TEMP/assets" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          printf '%s  %s\n' "$ASSETS_SHA256" "$RUNNER_TEMP/assets/release-assets.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/assets/release-assets.sha256"
+          test -z "$(find artifacts -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          awk '{print $2}' "$RUNNER_TEMP/assets/release-assets.sha256" | sort >"$RUNNER_TEMP/expected-assets.txt"
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
+      - name: Stage GitHub Release
+        uses: tox-dev/github-workflows/publish-github-release@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ needs.plan.outputs.tag }}
+          commit: ${{ github.sha }}
+          title: ${{ fromJson(needs.host.outputs.val).announcement_title }}
+          notes-file: ${{ runner.temp }}/release-notes/release-notes.md
+          assets-directory: artifacts
+          prerelease: ${{ fromJson(needs.host.outputs.val).announcement_is_prerelease }}
+          mode: stage
+  custom-publish-pypi:
+    needs:
+      - plan
+      - stage-github-release
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: $/.github/workflows/publish-pypi.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
     permissions:
       "contents": "read" # Read the source to build from.
-
-  # PyPI matches the token's job_workflow_ref and the attestation certificate's build config against one
-  # trusted publisher; only a job in this top-level workflow makes both name release.yml.
+  validate-pypi-artifacts:
+    needs:
+      - plan
+      - custom-publish-pypi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ github.sha }}
+      digest: ${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: wheels
+      - name: Check builder artifact names
+        run: |
+          printf '%s\n' \
+            wheels-linux-aarch64-unknown-linux-gnu \
+            wheels-linux-aarch64-unknown-linux-musl \
+            wheels-linux-x86_64-unknown-linux-gnu \
+            wheels-linux-x86_64-unknown-linux-musl \
+            wheels-macos-aarch64 \
+            wheels-macos-x86_64 \
+            wheels-sdist \
+            wheels-windows-aarch64 \
+            wheels-windows-x64 >"$RUNNER_TEMP/expected-wheel-artifacts.txt"
+          find wheels -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort >"$RUNNER_TEMP/actual-wheel-artifacts.txt"
+          diff -u "$RUNNER_TEMP/expected-wheel-artifacts.txt" "$RUNNER_TEMP/actual-wheel-artifacts.txt"
+          test -z "$(find wheels -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+      - name: Assemble expected Python artifacts
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          version=${RELEASE_TAG#v}
+          mkdir dist
+          while read -r artifact platform; do
+            path="wheels/$artifact/peryx-$version-py3-none-$platform.whl"
+            test -f "$path" && test ! -L "$path"
+            test "$(find "wheels/$artifact" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
+            cp "$path" dist/
+          done <<'WHEELS'
+          wheels-linux-aarch64-unknown-linux-gnu manylinux_2_28_aarch64
+          wheels-linux-aarch64-unknown-linux-musl musllinux_1_2_aarch64
+          wheels-linux-x86_64-unknown-linux-gnu manylinux_2_28_x86_64
+          wheels-linux-x86_64-unknown-linux-musl musllinux_1_2_x86_64
+          wheels-macos-aarch64 macosx_11_0_arm64
+          wheels-macos-x86_64 macosx_10_12_x86_64
+          wheels-windows-aarch64 win_arm64
+          wheels-windows-x64 win_amd64
+          WHEELS
+          source="wheels/wheels-sdist/peryx-$version.tar.gz"
+          test -f "$source" && test ! -L "$source"
+          test "$(find wheels/wheels-sdist -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
+          cp "$source" dist/
+          test -z "$(find wheels -mindepth 2 ! -type f -print -quit)"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: Install locked package checks
+        uses: tox-dev/github-workflows/install-locked-tools@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          venv: ${{ runner.temp }}/package-check
+          groups: package-check
+      - name: Require eight wheels
+        run: test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 8
+      - name: Require one source distribution
+        run: test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Reject unexpected artifacts
+        run: |
+          test -z "$(find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test -z "$(find dist -maxdepth 1 -type f ! -name '*.whl' ! -name '*.tar.gz' -print -quit)"
+      - name: Check package metadata
+        run: '"$RUNNER_TEMP/package-check/bin/twine" check dist/*'
+      - name: Check wheel contents
+        run: '"$RUNNER_TEMP/package-check/bin/check-wheel-contents" --no-config --ignore W007 dist/*.whl'
+      - name: Hash checked artifacts
+        id: manifest
+        run: |
+          sha256sum dist/* >"$RUNNER_TEMP/python-artifacts.sha256"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/python-artifacts.sha256" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-artifacts-sha256
+          path: ${{ runner.temp }}/python-artifacts.sha256
+          if-no-files-found: error
   publish-pypi:
     name: publish to PyPI
     needs:
-      - custom-publish-pypi
+      - validate-pypi-artifacts
     runs-on: "ubuntu-24.04"
     timeout-minutes: 10
     environment: pypi
@@ -326,28 +688,142 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-artifacts-sha256
+          path: ${{ runner.temp }}/checks
+      - name: Verify checked artifacts
+        env:
+          SOURCE_SHA: ${{ needs.validate-pypi-artifacts.outputs.source }}
+          MANIFEST_SHA256: ${{ needs.validate-pypi-artifacts.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$MANIFEST_SHA256" "$RUNNER_TEMP/checks/python-artifacts.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
+          test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq "$(wc -l <"$RUNNER_TEMP/checks/python-artifacts.sha256")"
       - name: Attest Python packages
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*
+      - name: Verify artifacts after attestation
+        run: |-
+          sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist
-
-  announce:
+          skip-existing: true
+  verify-pypi-artifacts:
     needs:
       - plan
-      - host
-      - custom-publish-pypi
+      - validate-pypi-artifacts
       - publish-pypi
-    # Wait for skipped prerelease jobs, but require host completion.
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-pypi.result == 'skipped' || needs.publish-pypi.result == 'success') }}
-    runs-on: "ubuntu-22.04"
+    if: |-
+      ${{ always() && needs.validate-pypi-artifacts.result == 'success' && needs.publish-pypi.result == 'success' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-artifacts-sha256
+          path: ${{ runner.temp }}/checks
+      - name: Verify checked artifacts
+        env:
+          SOURCE_SHA: ${{ needs.validate-pypi-artifacts.outputs.source }}
+          MANIFEST_SHA256: ${{ needs.validate-pypi-artifacts.outputs.digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$MANIFEST_SHA256" "$RUNNER_TEMP/checks/python-artifacts.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
+          test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq "$(wc -l <"$RUNNER_TEMP/checks/python-artifacts.sha256")"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: Verify complete PyPI release
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        with:
+          project: peryx
+          version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
+          dist: dist
+  announce:
+    needs:
+      - plan
+      - host
+      - stage-github-release
+      - verify-pypi-artifacts
+    if: |-
+      ${{
+        always() &&
+        needs.host.result == 'success' &&
+        needs.stage-github-release.result == 'success' &&
+        (needs.verify-pypi-artifacts.result == 'success' ||
+          (needs.verify-pypi-artifacts.result == 'skipped' &&
+            fromJson(needs.plan.outputs.val).announcement_is_prerelease &&
+            !fromJson(needs.plan.outputs.val).publish_prereleases))
+      }}
+    runs-on: "ubuntu-22.04"
+    environment: release
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: final-release-notes
+          path: ${{ runner.temp }}/release-notes
+      - name: Verify final release description
+        env:
+          SOURCE_SHA: ${{ needs.host.outputs.source }}
+          NOTES_SHA256: ${{ needs.host.outputs.notes-digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test -f "$RUNNER_TEMP/release-notes/release-notes.md" && test ! -L "$RUNNER_TEMP/release-notes/release-notes.md"
+          test "$(find "$RUNNER_TEMP/release-notes" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/release-notes.md" | sha256sum --check --status
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
+        with:
+          name: release-assets
+          path: artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-sha256
+          path: ${{ runner.temp }}/assets
+      - name: Verify staged release assets
+        env:
+          SOURCE_SHA: ${{ needs.host.outputs.source }}
+          ASSETS_SHA256: ${{ needs.host.outputs.assets-digest }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test -f "$RUNNER_TEMP/assets/release-assets.sha256" && test ! -L "$RUNNER_TEMP/assets/release-assets.sha256"
+          test "$(find "$RUNNER_TEMP/assets" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          printf '%s  %s\n' "$ASSETS_SHA256" "$RUNNER_TEMP/assets/release-assets.sha256" | sha256sum --check --status
+          sha256sum --check --status "$RUNNER_TEMP/assets/release-assets.sha256"
+          test -z "$(find artifacts -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          awk '{print $2}' "$RUNNER_TEMP/assets/release-assets.sha256" | sort >"$RUNNER_TEMP/expected-assets.txt"
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | sort >"$RUNNER_TEMP/actual-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
+      - name: Publish GitHub Release
+        uses: tox-dev/github-workflows/publish-github-release@55f51f9b5cc0b40f280155a95de2d4f0ecbf7be1 # v3.0.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ needs.plan.outputs.tag }}
+          commit: ${{ github.sha }}
+          title: ${{ fromJson(needs.host.outputs.val).announcement_title }}
+          notes-file: ${{ runner.temp }}/release-notes/release-notes.md
+          assets-directory: artifacts
+          prerelease: ${{ fromJson(needs.host.outputs.val).announcement_is_prerelease }}
+          mode: publish

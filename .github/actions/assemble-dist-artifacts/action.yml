@@ -1,0 +1,131 @@
+name: Assemble cargo-dist artifacts
+description: Check the planned release files before handing them to cargo-dist
+inputs:
+  plan:
+    description: Cargo-dist plan manifest from this workflow run
+    required: true
+  local-directory:
+    description: Downloaded local artifact directories without merged files
+    required: true
+  global-directory:
+    description: Downloaded global artifact files, when the global build is complete
+    default: ""
+  output-directory:
+    description: Directory where cargo-dist reads the checked files
+    required: true
+  source:
+    description: Commit that produced the plan and build artifacts
+    required: true
+  tag:
+    description: Release tag recorded in the plan
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check source and plan
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        SOURCE: ${{ inputs.source }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        set -euo pipefail
+        test "$SOURCE" = "$GITHUB_SHA"
+        jq -e --arg tag "$TAG" '
+          .announcement_tag == $tag and
+          (.releases | length) == 1 and
+          .releases[0].app_version == ($tag | ltrimstr("v")) and
+          (.ci.github.artifacts_matrix.include | length) > 0
+        ' "$PLAN" >/dev/null
+    - name: Check local artifact directories
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        LOCAL_DIRECTORY: ${{ inputs.local-directory }}
+      run: |
+        set -euo pipefail
+        test -z "$(find "$LOCAL_DIRECTORY" -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+        test -z "$(find "$LOCAL_DIRECTORY" -mindepth 2 ! -type f -print -quit)"
+        jq -r '.ci.github.artifacts_matrix.include[] | "artifacts-build-local-" + (.targets | join("_"))' \
+          "$PLAN" | sort >"$RUNNER_TEMP/expected-local-directories.txt"
+        find "$LOCAL_DIRECTORY" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort \
+          >"$RUNNER_TEMP/actual-local-directories.txt"
+        diff -u "$RUNNER_TEMP/expected-local-directories.txt" "$RUNNER_TEMP/actual-local-directories.txt"
+    - name: Check local artifact files
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        LOCAL_DIRECTORY: ${{ inputs.local-directory }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        set -euo pipefail
+        jq -r '.artifacts | to_entries[] | select(.value.kind == "executable-zip") | .key, .value.checksum' \
+          "$PLAN" >"$RUNNER_TEMP/expected-local-files.txt"
+        jq -r '.ci.github.artifacts_matrix.include[] | (.targets | join("-")) + "-dist-manifest.json"' \
+          "$PLAN" >>"$RUNNER_TEMP/expected-local-files.txt"
+        sort -o "$RUNNER_TEMP/expected-local-files.txt" "$RUNNER_TEMP/expected-local-files.txt"
+        find "$LOCAL_DIRECTORY" -mindepth 2 -maxdepth 2 -type f -printf '%f\n' | sort \
+          >"$RUNNER_TEMP/actual-local-files.txt"
+        diff -u "$RUNNER_TEMP/expected-local-files.txt" "$RUNNER_TEMP/actual-local-files.txt"
+        for manifest in "$LOCAL_DIRECTORY"/*/*-dist-manifest.json; do
+          jq -e --arg tag "$TAG" --slurpfile plan "$PLAN" '
+            .announcement_tag == $tag and
+            (.artifacts | keys) == ($plan[0].artifacts | keys)
+          ' "$manifest" >/dev/null
+        done
+    - name: Check global artifact files
+      if: inputs.global-directory != ''
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        GLOBAL_DIRECTORY: ${{ inputs.global-directory }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        set -euo pipefail
+        test -z "$(find "$GLOBAL_DIRECTORY" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+        jq -r '.artifacts | keys[]' "$PLAN" | sort >"$RUNNER_TEMP/all-release-files.txt"
+        comm -23 "$RUNNER_TEMP/all-release-files.txt" "$RUNNER_TEMP/expected-local-files.txt" \
+          >"$RUNNER_TEMP/expected-global-files.txt"
+        printf '%s\n' global-dist-manifest.json >>"$RUNNER_TEMP/expected-global-files.txt"
+        sort -o "$RUNNER_TEMP/expected-global-files.txt" "$RUNNER_TEMP/expected-global-files.txt"
+        find "$GLOBAL_DIRECTORY" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort \
+          >"$RUNNER_TEMP/actual-global-files.txt"
+        diff -u "$RUNNER_TEMP/expected-global-files.txt" "$RUNNER_TEMP/actual-global-files.txt"
+        jq -e --arg tag "$TAG" --slurpfile plan "$PLAN" '
+          .announcement_tag == $tag and
+          (.artifacts | keys) == ($plan[0].artifacts | keys)
+        ' "$GLOBAL_DIRECTORY/global-dist-manifest.json" >/dev/null
+    - name: Assemble checked files
+      shell: bash
+      env:
+        LOCAL_DIRECTORY: ${{ inputs.local-directory }}
+        GLOBAL_DIRECTORY: ${{ inputs.global-directory }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$OUTPUT_DIRECTORY"
+        for artifact in "$LOCAL_DIRECTORY"/*/*; do cp "$artifact" "$OUTPUT_DIRECTORY/"; done
+        if [[ -n "$GLOBAL_DIRECTORY" ]]; then
+          for artifact in "$GLOBAL_DIRECTORY"/*; do cp "$artifact" "$OUTPUT_DIRECTORY/"; done
+        fi
+    - name: Check archive digests
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        GLOBAL_DIRECTORY: ${{ inputs.global-directory }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: |
+        set -euo pipefail
+        for checksum in "$OUTPUT_DIRECTORY"/*.sha256; do
+          name=${checksum##*/}
+          test "$(awk '{print $2}' "$checksum")" = "*${name%.sha256}"
+          (cd "$OUTPUT_DIRECTORY" && sha256sum --check --status "$name")
+        done
+        if [[ -n "$GLOBAL_DIRECTORY" ]]; then
+          jq -r '.artifacts | to_entries[] | select(.value.checksum != null) | .key' \
+            "$PLAN" | sort >"$RUNNER_TEMP/expected-checksums.txt"
+          awk 'NF >= 2 {sub(/^\*/, "", $2); print $2}' "$OUTPUT_DIRECTORY/sha256.sum" | sort \
+            >"$RUNNER_TEMP/actual-checksums.txt"
+          diff -u "$RUNNER_TEMP/expected-checksums.txt" "$RUNNER_TEMP/actual-checksums.txt"
+          (cd "$OUTPUT_DIRECTORY" && sha256sum --check --status sha256.sum)
+        fi

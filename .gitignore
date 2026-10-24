@@ -19,3 +19,4 @@ __pycache__/
 # cargo-mutants writes its run artefacts here.
 mutants.out/
 mutants.out.old/
+/uv.lock
