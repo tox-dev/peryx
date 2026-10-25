@@ -1,6 +1,6 @@
 # Builds the wheels and sdist. release.yml uploads them: PyPI trusted publishing rejects uploads from a
 # reusable workflow, whose token names this file while its attestation certificate names the caller.
-name: publish-pypi
+name: 🏗️ publish-pypi
 on:
   workflow_call:
     inputs:
@@ -8,39 +8,52 @@ on:
         required: true
         type: string
   workflow_dispatch:
-
 permissions: {}
-
 concurrency:
   group: publish-pypi-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   wheels:
-    name: wheel ${{ matrix.platform.os }}-${{ matrix.platform.target }}
+    name: 🏗️ wheel ${{ matrix.platform.os }}-${{ matrix.platform.target }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true }
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
-          - { os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin }
-          - { os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin }
-          - { os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc }
-          - { os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc }
+          - {os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true}
+          - {os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true}
+          - {os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true}
+          - {os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true}
+          - {os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin}
+          - {os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin}
+          - {os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc}
+          - {os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: ⚙️ Set source timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
-          tools: just maturin ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
-      - name: Build wheel
+          tools: just ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
+      - name: 🐍 Install uv and Python
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: 📦 Install checked build backend
+        uses: tox-dev/github-workflows/install-locked-tools@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        with:
+          groups: build
+          venv: .tox/tools/build-tools
+      - name: 🏗️ Build wheel
         env:
           RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
           COMPATIBILITY: ${{ matrix.platform.compatibility }}
@@ -53,27 +66,43 @@ jobs:
           args=(--target "$RUST_TARGET")
           [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
           [[ -z $USE_ZIG ]] || args+=(--zig)
-          just package-wheel "${args[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          just --no-deps package-wheel "${args[@]}"
+      - name: 📤 Upload wheels
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
           if-no-files-found: error
-
   sdist:
-    name: sdist
+    name: 🏗️ sdist
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: ⚙️ Set source timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >>"$GITHUB_ENV"
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
-          tools: just maturin
-      - name: Build sdist
-        run: just package-sdist
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          tools: just
+      - name: 🐍 Install uv and Python
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - name: 📦 Install checked build backend
+        uses: tox-dev/github-workflows/install-locked-tools@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        with:
+          groups: build
+          venv: .tox/tools/build-tools
+      - name: 🏗️ Build sdist
+        run: just --no-deps package-sdist
+      - name: 📤 Upload sdist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-sdist
           path: dist

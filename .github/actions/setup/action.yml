@@ -27,7 +27,8 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+    - name: 🦀 Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
@@ -40,7 +41,8 @@ runs:
     # rust-cache hashes every installed toolchain into its key, so the stable toolchain the runner image
     # ships rotates every cache in the repository each time the image updates, and the old entries stay
     # behind until the 10 GB limit evicts them. Only the pinned toolchain is left to hash.
-    - shell: bash
+    - name: 🦀 Remove unpinned Rust toolchains
+      shell: bash
       run: |
         active=$(rustup show active-toolchain | cut -d' ' -f1)
         rustup default "$active"
@@ -49,14 +51,16 @@ runs:
             rustup toolchain uninstall "$toolchain"
           fi
         done
-    - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+    - name: 🧰 Install tools with mise
+      uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
       with:
         version: 2026.9.14
         # sccache is a configured install dependency of every cargo: tool, so mise refuses to build
         # one from source until sccache itself is installed.
         install_args: --locked sccache ${{ inputs.tools }}
         cache_save: ${{ inputs.cache-save }}
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - name: 💾 Restore Rust cache
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       env:
         NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
       with:

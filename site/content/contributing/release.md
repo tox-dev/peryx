@@ -4,8 +4,9 @@ description = "Plan, build, publish, and verify a cargo-dist release."
 weight = 30
 +++
 
-Cargo-dist generates `.github/workflows/release.yml` from `dist-workspace.toml`. Do not edit the generated workflow by
-hand. Change the distribution configuration and regenerate it through cargo-dist.
+Cargo-dist plans the release from `dist-workspace.toml`. The repository customizes `.github/workflows/release.yml` to
+scope credentials, render notes, and publish the Python artifacts. Change `dist-workspace.toml` for distribution targets
+and installers; change the workflow for job order or authentication. Run `just release-plan` after either change.
 
 `cargo-dist-version` selects the configuration and generator contract. The `aqua:axodotdev/cargo-dist` entry in
 `mise.toml` installs the CLI, and `mise.lock` records its resolved release with a checksum. Renovate updates the
@@ -37,10 +38,16 @@ Inspect the cargo-dist plan for the expected targets, installers, checksums, att
 ## Document a change
 
 Each pull request needs a change file unless a maintainer applies the `skip news` label. Run `knope document-change`,
-pick the change type, and write the summary; knope saves it under `.changeset/`. The change type picks the changelog
-section: `major` lists under breaking changes, `minor` under features, and `patch` under fixes. knope's conventional
-commit parser stays off: it rejects subjects that start with an emoji, as squash commits here do, so it would pick up
-only the few older subjects without one. The CI gate checks for a new change file on each pull request.
+pick the change type, and write the summary; knope saves it under `.changeset/`. Use `minor` for Added, `change` for
+Changes, `patch` for Fixed, and `major` for Breaking changes. Documentation, Security, Performance, Deprecated, Removed,
+and Packaging have matching custom types in `knope.toml`. A Python support addition or removal belongs under Added.
+Knope's conventional commit parser stays off because it rejects subjects that start with an emoji, as squash commits
+here do. CI validates every supplied change file and requires one on human-authored pull requests without the
+`skip news` label. Bot pull requests need one only if their changes warrant news; their supplied files still receive
+validation.
+
+Pull request documentation builds show current change files under Draft on the changelog page. The release workflow
+moves those entries into a versioned section when it prepares the release.
 
 ## Publish a release
 
@@ -55,19 +62,32 @@ Start the `Prepare release` workflow from the Actions tab, or from a shell:
 gh workflow run prepare-release.yml --repo tox-dev/peryx
 ```
 
-The workflow computes the version from the date and the existing tags. It stops if `.changeset/` has no change files. It
-runs `knope prepare-release` without release credentials to update the manifests, `Cargo.lock`,
-`site/static/openapi.json`, and `CHANGELOG.md`. A second job checks those changes, commits them to `main`, and tags
-`v<version>`. One atomic push lands both, and the tag starts `release.yml`, which builds the archives, creates the
-GitHub release with the `CHANGELOG.md` section as its notes, and publishes the PyPI package. The release workflow
-rejects a tag whose version has no section in `CHANGELOG.md`.
+The workflow computes the version from the date and the existing tags. Release-creator links each merged change file to
+its squash pull request and human authors before Knope collects it. Knope updates the manifests, `Cargo.lock`,
+`site/static/openapi.json`, and `CHANGELOG.md`; release-creator then adds stable anchors to each version and category
+heading. A second job checks which paths and file modes changed, commits them to `main`, and tags `v<version>`. One
+atomic push lands both.
+
+The tag starts `release.yml`. The workflow builds archives, publishes and verifies the PyPI package, then creates the
+GitHub Release with the tagged notes and assets. The notes keep cargo-dist's installer, download, and verification
+instructions and link to PyPI when that version is published there.
+
+The global build generates the planned CycloneDX manifest before upload. A read-only host job checks the archive
+digests. Separate jobs attest the sealed files and create the GitHub Release; the release job has no checkout or build
+tools.
+
+The wheel and sdist jobs install Maturin from the `build` selection in `pylock.toml`. Before PyPI publishing, a job
+without publishing credentials collects the wheel for each platform and the sdist and records their hashes. It compares
+that set with PyPI and passes only missing filenames to the PyPI job. That job copies the matching validated files,
+attests them, and uploads them. The upload fails on a file PyPI already has. The following keyless job checks all nine
+filenames and hashes on PyPI before the GitHub Release is created.
 
 The push authenticates as the `peryx-release` GitHub App, the one actor besides repository admins that the `main`
 ruleset lets bypass required checks and the tag ruleset lets create `v*` tags. The `release-auth` environment holds its
-client ID in the `RELEASE_APP_CLIENT_ID` variable, its bot user ID in `RELEASE_APP_USER_ID`, and its private key in the
-`RELEASE_APP_PRIVATE_KEY` secret; each run mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN`
-would not start `release.yml`. The PyPI job authenticates through a trusted publisher for `release.yml` in the `pypi`
-environment.
+client ID in the `RELEASE_APP_CLIENT_ID` variable and its private key in the `RELEASE_APP_PRIVATE_KEY` secret; each run
+mints a token that expires with the job. A tag pushed with `GITHUB_TOKEN` would not start `release.yml`. The `release`
+environment gates the jobs that attest the release assets and create the GitHub Release; the `pypi` environment gates
+trusted publishing. Both environments accept only `v*` tags and require no reviewer.
 
 ## Verify a release
 

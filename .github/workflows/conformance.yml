@@ -1,30 +1,29 @@
-name: OCI conformance
-
+name: 🧪 OCI conformance
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: conformance-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
-
 jobs:
   changes:
+    name: 🧭 Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       oci: ${{ steps.filter.outputs.oci }}
       shared: ${{ steps.filter.outputs.shared }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      - name: 🧭 Detect changed paths
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -53,22 +52,22 @@ jobs:
               - 'justfile'
             oci:
               - 'crates/peryx-ecosystem-oci/**'
-
   conformance:
-    name: distribution-spec conformance
+    name: 🧪 distribution-spec conformance
     needs: changes
     if: >-
-      needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' ||
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+      - name: 🦀 Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
         with:
@@ -77,18 +76,20 @@ jobs:
           # Deny warnings through RUSTFLAGS, as the setup action does; its note says why not build.warnings.
           rustflags: -D warnings
           build-warnings: ""
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - name: 🦀 Install just
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: just
-      - run: just conformance "$RUNNER_TEMP/conformance.test"
-
+      - name: 🧪 Run OCI conformance tests
+        run: just conformance "$RUNNER_TEMP/conformance.test"
   conformance-gate:
+    name: 🚦 ${{ github.event_name == 'pull_request' && 'conformance-gate' || 'conformance-gate (non-PR)' }}
     if: always()
     needs: [changes, conformance]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - if: >-
-          needs.changes.result != 'success' ||
-          (needs.conformance.result != 'success' && needs.conformance.result != 'skipped')
+      - name: 🚦 Fail on unmet required jobs
+        if: >-
+          needs.changes.result != 'success' || (needs.conformance.result != 'success' && needs.conformance.result != 'skipped')
         run: exit 1

@@ -20,7 +20,6 @@ sccache = "latest"
 "aqua:taiki-e/cargo-llvm-cov" = "latest"
 "cargo:cargo-mutants" = "latest"
 "github:obi1kenobi/cargo-semver-checks" = "latest"
-maturin = "latest"
 "github:leptos-rs/cargo-leptos" = "latest"
 "github:project-zot/zot" = { version = "latest", os = ["linux", "macos"], matching_regex = "^zot-(darwin|linux)-(amd64|arm64)$", bin = "zot" }
 "github:Shopify/toxiproxy" = { version = "latest", matching = "toxiproxy-server", bin = "toxiproxy-server", github_attestations = false }

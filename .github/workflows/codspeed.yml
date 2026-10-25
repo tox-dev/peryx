@@ -1,31 +1,30 @@
-name: CodSpeed
-
+name: ⏱️ CodSpeed
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: codspeed-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   # Benchmarks measure compiled code, so a pull request that changes only tests, the site or Markdown
   # skips them. Every push to main still runs them, which keeps the CodSpeed baseline continuous.
   changes:
+    name: 🧭 Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       benchmarked: ${{ steps.filter.outputs.benchmarked }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      - name: 🧭 Detect changed paths
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           predicate-quantifier: some-with-excludes
@@ -41,9 +40,8 @@ jobs:
               - '.github/workflows/codspeed.yml'
               - '!crates/**/tests/**'
               - '!**/*.md'
-
   benchmarks:
-    name: ${{ matrix.ecosystem }} benchmarks
+    name: ⏱️ ${{ matrix.ecosystem }} benchmarks
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.benchmarked == 'true'
     strategy:
@@ -65,32 +63,36 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: just cargo:cargo-codspeed
           # The three legs share one cache key and the first to finish used to win the write, which was
           # the parsing leg with the fewest artifacts. The serving leg builds the superset.
           cache-save: ${{ github.ref == 'refs/heads/main' && matrix.suite == 'serving' }}
-      - run: just codspeed-build "$PACKAGE" "$SUITE"
+      - name: 🏗️ Build benchmarks
+        run: just codspeed-build "$PACKAGE" "$SUITE"
         env:
           PACKAGE: ${{ matrix.package }}
           SUITE: ${{ matrix.suite }}
-      - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+      - name: ⏱️ Run benchmarks
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         with:
           exclude-allocations: true
           mode: simulation
           run: just codspeed-run "${{ matrix.package }}" simulation
-
   codspeed-gate:
+    name: 🚦 ${{ github.event_name == 'pull_request' && 'codspeed-gate' || 'codspeed-gate (non-PR)' }}
     if: always()
     needs: [changes, benchmarks]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - if: >-
-          needs.changes.result != 'success' ||
-          !contains(fromJSON('["success", "skipped"]'), needs.benchmarks.result)
+      - name: 🚦 Fail on unmet required jobs
+        if: >-
+          needs.changes.result != 'success' || !contains(fromJSON('["success", "skipped"]'), needs.benchmarks.result)
         run: exit 1

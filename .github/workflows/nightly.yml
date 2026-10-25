@@ -1,28 +1,22 @@
-name: Nightly
-
+name: 🧪 Nightly
 on:
   workflow_call:
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
-
 permissions:
   contents: read
-
 env:
   # mise-action hashes the sorted tool arguments into its cache key.
   # https://github.com/jdx/mise-action/blob/c2a87611a18de5b3828c5652fe268e992400cb5c/src/index.ts#L1273-L1321
   MUTATION_TOOLS: >-
-    just jq uv cargo:cargo-mutants github:nextest-rs/nextest
-    github:Shopify/toxiproxy
-
+    just jq uv cargo:cargo-mutants github:nextest-rs/nextest github:Shopify/toxiproxy
 concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   analysis:
-    name: ${{ matrix.recipe }}
+    name: 🧪 ${{ matrix.recipe }}
     strategy:
       fail-fast: false
       matrix:
@@ -30,42 +24,47 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           toolchain: nightly
           components: miri,rust-src
           tools: just cargo:cargo-hack
-      - run: just "$RECIPE"
+      - name: 🧪 Run analysis recipe
+        run: just "$RECIPE"
         env:
           RECIPE: ${{ matrix.recipe }}
-
   sanitizer-build:
-    name: sanitizer-address build
+    name: 🏗️ sanitizer-address build
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           toolchain: nightly
           components: rust-src
           tools: just github:nextest-rs/nextest
-      - run: just sanitizer-archive .tox/sanitizer-address.tar.zst
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: 🏗️ Build sanitizer archive
+        run: just sanitizer-archive .tox/sanitizer-address.tar.zst
+      - name: 📤 Upload sanitizer archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sanitizer-address
           path: .tox/sanitizer-address.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
   sanitizer:
-    name: sanitizer-address (${{ matrix.partition }}/8)
+    name: 🧪 sanitizer-address (${{ matrix.partition }}/8)
     needs: sanitizer-build
     strategy:
       fail-fast: false
@@ -74,10 +73,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           toolchain: nightly
           tools: >-
@@ -85,54 +86,62 @@ jobs:
       # A hosted intermediary answers the odd artifact request with a 403 that the client treats as
       # final. One retry tells that apart from an artifact or token that is really gone, which fails
       # both attempts.
-      - id: archive
+      - name: 📩 Download sanitizer archive
+        id: archive
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sanitizer-address
           path: .tox/sanitizer
-      - if: steps.archive.outcome == 'failure'
+      - name: ⏳ Wait before retrying download
+        if: steps.archive.outcome == 'failure'
         run: sleep 30
-      - if: steps.archive.outcome == 'failure'
+      - name: 📩 Retry sanitizer archive download
+        if: steps.archive.outcome == 'failure'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sanitizer-address
           path: .tox/sanitizer
-      - run: just sanitizer-run .tox/sanitizer/sanitizer-address.tar.zst "slice:$PARTITION/8"
+      - name: 🧪 Run sanitizer tests
+        run: just sanitizer-run .tox/sanitizer/sanitizer-address.tar.zst "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
-
   mutation-baseline-build:
+    name: 🏗️ mutation baseline build
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     outputs:
       shard_count: ${{ steps.shards.outputs.count }}
       shards: ${{ steps.shards.outputs.indices }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: ${{ env.MUTATION_TOOLS }}
-      - run: just mutation-baseline-archive .tox/mutation-baseline.tar.zst
-      - id: shards
+      - name: 🏗️ Build mutation baseline archive
+        run: just mutation-baseline-archive .tox/mutation-baseline.tar.zst
+      - name: ⚙️ Plan mutation shards
+        id: shards
         run: |
           mutants=$(just mutation-count)
           shards=$(just mutation-shard-count "$mutants" 128)
           echo "Planning $mutants mutants across $shards shards"
           echo "count=$shards" >> "$GITHUB_OUTPUT"
           echo "indices=$(jq --null-input --compact-output --argjson count "$shards" '[range(0; $count)]')" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: 📤 Upload mutation baseline archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
   mutation-baseline:
-    name: mutation baseline (${{ matrix.partition }}/8)
+    name: 🧪 mutation baseline (${{ matrix.partition }}/8)
     needs: mutation-baseline-build
     strategy:
       fail-fast: false
@@ -141,34 +150,39 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: >-
             just uv github:nextest-rs/nextest github:Shopify/toxiproxy
       # Run 34237118365 lost all 142 mutation shards to one 403 here: the shards need this job, and a
       # skipped stage reports nothing. The retry separates a refused request from a missing artifact.
-      - id: archive
+      - name: 📩 Download mutation baseline archive
+        id: archive
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline
-      - if: steps.archive.outcome == 'failure'
+      - name: ⏳ Wait before retrying download
+        if: steps.archive.outcome == 'failure'
         run: sleep 30
-      - if: steps.archive.outcome == 'failure'
+      - name: 📩 Retry mutation baseline download
+        if: steps.archive.outcome == 'failure'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline
-      - run: just mutation-baseline-run .tox/mutation-baseline/mutation-baseline.tar.zst "slice:$PARTITION/8"
+      - name: 🧪 Run mutation baseline tests
+        run: just mutation-baseline-run .tox/mutation-baseline/mutation-baseline.tar.zst "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
-
   mutation:
-    name: mutation (${{ matrix.shard }}/${{ needs.mutation-baseline-build.outputs.shard_count }})
+    name: 🧪 mutation (${{ matrix.shard }}/${{ needs.mutation-baseline-build.outputs.shard_count }})
     needs: [mutation-baseline-build, mutation-baseline]
     strategy:
       fail-fast: false
@@ -180,10 +194,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: ${{ env.MUTATION_TOOLS }}
       # A mutant that breaks a loop's progress (`index += 3` into `index *= 3`) can make a test allocate
@@ -196,7 +212,8 @@ jobs:
       # cargo-mutants, and run 35906450841 lost shard 18 to that. Everything the step starts
       # inherits -1000 here, which the OOM killer never selects, and nextest starts each test binary
       # through choom at 1000, so the only processes it can kill are tests and what they spawn.
-      - run: |
+      - name: 🧪 Run mutation shard
+        run: |
           cgroup=/sys/fs/cgroup/mutation
           sudo mkdir "$cgroup"
           echo 12G | sudo tee "$cgroup/memory.max"
@@ -208,15 +225,15 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: choom -n 1000 --
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.mutation-baseline-build.outputs.shard_count }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: 📤 Upload mutation results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: mutation-${{ matrix.shard }}-${{ needs.mutation-baseline-build.outputs.shard_count }}
           path: .tox/mutants
           if-no-files-found: error
-
   fuzz:
-    name: fuzz (${{ matrix.target }})
+    name: 🧪 fuzz (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -230,31 +247,37 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           toolchain: nightly
           tools: just cargo:cargo-fuzz
-      - run: just fuzz "$PACKAGE" "$TARGET" 60
+      - name: 🧪 Run fuzz target
+        run: just fuzz "$PACKAGE" "$TARGET" 60
         env:
           PACKAGE: ${{ matrix.package }}
           TARGET: ${{ matrix.target }}
-
   live-client:
+    name: 🧪 Live client tests
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: just uv github:nextest-rs/nextest
-      - run: just e2e-live
-
+      - name: 🧪 Run live client tests
+        run: just e2e-live
   nightly-gate:
+    name: 🚦 Nightly checks pass
     if: always()
     needs:
       - analysis
@@ -271,16 +294,10 @@ jobs:
       # A stage its dependency skipped reads as absence rather than as a failure, so name every
       # result. Run 34237118365 skipped 142 mutation shards and looked healthier than the run before
       # it, which lost 89 of them.
-      - env:
+      - name: 🚦 Fail on unmet nightly stages
+        env:
           RESULTS: >-
-            analysis=${{ needs.analysis.result }}
-            sanitizer-build=${{ needs.sanitizer-build.result }}
-            sanitizer=${{ needs.sanitizer.result }}
-            mutation-baseline-build=${{ needs.mutation-baseline-build.result }}
-            mutation-baseline=${{ needs.mutation-baseline.result }}
-            mutation=${{ needs.mutation.result }}
-            fuzz=${{ needs.fuzz.result }}
-            live-client=${{ needs.live-client.result }}
+            analysis=${{ needs.analysis.result }} sanitizer-build=${{ needs.sanitizer-build.result }} sanitizer=${{ needs.sanitizer.result }} mutation-baseline-build=${{ needs.mutation-baseline-build.result }} mutation-baseline=${{ needs.mutation-baseline.result }} mutation=${{ needs.mutation.result }} fuzz=${{ needs.fuzz.result }} live-client=${{ needs.live-client.result }}
         run: |
           printf '%s\n' $RESULTS
           unmet=""

@@ -89,8 +89,8 @@ target runner, `choom -n 1000 --`, raises each test binary back to 1000. Tests a
 candidates left. A build that outgrows the cap has no candidate to kill, and cargo-mutants' build timeout ends it
 instead.
 
-The coverage jobs reject uncovered source lines. `ci-gate` gives branch protection one check name and fails unless every
-required job succeeds.
+The coverage jobs reject uncovered source lines. `🚦 ci-gate` gives branch protection one check name and fails unless
+every required job succeeds.
 
 CodSpeed runs the ecosystem benchmark packages on standard GitHub-hosted runners in
 [simulation mode][codspeed-simulation]. This avoids quota-limited Macro Runners. Run the same benchmark path with

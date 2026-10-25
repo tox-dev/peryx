@@ -1,42 +1,41 @@
-name: CI
-
+name: 🧪 CI
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       nightly:
         description: Run nightly checks
         default: false
         type: boolean
-
 permissions:
   actions: read
   contents: read
-
 # A push to main keeps its run: cancelling it whenever the next merge lands is what left main without a
 # verdict and without a cache write for every job that had not finished yet.
 concurrency:
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   # A pull request that touches only the site, Markdown, or the Read the Docs and Renovate manifests
   # cannot change a compiled artifact, so the Rust jobs stand down for it. The exception is a document
   # a crate embeds with `include_str!`; `just _embedded-docs-contract` keeps that list current. Every
   # push and dispatch still runs everything.
   changes:
+    name: 🧭 Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.embedded == 'true' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      - name: 🧭 Detect changed paths
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           predicate-quantifier: some-with-excludes
@@ -52,33 +51,40 @@ jobs:
               - 'site/content/ecosystems/oci/reference/policy.md'
               - 'site/static/icon.svg'
               - 'site/static/mark.svg'
-
   source:
+    name: 🧹 Lint source and dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: just aqua:EmbarkStudios/cargo-deny
-      - run: just lint-source
-      - run: just lint-deps
-
+      - name: 🧹 Lint source
+        run: just lint-source
+      - name: 🧹 Lint dependencies
+        run: just lint-deps
   automation:
+    name: 🧹 Lint automation
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: just node prek
-      - run: just lint-automation
-
+      - name: 🧹 Lint automation
+        run: just lint-automation
   contracts:
+    name: 🧪 Check snapshots and release plan
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
@@ -86,19 +92,22 @@ jobs:
     # and 112s to run its 2814 tests.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: >-
             just jq uv aqua:axodotdev/cargo-dist aqua:mitsuhiko/insta github:nextest-rs/nextest
-      - run: just snapshots
-      - run: just release-plan
-
+      - name: 🧪 Check snapshots
+        run: just snapshots
+      - name: 🔍 Check release plan
+        run: just release-plan
   platform:
-    name: platform (${{ matrix.os }})
+    name: 🧪 platform (${{ matrix.os }})
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     strategy:
@@ -110,30 +119,36 @@ jobs:
     env:
       HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: just github:nextest-rs/nextest
-      - run: just platform-test
-
+      - name: 🧪 Run platform tests
+        run: just platform-test
   coverage:
+    name: 📊 Native coverage
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: >-
-            just uv aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest
-            github:Shopify/toxiproxy
-      - run: just coverage-native
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+            just uv aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest github:Shopify/toxiproxy
+      - name: 📊 Collect native coverage
+        run: just coverage-native
+      - name: 📤 Upload native coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: coverage-native
@@ -141,33 +156,38 @@ jobs:
             .tox/coverage/native.lcov
             .tox/coverage/native-gaps.json
           if-no-files-found: error
-
   # A body reached only from the browser runs in the target `frontend` measures, so the two halves are
   # unioned here rather than each gating alone. Both artifacts are small, so this waits on them both
   # and adds a minute rather than serialising the two long jobs.
   coverage-lines:
+    name: 📊 Line coverage
     needs: [coverage, frontend]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           tools: just
       - parallel:
-          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          - name: 📩 Download native coverage
+            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
             with:
               name: coverage-native
               path: .tox/coverage
-          - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          - name: 📩 Download frontend coverage
+            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
             with:
               name: coverage-frontend
               path: .tox/coverage
-      - run: just coverage-lines
-
+      - name: 📊 Check line coverage
+        run: just coverage-lines
   frontend:
+    name: 📊 Frontend coverage
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
@@ -177,18 +197,21 @@ jobs:
       # target directory is what lets rust-cache carry its dependencies between runs.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
           components: llvm-tools-preview
           targets: wasm32-unknown-unknown
           tools: >-
             just jq node aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest github:leptos-rs/cargo-leptos
       - parallel:
-          - run: just frontend-deps
-          - name: Install LLVM 22
+          - name: 📦 Install frontend dependencies
+            run: just frontend-deps
+          - name: 📦 Install LLVM 22
             run: |
               curl --fail --location --output "$RUNNER_TEMP/llvm.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
               fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" |
@@ -203,66 +226,55 @@ jobs:
                 -o Dir::Etc::sourceparts=- \
                 -o APT::Get::List-Cleanup=0
               sudo apt-get install --yes clang-22 lcov
-              echo "CLANG=clang-22" >> "$GITHUB_ENV"
-      - run: just coverage-frontend
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              echo "CLANG=clang-22" >>"$GITHUB_ENV"
+      - name: 📊 Collect frontend coverage
+        run: just coverage-frontend
+      - name: 📤 Upload frontend coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: coverage-frontend
           path: .tox/coverage/frontend-*.lcov
           if-no-files-found: error
-
   docs:
+    name: 📖 Docs
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: $/.github/actions/setup
+      - name: 🧰 Set up Rust and tools
+        uses: $/.github/actions/setup
         with:
-          tools: jq just node prek zola
-      - run: just lint-docs
-      - run: just docs
-
-  changelog:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Require a change file
-        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip news')
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if ! git diff --name-only --diff-filter=AM "$BASE_SHA" "$HEAD_SHA" -- .changeset |
-            grep -Eq '^\.changeset/[^/]+\.md$'; then
-            echo '::error::add a .changeset/*.md file or apply the skip news label'
-            exit 1
-          fi
-
+          tools: jq just node prek uv zola
+      - name: 🧹 Lint docs
+        run: just lint-docs
+      - name: 🏗️ Build docs
+        run: just docs
   nightly:
+    name: 🧪 Nightly
     if: github.event_name == 'workflow_dispatch' && inputs.nightly
     uses: $/.github/workflows/nightly.yml
-
   ci-gate:
+    name: 🚦 ${{ github.event_name == 'pull_request' && 'ci-gate' || 'ci-gate (non-PR)' }}
     if: always()
-    needs: [automation, changelog, changes, contracts, coverage, coverage-lines, docs, frontend, platform, source]
+    needs:
+      - automation
+      - changes
+      - contracts
+      - coverage
+      - coverage-lines
+      - docs
+      - frontend
+      - platform
+      - source
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       # A job the `changes` filter stood down reports `skipped`; anything else short of success fails.
-      - if: >-
-          needs.automation.result != 'success' || needs.changelog.result != 'success' ||
-          needs.changes.result != 'success' ||
-          needs.docs.result != 'success' || needs.source.result != 'success' ||
-          !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) ||
-          !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
+      - name: 🚦 Fail on unmet required jobs
+        if: >-
+          needs.automation.result != 'success' || needs.changes.result != 'success' || needs.docs.result != 'success' || needs.source.result != 'success' || !contains(fromJSON('["success", "skipped"]'), needs.contracts.result) || !contains(fromJSON('["success", "skipped"]'), needs.coverage.result) || !contains(fromJSON('["success", "skipped"]'), needs['coverage-lines'].result) || !contains(fromJSON('["success", "skipped"]'), needs.frontend.result) || !contains(fromJSON('["success", "skipped"]'), needs.platform.result)
         run: exit 1

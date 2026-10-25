@@ -8,6 +8,8 @@ description = "Multi-ecosystem artifact cache and private registry"
 readme = "README.md"
 keywords = [ "artifact-registry", "cache", "mirror", "oci", "pypi", "software-distribution" ]
 license = "MIT"
+license-files = [ "LICENSE" ]
+authors = [ { name = "Bernát Gábor", email = "gaborjbernat@gmail.com" } ]
 requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -26,12 +28,52 @@ classifiers = [
   "Topic :: System :: Software Distribution",
 ]
 dynamic = [ "version" ]
+urls.Changelog = "https://github.com/tox-dev/peryx/blob/main/CHANGELOG.md"
 urls.Documentation = "https://peryx.readthedocs.io/"
 urls.Issues = "https://github.com/tox-dev/peryx/issues"
+urls.Homepage = "https://github.com/tox-dev/peryx"
 urls.Source = "https://github.com/tox-dev/peryx"
 
+[dependency-groups]
+build = [
+  "cython>=3",
+  "maturin<2,>=1.14.1",
+  "setuptools>=80",
+]
+release-notes = [
+  "release-creator>=4.1",
+]
+
+release-prepare = [
+  "prek>=0.5",
+  "release-creator>=4.1",
+]
+
+
+[tool.uv.dependency-groups]
+release-notes = { requires-python = ">=3.15" }
+release-prepare = { requires-python = ">=3.15" }
+
 [tool.maturin]
+include = [
+  { path = "site/content/ecosystems/oci/reference/policy.md", format = "sdist" },
+  { path = "site/static/*.svg", format = "sdist" },
+]
 # The wheel carries the compiled `peryx` binary as a console script; there are no Python
 # bindings, so one wheel per platform serves every CPython and PyPy version.
 bindings = "bin"
 manifest-path = "crates/peryx/Cargo.toml"
+
+[tool.nab]
+mode = "universal"
+base-group = "project-runtime"
+uploaded-prior-to = "P7D"
+decision-order = "stable"
+
+[tool.nab.matrix]
+python = ">=3.15,<3.16"
+platforms = [ "linux_x86_64", "linux_aarch64", "macos_arm64", "windows_amd64", "windows_arm64" ]
+
+# temporary, delete after 2026-11-02
+[tool.nab.packages."release-creator"]
+uploaded-prior-to = 2026-10-26T18:24:46Z

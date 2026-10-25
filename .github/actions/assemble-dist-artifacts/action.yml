@@ -1,0 +1,50 @@
+name: Assemble cargo-dist artifacts
+description: Copy downloaded artifacts into the cargo-dist directory and check their digests
+inputs:
+  plan:
+    description: Cargo-dist plan manifest from this workflow run
+    required: true
+  local-directory:
+    description: Downloaded local artifact directories without merged files
+    required: true
+  global-directory:
+    description: Downloaded global artifact files, when the global build is complete
+    default: ""
+  output-directory:
+    description: Directory where cargo-dist reads the assembled files
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: ⚙️ Copy artifacts into the output directory
+      shell: bash
+      env:
+        LOCAL_DIRECTORY: ${{ inputs.local-directory }}
+        GLOBAL_DIRECTORY: ${{ inputs.global-directory }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$OUTPUT_DIRECTORY"
+        for artifact in "$LOCAL_DIRECTORY"/*/*; do cp "$artifact" "$OUTPUT_DIRECTORY/"; done
+        if [[ -n "$GLOBAL_DIRECTORY" ]]; then
+          for artifact in "$GLOBAL_DIRECTORY"/*; do cp "$artifact" "$OUTPUT_DIRECTORY/"; done
+        fi
+    - name: 🔍 Check archive digests
+      shell: bash
+      env:
+        PLAN: ${{ inputs.plan }}
+        GLOBAL_DIRECTORY: ${{ inputs.global-directory }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+      run: |
+        set -euo pipefail
+        for checksum in "$OUTPUT_DIRECTORY"/*.sha256; do
+          (cd "$OUTPUT_DIRECTORY" && sha256sum --check --status "${checksum##*/}")
+        done
+        if [[ -n "$GLOBAL_DIRECTORY" ]]; then
+          jq -r '.artifacts | to_entries[] | select(.value.checksum != null) | .key' \
+            "$PLAN" | sort >"$RUNNER_TEMP/expected-checksums.txt"
+          awk 'NF >= 2 {sub(/^\*/, "", $2); print $2}' "$OUTPUT_DIRECTORY/sha256.sum" | sort \
+            >"$RUNNER_TEMP/actual-checksums.txt"
+          diff -u "$RUNNER_TEMP/expected-checksums.txt" "$RUNNER_TEMP/actual-checksums.txt"
+          (cd "$OUTPUT_DIRECTORY" && sha256sum --check --status sha256.sum)
+        fi

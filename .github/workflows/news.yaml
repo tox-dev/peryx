@@ -1,0 +1,65 @@
+name: 📝 Changelog
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  changelog:
+    name: 📝 News fragment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 🐍 Install uv and Python
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: latest-known
+          python-version: "3.15"
+          enable-cache: false
+      - id: news-change
+        name: 🧭 Check whether change files changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-only "origin/$BASE_REF...HEAD" -- .changeset knope.toml)
+          if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
+      - name: 📦 Install locked release tools
+        if: steps.news-change.outputs.changed == 'true'
+        uses: tox-dev/github-workflows/install-locked-tools@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        with:
+          groups: release-notes
+          venv: ${{ runner.temp }}/release-tools
+      - name: 🔍 Validate change files
+        if: steps.news-change.outputs.changed == 'true'
+        id: news
+        run: echo "count=$("$RUNNER_TEMP/release-tools/bin/release-creator" validate-news --format knope --base "$GITHUB_BASE_REF")" >>"$GITHUB_OUTPUT"
+      - name: 🔍 Require a change file
+        if: >-
+          github.event.pull_request.user.type != 'Bot' && !contains(github.event.pull_request.labels.*.name, 'skip news')
+        env:
+          NEWS_COUNT: ${{ steps.news.outputs.count }}
+        run: |
+          if ((NEWS_COUNT == 0)); then
+            echo '::error::add a .changeset/*.md file or apply the skip news label'
+            exit 1
+          fi
+      - id: lock-change
+        name: 🧭 Check whether release inputs changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-only "origin/$BASE_REF...HEAD" -- pyproject.toml pylock.toml nab.toml)
+          if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
+      - name: 🔒 Check the release lock against the project
+        if: steps.lock-change.outputs.changed == 'true'
+        uses: tox-dev/github-workflows/refresh-release-lock@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        with:
+          mode: check
