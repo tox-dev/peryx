@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::fs::File;
 use std::future::Future;
-use std::io::{Read as _, Write as _};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,8 +12,8 @@ use rstest::rstest;
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::unix::pipe;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -31,11 +31,11 @@ struct Helper {
     executions: PathBuf,
     pid: PathBuf,
     requests: PathBuf,
-    start_event: AsyncFd<File>,
+    start_event: pipe::Receiver,
 }
 
 struct ProcessSignal {
-    fifo: AsyncFd<File>,
+    fifo: pipe::Receiver,
     guard: Option<File>,
 }
 
@@ -58,7 +58,7 @@ impl Helper {
         let pid = directory.path().join("pid");
         let requests = directory.path().join("requests");
         let started_path = directory.path().join("started");
-        let start_event = fifo(&started_path);
+        let start_event = receiver(&started_path);
         std::fs::write(
             &executable,
             format!(
@@ -94,8 +94,8 @@ impl Helper {
         std::fs::read(&self.executions).map_or(0, |contents| contents.len())
     }
 
-    fn requests_fifo(&self) -> AsyncFd<File> {
-        fifo(&self.requests)
+    fn requests_fifo(&self) -> pipe::Sender {
+        pipe::Sender::from_owned_fd(fifo(&self.requests)).unwrap()
     }
 
     fn pid(&self) -> rustix::process::Pid {
@@ -107,20 +107,17 @@ impl Helper {
             .unwrap()
     }
 
-    async fn run_after_start<T>(&self, operation: impl Future<Output = T>) -> T {
+    async fn run_after_start<T>(&mut self, operation: impl Future<Output = T>) -> T {
         let ((), result) = tokio::join!(self.await_start(), operation);
         result
     }
 
-    async fn await_start(&self) {
-        Self::wait(&self.start_event).await;
+    async fn await_start(&mut self) {
+        Self::wait(&mut self.start_event).await;
     }
 
-    async fn wait(fifo: &AsyncFd<File>) {
-        let mut signal = [0];
-        fifo.async_io(Interest::READABLE, |mut file| file.read_exact(&mut signal))
-            .await
-            .unwrap();
+    async fn wait(fifo: &mut pipe::Receiver) {
+        fifo.read_exact(&mut [0]).await.unwrap();
     }
 
     fn process_signal(&self) -> ProcessSignal {
@@ -138,39 +135,30 @@ impl Helper {
         )
         .unwrap();
         ProcessSignal {
-            fifo: AsyncFd::new(File::from(read)).unwrap(),
+            fifo: pipe::Receiver::from_owned_fd(read).unwrap(),
             guard: Some(File::from(guard)),
         }
     }
-
-    async fn write(fifo: &AsyncFd<File>, bytes: &[u8]) {
-        fifo.async_io(Interest::WRITABLE, |mut file| file.write_all(bytes))
-            .await
-            .unwrap();
-    }
 }
 
-fn fifo(path: &Path) -> AsyncFd<File> {
+fn receiver(path: &Path) -> pipe::Receiver {
+    pipe::Receiver::from_owned_fd(fifo(path)).unwrap()
+}
+
+fn fifo(path: &Path) -> OwnedFd {
     assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
-    AsyncFd::new(File::from(
-        rustix::fs::open(
-            path,
-            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .unwrap(),
-    ))
+    rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
     .unwrap()
 }
 
 impl ProcessSignal {
-    async fn read(&self) -> String {
+    async fn read(&mut self) -> String {
         let mut bytes = [0; 32];
-        let length = self
-            .fifo
-            .async_io(Interest::READABLE, |mut file| file.read(&mut bytes))
-            .await
-            .unwrap();
+        let length = self.fifo.read(&mut bytes).await.unwrap();
         String::from_utf8(bytes[..length].to_vec()).unwrap()
     }
 
@@ -369,7 +357,7 @@ fn test_provider_rejects_an_invalid_origin(#[case] upstream: &str) {
 
 #[tokio::test]
 async fn test_helper_returns_basic() {
-    let helper = Helper::responding(&basic_response("service", "password"));
+    let mut helper = Helper::responding(&basic_response("service", "password"));
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example/api/", CredentialScope::Read)
@@ -388,7 +376,7 @@ async fn test_helper_returns_basic() {
 
 #[tokio::test]
 async fn test_helper_receives_only_the_origin_and_scope() {
-    let helper = Helper::responding(&bearer_response("token"));
+    let mut helper = Helper::responding(&bearer_response("token"));
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider(
@@ -407,7 +395,7 @@ async fn test_helper_receives_only_the_origin_and_scope() {
 
 #[tokio::test]
 async fn test_cached_credential_skips_the_helper() {
-    let helper = Helper::responding(&bearer_response("token"));
+    let mut helper = Helper::responding(&bearer_response("token"));
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example/api/", CredentialScope::Read)
@@ -421,7 +409,7 @@ async fn test_cached_credential_skips_the_helper() {
 
 #[tokio::test]
 async fn test_helper_returns_bearer() {
-    let helper = Helper::responding(&bearer_response("token"));
+    let mut helper = Helper::responding(&bearer_response("token"));
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example/api/", CredentialScope::Read)
@@ -456,7 +444,7 @@ async fn test_helper_returns_bearer() {
 )]
 #[tokio::test]
 async fn test_helper_rejects_invalid_responses(#[case] response: &str, #[case] message: &str) {
-    let helper = Helper::responding(response);
+    let mut helper = Helper::responding(response);
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -476,8 +464,8 @@ async fn test_helper_rejects_a_credential_inside_the_expiry_margin() {
             shell_quote(response.display())
         )
     });
-    let ready = fifo(&helper.executions);
-    let response = helper.requests_fifo();
+    let mut ready = receiver(&helper.executions);
+    let mut response = helper.requests_fifo();
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -485,13 +473,13 @@ async fn test_helper_rejects_a_credential_inside_the_expiry_margin() {
 
     let ((), credential) = tokio::join!(
         async {
-            Helper::wait(&ready).await;
+            Helper::wait(&mut ready).await;
             let expiry = (OffsetDateTime::now_utc() + time::Duration::seconds(15))
                 .format(&Rfc3339)
                 .unwrap();
             let response_line =
                 format!("{{\"version\":1,\"expires_at\":\"{expiry}\",\"type\":\"bearer\",\"token\":\"token\"}}\n");
-            Helper::write(&response, response_line.as_bytes()).await;
+            response.write_all(response_line.as_bytes()).await.unwrap();
         },
         provider.credential()
     );
@@ -509,7 +497,7 @@ async fn test_helper_rejects_a_credential_inside_the_expiry_margin() {
 #[case::bearer(&bearer_response(""))]
 #[tokio::test]
 async fn test_helper_rejects_empty_credentials(#[case] response: &str) {
-    let helper = Helper::responding(response);
+    let mut helper = Helper::responding(response);
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -522,7 +510,7 @@ async fn test_helper_rejects_empty_credentials(#[case] response: &str) {
 
 #[tokio::test]
 async fn test_helper_anonymous_failure_mode_returns_no_auth() {
-    let helper = Helper::responding("invalid");
+    let mut helper = Helper::responding("invalid");
     let provider = helper
         .config(CredentialFailure::Anonymous)
         .provider("https://resources.example", CredentialScope::Read)
@@ -535,7 +523,7 @@ async fn test_helper_anonymous_failure_mode_returns_no_auth() {
 
 #[tokio::test]
 async fn test_helper_nonzero_exit_is_redacted() {
-    let helper = Helper::script(|_, _| "printf '%s' secret-output >&2\nexit 7\n".to_owned());
+    let mut helper = Helper::script(|_, _| "printf '%s' secret-output >&2\nexit 7\n".to_owned());
     let config = ExecCredentialConfig::new(
         vec![helper.executable.display().to_string(), "secret-argument".to_owned()],
         NORMAL_HELPER_DEADLINE,
@@ -576,7 +564,7 @@ async fn test_helper_spawn_failure_is_redacted() {
 
 #[tokio::test]
 async fn test_helper_reports_an_external_reap() {
-    let helper =
+    let mut helper =
         Helper::script(|_, requests| format!("/bin/cat >/dev/null\n/bin/cat {}\n", shell_quote(requests.display())));
     let _process_guard = helper.process_signal();
     let provider = helper
@@ -598,7 +586,7 @@ async fn test_helper_reports_an_external_reap() {
 
 #[tokio::test]
 async fn test_helper_output_is_bounded() {
-    let helper = Helper::script(|_, _| {
+    let mut helper = Helper::script(|_, _| {
         "/bin/cat >/dev/null\ni=0\nwhile [ \"$i\" -lt 1025 ]; do\n  printf '%064d' 0\n  i=$((i + 1))\ndone\n".to_owned()
     });
     let provider = helper
@@ -613,7 +601,7 @@ async fn test_helper_output_is_bounded() {
 
 #[tokio::test]
 async fn test_helper_accepts_output_at_the_limit() {
-    let helper = Helper::script(|_, _| "/bin/cat >/dev/null\nprintf '%065536d' 0\n".to_owned());
+    let mut helper = Helper::script(|_, _| "/bin/cat >/dev/null\nprintf '%065536d' 0\n".to_owned());
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -693,14 +681,14 @@ async fn test_helper_cancellation_kills_descendants() {
 #[tokio::test]
 async fn test_helper_timeout_after_closing_stdout() {
     let response = bearer_response("unused");
-    let helper = Helper::script(|_, marker| {
+    let mut helper = Helper::script(|_, marker| {
         format!(
             "/bin/cat >/dev/null\nprintf '%s' {}\nexec 1>&-\nread signal < {}\nexec /usr/bin/tail -f /dev/null\n",
             shell_quote(response),
             shell_quote(marker.display())
         )
     });
-    let requests = helper.requests_fifo();
+    let mut requests = helper.requests_fifo();
     let config = ExecCredentialConfig::new(
         vec![helper.executable.display().to_string()],
         Duration::from_mins(1),
@@ -713,7 +701,7 @@ async fn test_helper_timeout_after_closing_stdout() {
         .unwrap();
     let credential = tokio::spawn(async move { provider.credential().await });
     helper.await_start().await;
-    Helper::write(&requests, b"ready\n").await;
+    requests.write_all(b"ready\n").await.unwrap();
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(61)).await;
 
@@ -725,14 +713,14 @@ async fn test_helper_timeout_after_closing_stdout() {
 #[tokio::test]
 async fn test_helper_can_close_stdout_before_exiting() {
     let response = bearer_response("token");
-    let helper = Helper::script(|_, signal| {
+    let mut helper = Helper::script(|_, signal| {
         format!(
             "/bin/cat >/dev/null\nprintf '%s' {}\nexec 1>&-\nread signal < {}\n",
             shell_quote(response),
             shell_quote(signal.display())
         )
     });
-    let requests = helper.requests_fifo();
+    let mut requests = helper.requests_fifo();
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -740,7 +728,7 @@ async fn test_helper_can_close_stdout_before_exiting() {
     let credential = tokio::spawn(async move { provider.credential().await });
 
     helper.await_start().await;
-    Helper::write(&requests, b"ready\n").await;
+    requests.write_all(b"ready\n").await.unwrap();
 
     let snapshot = credential.await.unwrap().unwrap();
 
@@ -750,7 +738,7 @@ async fn test_helper_can_close_stdout_before_exiting() {
 #[tokio::test]
 async fn test_helper_can_exit_before_a_descendant_finishes_stdout() {
     let response = bearer_response("token");
-    let helper = Helper::script(|_, signal| {
+    let mut helper = Helper::script(|_, signal| {
         format!(
             "/bin/cat >/dev/null\n/usr/bin/mkfifo {0}\n(/bin/cat < {0} >/dev/null; printf '%s' {1}) &\nexec 3> {0}\nexit 0\n",
             shell_quote(signal.display()),
@@ -772,7 +760,7 @@ async fn test_helper_can_exit_before_a_descendant_finishes_stdout() {
 #[case::allowlisted(vec!["CARGO_MANIFEST_DIR".to_owned()], "present")]
 #[tokio::test]
 async fn test_helper_environment_is_cleared_then_allowlisted(#[case] environment: Vec<String>, #[case] expected: &str) {
-    let helper = Helper::script(|_, _| {
+    let mut helper = Helper::script(|_, _| {
         format!(
             "request=$(/bin/cat)\nif [ \"${{CARGO_MANIFEST_DIR+x}}\" = x ]; then\n  printf '%s' {}\nelse\n  printf '%s' {}\nfi\n",
             shell_quote(bearer_response("present")),
@@ -798,7 +786,7 @@ async fn test_helper_environment_is_cleared_then_allowlisted(#[case] environment
 #[tokio::test]
 async fn test_concurrent_requests_execute_one_helper() {
     let response = bearer_response("shared");
-    let helper = Helper::script(|executions, signal| {
+    let mut helper = Helper::script(|executions, signal| {
         format!(
             "/bin/cat >/dev/null\nprintf x >> {}\nread signal < {}\nprintf '%s' {}\n",
             shell_quote(executions.display()),
@@ -806,7 +794,7 @@ async fn test_concurrent_requests_execute_one_helper() {
             shell_quote(response),
         )
     });
-    let requests = helper.requests_fifo();
+    let mut requests = helper.requests_fifo();
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -814,7 +802,7 @@ async fn test_concurrent_requests_execute_one_helper() {
 
     let (snapshots, ()) = tokio::join!(join_all((0..50).map(|_| provider.credential())), async {
         helper.await_start().await;
-        Helper::write(&requests, b"ready\n").await;
+        requests.write_all(b"ready\n").await.unwrap();
     });
 
     assert_eq!(helper.execution_count(), 1);
@@ -827,7 +815,7 @@ async fn test_concurrent_requests_execute_one_helper() {
 
 #[tokio::test]
 async fn test_unauthorized_generation_executes_one_refresh() {
-    let helper = rotating_helper();
+    let mut helper = rotating_helper();
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
@@ -865,7 +853,7 @@ async fn test_client_replays_one_unauthorized_exec_credential() {
         .expect(1)
         .mount(&server)
         .await;
-    let helper = rotating_helper();
+    let mut helper = rotating_helper();
     let upstream = format!("{}/api/", server.uri());
     let client = UpstreamClient::with_credentials_and_tls_for_origin(
         &upstream,
