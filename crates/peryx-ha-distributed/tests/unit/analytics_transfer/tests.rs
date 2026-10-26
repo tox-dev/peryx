@@ -261,27 +261,31 @@ async fn test_http_source_maps_a_response_timeout() {
     task.await.unwrap();
 }
 
+/// Closing a socket with the request still unread resets the connection, which can reach the client before
+/// the response head and fail the request itself. Reading the request first and ending with a FIN delivers
+/// the head, so the loss always lands on the body.
 #[tokio::test]
 async fn test_http_source_maps_a_truncated_body() {
-    use tokio::io::AsyncWriteExt as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            assert_ne!(stream.read_buf(&mut request).await.unwrap(), 0);
+        }
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n[")
             .await
             .unwrap();
-        stream.flush().await.unwrap();
+        stream.shutdown().await.unwrap();
     });
 
     let error = source(&url).fetch_after(0).await.unwrap_err();
 
-    assert!(
-        matches!(error, TransportError::Disconnected | TransportError::Timeout),
-        "{error:?}"
-    );
+    assert!(matches!(error, TransportError::Disconnected), "{error:?}");
     task.await.unwrap();
 }
 
