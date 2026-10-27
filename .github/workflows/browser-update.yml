@@ -54,8 +54,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: release-auth
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     timeout-minutes: 10
     steps:
       - name: 📥 Check out code
@@ -101,10 +100,20 @@ jobs:
               exit 1
             fi
           done < <(git diff --cached --raw --no-renames -z)
+      - name: 🔑 Create release App token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
       - name: 🔀 Open browser update pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ github.token }}
+          token: ${{ steps.token.outputs.token }}
           base: main
           assignees: gaborbernat
           branch: automation/browser-dependencies
