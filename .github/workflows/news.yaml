@@ -33,7 +33,7 @@ jobs:
           if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
       - name: 📦 Install locked release tools
         if: steps.news-change.outputs.changed == 'true'
-        uses: tox-dev/github-workflows/install-locked-tools@29d4d5e6900db30502d7249043b59c18284a9777 # 6.2.0
+        uses: tox-dev/github-workflows/install-locked-tools@57a765127aae73adf7d0e24a7fe0f067f2d3ea3e # 6.2.1
         with:
           groups: release-notes
           venv: ${{ runner.temp }}/release-tools
@@ -60,6 +60,6 @@ jobs:
           if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
       - name: 🔒 Check the release lock against the project
         if: steps.lock-change.outputs.changed == 'true'
-        uses: tox-dev/github-workflows/refresh-release-lock@29d4d5e6900db30502d7249043b59c18284a9777 # 6.2.0
+        uses: tox-dev/github-workflows/refresh-release-lock@57a765127aae73adf7d0e24a7fe0f067f2d3ea3e # 6.2.1
         with:
           mode: check
