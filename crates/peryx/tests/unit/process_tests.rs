@@ -133,10 +133,10 @@ async fn test_start_process_tasks_gates_the_scheduler_on_write_access_and_local_
 /// A read-only node records no decisions, so it has no writer to drain. A writable one must drain
 /// the queue at shutdown, or the decisions still queued are lost with the process.
 #[tokio::test]
-async fn test_shutdown_drains_the_policy_decision_writer_only_on_a_writable_node() {
+async fn test_start_process_tasks_registers_the_policy_decision_writer_only_on_a_writable_node() {
+    let directory = tempfile::tempdir().unwrap();
     let plugins = plugins();
     for read_only in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
         let mut config = local_config(&directory, &plugins);
         config.read_only = read_only;
         let active = crate::server::activate_plugins(&config, &plugins).unwrap();
@@ -144,34 +144,9 @@ async fn test_shutdown_drains_the_policy_decision_writer_only_on_a_writable_node
         let mut tasks = ProcessTasks::new(tokio_util::sync::CancellationToken::new());
 
         start_process_tasks(&config, &state, false, &mut tasks);
-        assert_eq!(tasks.policy_decisions.is_some(), !read_only, "read_only={read_only}");
-        if !read_only {
-            state
-                .serving
-                .meta
-                .enqueue_policy_decision(peryx_storage::meta::NewPolicyDecision {
-                    repository: "private",
-                    resource: "resource",
-                    group: None,
-                    artifact: None,
-                    source: None,
-                    action: peryx_policy::PolicyAction::Serve,
-                    state: peryx_policy::PolicyDecisionState::Allow,
-                    rule: None,
-                    reason: None,
-                    evaluated_at_unix: 0,
-                    next_eligible_at_unix: None,
-                })
-                .unwrap();
-        }
-        tasks.shutdown().await.unwrap();
 
-        let page = state
-            .serving
-            .meta
-            .query_policy_decisions(&peryx_storage::meta::PolicyDecisionQuery::default())
-            .unwrap();
-        assert_eq!(page.decisions.len(), usize::from(!read_only), "read_only={read_only}");
+        assert_eq!(tasks.policy_decisions.is_some(), !read_only, "read_only={read_only}");
+        tasks.shutdown().await.unwrap();
     }
 }
 

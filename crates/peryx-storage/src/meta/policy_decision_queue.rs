@@ -12,12 +12,6 @@ use std::thread::JoinHandle;
 use super::MetaDatabase;
 use super::policy_decision::{BatchWriter, MAX_DECISION_HISTORY, OwnedDecision, prune_history};
 
-/// Bounds memory when the writer lags request traffic. A full queue blocks the sender.
-const QUEUE_CAPACITY: usize = 8_192;
-
-/// Bounds the length of one write transaction, which holds the only redb writer lock.
-const MAX_BATCH_DECISIONS: usize = 1_024;
-
 enum Message {
     Record(OwnedDecision),
     Control(Control),
@@ -64,7 +58,9 @@ pub(super) struct DecisionQueue {
 
 impl DecisionQueue {
     pub(super) fn new() -> Self {
-        Self::with_limits(QUEUE_CAPACITY, MAX_BATCH_DECISIONS, MAX_DECISION_HISTORY)
+        // The capacity bounds memory while the writer lags request traffic, and a full queue blocks the
+        // sender. The batch maximum bounds how long one transaction holds redb's only writer lock.
+        Self::with_limits(8_192, 1_024, MAX_DECISION_HISTORY)
     }
 
     pub(super) fn with_limits(capacity: usize, max_batch: usize, history_limit: usize) -> Self {
@@ -219,12 +215,12 @@ impl Writer {
     ) -> Result<(), super::MetaError> {
         let txn = self.db.begin_write()?;
         let mut batch = BatchWriter::new(&txn)?;
-        batch.record(&first.as_new())?;
+        batch.record(&first.as_new(), first.input_generation)?;
         while progress.processed < self.max_batch {
             match receiver.try_recv() {
                 Ok(Message::Record(next)) => {
                     progress.processed += 1;
-                    batch.record(&next.as_new())?;
+                    batch.record(&next.as_new(), next.input_generation)?;
                 }
                 Ok(Message::Control(control)) => {
                     progress.control = Some(control);

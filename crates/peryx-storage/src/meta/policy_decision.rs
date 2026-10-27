@@ -243,28 +243,26 @@ impl MetaStore {
 
     /// Queues a decision for the background writer, which commits many in one transaction.
     ///
-    /// Blocks while the queue is full instead of dropping the decision. A later read of any policy
-    /// decision waits until this one is applied. A queue that has shut down writes the decision
-    /// directly.
+    /// Reads the repository's input generation now, so an input change that lands while the decision
+    /// waits makes it stale. Blocks while the queue is full instead of dropping the decision. A later
+    /// read of any policy decision waits until this one is applied. A queue that has shut down writes
+    /// the decision directly.
     ///
     /// # Errors
-    /// Returns a validation error for an oversized subject or reason, or, after shutdown, the store
-    /// error of the direct write. A failure inside the writer is logged there.
+    /// Returns a validation error for an oversized subject or reason, a store error if the input
+    /// generation cannot be read, or, after shutdown, the store error of the direct write. A failure
+    /// inside the writer is logged there.
     pub fn enqueue_policy_decision(&self, decision: NewPolicyDecision<'_>) -> Result<(), PolicyDecisionStoreError> {
         validate_decision(&decision)?;
+        let input_generation = self.policy_input_generation(decision.repository)?;
         if self
             .policy_decisions
-            .enqueue(&self.db, OwnedDecision::new(&decision))
+            .enqueue(&self.db, OwnedDecision::new(&decision, input_generation))
             .is_err()
         {
             self.record_policy_decision(decision)?;
         }
         Ok(())
-    }
-
-    /// Waits until every decision queued before this call is committed.
-    pub fn flush_policy_decisions(&self) {
-        self.policy_decisions.wait_applied();
     }
 
     /// Commits the queued decisions and stops the writer thread. Later decisions are written directly.
@@ -455,10 +453,11 @@ pub(super) struct OwnedDecision {
     reason: Option<String>,
     evaluated_at_unix: i64,
     next_eligible_at_unix: Option<i64>,
+    pub(super) input_generation: PolicyInputGeneration,
 }
 
 impl OwnedDecision {
-    pub(super) fn new(decision: &NewPolicyDecision<'_>) -> Self {
+    pub(super) fn new(decision: &NewPolicyDecision<'_>, input_generation: PolicyInputGeneration) -> Self {
         Self {
             repository: decision.repository.to_owned(),
             resource: decision.resource.to_owned(),
@@ -471,6 +470,7 @@ impl OwnedDecision {
             reason: decision.reason.map(str::to_owned),
             evaluated_at_unix: decision.evaluated_at_unix,
             next_eligible_at_unix: decision.next_eligible_at_unix,
+            input_generation,
         }
     }
 
@@ -568,21 +568,18 @@ struct PolicyDecisionRecordRef<'a> {
     next_eligible_at_unix: Option<i64>,
 }
 
-/// Writes many decisions into one open transaction, leaving what `record_in` would leave.
+/// Writes many decisions into one open transaction, leaving what `record_in` would leave given the
+/// same input generations.
 ///
-/// Opens each table once and keeps the handles, reads the serial once and writes it back in
-/// `finish`, and reads each repository's input generation once. The generation cannot change under
-/// the batch: every writer of that table runs in its own write transaction, and redb admits one, so
-/// none can start while this transaction is open. Dropping the writer without `finish` leaves the
-/// serial unwritten, which is correct only because the caller then abandons the transaction.
+/// Opens each table once and keeps the handles, and reads the serial once and writes it back in
+/// `finish`. Dropping the writer without `finish` leaves the serial unwritten, which is correct only
+/// because the caller then abandons the transaction.
 pub(super) struct BatchWriter<'txn> {
     serials: redb::Table<'txn, &'static str, u64>,
     history: redb::Table<'txn, &'static str, &'static [u8]>,
     current: redb::Table<'txn, &'static str, &'static str>,
     current_records: redb::Table<'txn, &'static str, &'static [u8]>,
-    generations: redb::Table<'txn, &'static str, &'static [u8]>,
     serial: u64,
-    generation_cache: HashMap<String, PolicyInputGeneration>,
     history_id: String,
     encoded: Vec<u8>,
 }
@@ -598,19 +595,20 @@ impl<'txn> BatchWriter<'txn> {
             history: txn.open_table(POLICY_DECISION)?,
             current: txn.open_table(POLICY_DECISION_CURRENT)?,
             current_records: txn.open_table(POLICY_DECISION_CURRENT_ID)?,
-            generations: txn.open_table(POLICY_INPUT_GENERATION)?,
             serial,
-            generation_cache: HashMap::new(),
             history_id: String::new(),
             encoded: Vec::new(),
         })
     }
 
-    pub(super) fn record(&mut self, decision: &NewPolicyDecision<'_>) -> Result<(), MetaError> {
+    pub(super) fn record(
+        &mut self,
+        decision: &NewPolicyDecision<'_>,
+        input_generation: PolicyInputGeneration,
+    ) -> Result<(), MetaError> {
         self.serial += 1;
         self.history_id.clear();
         write!(self.history_id, "pd_{:016x}", self.serial).expect("writing to a String cannot fail");
-        let input_generation = self.input_generation(decision.repository)?;
         self.encoded.clear();
         let record = PolicyDecisionRecordRef {
             id: Uuid::new_v4(),
@@ -646,20 +644,6 @@ impl<'txn> BatchWriter<'txn> {
     pub(super) fn finish(mut self) -> Result<(), MetaError> {
         self.serials.insert(POLICY_DECISION_SERIAL_KEY, self.serial)?;
         Ok(())
-    }
-
-    fn input_generation(&mut self, repository: &str) -> Result<PolicyInputGeneration, MetaError> {
-        if let Some(generation) = self.generation_cache.get(repository) {
-            return Ok(*generation);
-        }
-        let generation = self
-            .generations
-            .get(repository)?
-            .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
-            .transpose()?
-            .unwrap_or_default();
-        self.generation_cache.insert(repository.to_owned(), generation);
-        Ok(generation)
     }
 }
 

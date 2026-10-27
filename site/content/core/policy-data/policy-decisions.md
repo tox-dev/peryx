@@ -45,9 +45,10 @@ same repository and filter set that produced it; changing filters while reusing 
 
 A background writer stores the records, so a request does not wait for the metadata write lock. The writer commits
 queued records together in arrival order, and a full queue makes the evaluating request wait instead of dropping a
-record. Every read of decisions, including the endpoint, the browser view, and the freshness lookups on project pages,
-first waits until the writer has stored the records queued before the read. A shutdown stores the queued records before
-the process exits.
+record. A record keeps the input generation read when its request queued it, so an input change that lands while the
+record waits makes it stale. Every read of decisions, including the endpoint, the browser view, and the shadowed
+candidate listing, first waits until the writer has stored the records queued before the read. A shutdown stores the
+queued records before the process exits.
 
 Peryx retains 10,000 decision records per metadata store. New records remove the oldest history and any current pointer
 to a removed record. Reasons stop at 2,048 bytes; values for repository, resource, group, artifact, source, or rule stop

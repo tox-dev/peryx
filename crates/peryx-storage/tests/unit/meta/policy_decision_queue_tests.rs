@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io::{Read as _, Seek as _};
 use std::sync::Mutex;
 use std::sync::mpsc::{TryRecvError, channel};
@@ -6,11 +7,13 @@ use peryx_policy::{PolicyAction, PolicyDecisionState};
 use rstest::rstest;
 
 use crate::meta::fault::corrupt;
-use crate::meta::{MetaStore, NewPolicyDecision, POLICY_INPUT_GENERATION, PolicyDecisionQuery, PolicyDecisionRecord};
+use crate::meta::policy_decision::advance_repository_generations;
+use crate::meta::{
+    MetaStore, NewPolicyDecision, POLICY_INPUT_GENERATION, PolicyDecisionQuery, PolicyDecisionRecord,
+    PolicyDecisionStoreError,
+};
 
 use super::*;
-
-const VALID_GENERATION: &[u8] = br#"{"repository":0,"catalog":0,"policy":0}"#;
 
 fn decision(resource: &str, state: PolicyDecisionState, evaluated_at_unix: i64) -> NewPolicyDecision<'_> {
     NewPolicyDecision {
@@ -85,7 +88,7 @@ fn enqueue_behind_the_write_lock(store: &MetaStore, decisions: &[NewPolicyDecisi
         store.enqueue_policy_decision(*decision).unwrap();
     }
     drop(lock);
-    store.flush_policy_decisions();
+    store.policy_decisions.wait_applied();
 }
 
 #[test]
@@ -330,16 +333,45 @@ fn test_dropping_the_store_commits_the_queued_decisions() {
 fn test_a_store_that_never_records_starts_no_writer() {
     let (_dir, store) = open(roomy());
 
-    store.flush_policy_decisions();
+    store.policy_decisions.wait_applied();
     store.shutdown_policy_decisions();
 
     assert!(store.policy_decisions.sender.get().is_none());
 }
 
+/// A decision evaluated before its repository's inputs change must read as stale, even when the
+/// writer commits it after the change.
 #[test]
-fn test_the_writer_logs_a_store_failure_and_keeps_running() {
+fn test_a_decision_keeps_the_generation_it_was_queued_under() {
+    let (_dir, store) = open(roomy());
+    let lock = store.db.begin_write().unwrap();
+    store.enqueue_policy_decision(allow("queued")).unwrap();
+    advance_repository_generations(&lock, &BTreeSet::from(["private".to_owned()])).unwrap();
+    lock.commit().unwrap();
+
+    let found = store
+        .current_policy_decisions_for_artifacts("private", "queued", &["artifact-1.0.bin"])
+        .unwrap();
+
+    assert!(!found["artifact-1.0.bin"].fresh);
+}
+
+#[test]
+fn test_enqueue_reports_an_unreadable_input_generation() {
     let (_dir, store) = open(roomy());
     corrupt(&store, POLICY_INPUT_GENERATION, "private", b"not json");
+
+    let result = store.enqueue_policy_decision(allow("lost"));
+
+    assert!(matches!(result, Err(PolicyDecisionStoreError::Store(_))), "{result:?}");
+}
+
+#[test]
+fn test_the_writer_logs_a_store_failure_and_keeps_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    drop(MetaStore::open(&path).unwrap());
+    let store = MetaStore::open_existing_read_only(&path).unwrap();
     let mut capture = tempfile::tempfile().unwrap();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
@@ -348,17 +380,16 @@ fn test_the_writer_logs_a_store_failure_and_keeps_running() {
         .finish();
 
     tracing::subscriber::with_default(subscriber, || {
-        store.enqueue_policy_decision(allow("lost")).unwrap();
-        store.flush_policy_decisions();
+        for resource in ["first", "second"] {
+            store.enqueue_policy_decision(allow(resource)).unwrap();
+            store.policy_decisions.wait_applied();
+        }
     });
-    corrupt(&store, POLICY_INPUT_GENERATION, "private", VALID_GENERATION);
-    store.enqueue_policy_decision(allow("kept")).unwrap();
 
     capture.rewind().unwrap();
     let mut log = String::new();
     capture.read_to_string(&mut log).unwrap();
-    assert!(log.contains("failed to record policy decisions"), "{log}");
-    assert_eq!(resources(&history(&store)), ["kept"]);
+    assert_eq!(log.matches("failed to record policy decisions").count(), 2, "{log}");
 }
 
 #[test]

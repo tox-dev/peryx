@@ -19,55 +19,23 @@ impl Random {
     }
 }
 
-struct Spec {
-    repository: &'static str,
-    resource: &'static str,
-    group: Option<&'static str>,
-    artifact: Option<&'static str>,
-    source: Option<&'static str>,
-    action: PolicyAction,
-    state: PolicyDecisionState,
-    rule: Option<&'static str>,
-    reason: Option<&'static str>,
-    evaluated_at_unix: i64,
-    next_eligible_at_unix: Option<i64>,
-}
-
-impl Spec {
-    fn random(random: &mut Random, evaluated_at_unix: i64) -> Self {
-        Self {
-            repository: REPOSITORIES[random.below(REPOSITORIES.len())],
-            resource: RESOURCES[random.below(RESOURCES.len())],
-            group: [None, Some("1.0"), Some("2.0")][random.below(3)],
-            artifact: [None, Some("a-1.0.bin"), Some("b-2.0.bin")][random.below(3)],
-            source: [None, Some("src")][random.below(2)],
-            action: [PolicyAction::Upload, PolicyAction::Cached, PolicyAction::Serve][random.below(3)],
-            state: [
-                PolicyDecisionState::Allow,
-                PolicyDecisionState::Deny,
-                PolicyDecisionState::Wait,
-            ][random.below(3)],
-            rule: [None, Some("rule \"quoted\"")][random.below(2)],
-            reason: [None, Some("reason with \u{e9} and \n newline")][random.below(2)],
-            evaluated_at_unix,
-            next_eligible_at_unix: [None, Some(evaluated_at_unix + 60)][random.below(2)],
-        }
-    }
-
-    fn as_new(&self) -> NewPolicyDecision<'static> {
-        NewPolicyDecision {
-            repository: self.repository,
-            resource: self.resource,
-            group: self.group,
-            artifact: self.artifact,
-            source: self.source,
-            action: self.action,
-            state: self.state,
-            rule: self.rule,
-            reason: self.reason,
-            evaluated_at_unix: self.evaluated_at_unix,
-            next_eligible_at_unix: self.next_eligible_at_unix,
-        }
+fn random_decision(random: &mut Random, evaluated_at_unix: i64) -> NewPolicyDecision<'static> {
+    NewPolicyDecision {
+        repository: REPOSITORIES[random.below(REPOSITORIES.len())],
+        resource: RESOURCES[random.below(RESOURCES.len())],
+        group: [None, Some("1.0"), Some("2.0")][random.below(3)],
+        artifact: [None, Some("a-1.0.bin"), Some("b-2.0.bin")][random.below(3)],
+        source: [None, Some("src")][random.below(2)],
+        action: [PolicyAction::Upload, PolicyAction::Cached, PolicyAction::Serve][random.below(3)],
+        state: [
+            PolicyDecisionState::Allow,
+            PolicyDecisionState::Deny,
+            PolicyDecisionState::Wait,
+        ][random.below(3)],
+        rule: [None, Some("rule \"quoted\"")][random.below(2)],
+        reason: [None, Some("reason with \u{e9} and \n newline")][random.below(2)],
+        evaluated_at_unix,
+        next_eligible_at_unix: [None, Some(evaluated_at_unix + 60)][random.below(2)],
     }
 }
 
@@ -142,11 +110,22 @@ fn record_one_at_a_time(store: &MetaStore, decision: &NewPolicyDecision<'_>) {
     txn.commit().unwrap();
 }
 
-fn record_as_a_batch(store: &MetaStore, decisions: &[Spec]) {
+/// Pairs each decision with its repository's generation, as enqueueing does.
+fn queued(
+    store: &MetaStore,
+    decisions: &[NewPolicyDecision<'static>],
+) -> Vec<(NewPolicyDecision<'static>, PolicyInputGeneration)> {
+    decisions
+        .iter()
+        .map(|decision| (*decision, store.policy_input_generation(decision.repository).unwrap()))
+        .collect()
+}
+
+fn record_as_a_batch(store: &MetaStore, decisions: &[(NewPolicyDecision<'_>, PolicyInputGeneration)]) {
     let txn = store.db.begin_write().unwrap();
     let mut batch = BatchWriter::new(&txn).unwrap();
-    for decision in decisions {
-        batch.record(&decision.as_new()).unwrap();
+    for (decision, generation) in decisions {
+        batch.record(decision, *generation).unwrap();
     }
     batch.finish().unwrap();
     prune_history(&txn, HISTORY_LIMIT).unwrap();
@@ -180,13 +159,13 @@ fn test_a_batch_leaves_what_the_same_decisions_recorded_one_at_a_time_leave(#[va
         let chunk = (0..size)
             .map(|_| {
                 clock += 1;
-                Spec::random(&mut random, clock)
+                random_decision(&mut random, clock)
             })
             .collect::<Vec<_>>();
         for decision in &chunk {
-            record_one_at_a_time(&sequential, &decision.as_new());
+            record_one_at_a_time(&sequential, decision);
         }
-        record_as_a_batch(&batched, &chunk);
+        record_as_a_batch(&batched, &queued(&batched, &chunk));
         advance([&sequential, &batched], &mut random);
 
         assert_eq!(dump(&batched), dump(&sequential));
@@ -197,21 +176,28 @@ fn test_a_batch_leaves_what_the_same_decisions_recorded_one_at_a_time_leave(#[va
 }
 
 #[test]
-fn test_a_batch_assigns_sequential_ids_and_stamps_each_record_with_its_repository_generation() {
+fn test_a_batch_assigns_sequential_ids_and_stamps_each_record_with_the_generation_it_was_queued_under() {
     let (_dir, store) = store();
-    store.advance_policy_generation("alpha").unwrap();
-    let chunk = ["alpha", "beta", "alpha"].map(|repository| Spec {
-        repository,
-        resource: "one",
-        group: None,
-        artifact: None,
-        source: None,
-        action: PolicyAction::Serve,
-        state: PolicyDecisionState::Allow,
-        rule: None,
-        reason: None,
-        evaluated_at_unix: 0,
-        next_eligible_at_unix: None,
+    let chunk = [("alpha", 1), ("beta", 0), ("alpha", 2)].map(|(repository, policy)| {
+        (
+            NewPolicyDecision {
+                repository,
+                resource: "one",
+                group: None,
+                artifact: None,
+                source: None,
+                action: PolicyAction::Serve,
+                state: PolicyDecisionState::Allow,
+                rule: None,
+                reason: None,
+                evaluated_at_unix: 0,
+                next_eligible_at_unix: None,
+            },
+            PolicyInputGeneration {
+                policy,
+                ..PolicyInputGeneration::default()
+            },
+        )
     });
 
     record_as_a_batch(&store, &chunk);
@@ -228,7 +214,7 @@ fn test_a_batch_assigns_sequential_ids_and_stamps_each_record_with_its_repositor
         .rev()
         .map(|item| (item.record.repository.as_str(), item.record.input_generation.policy))
         .collect::<Vec<_>>();
-    assert_eq!(observed, [("alpha", 1), ("beta", 0), ("alpha", 1)]);
+    assert_eq!(observed, [("alpha", 1), ("beta", 0), ("alpha", 2)]);
     assert_eq!(
         dump(&store)[0].1.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
         ["pd_0000000000000001", "pd_0000000000000002", "pd_0000000000000003"]
@@ -258,13 +244,13 @@ fn test_pruning_deletes_exactly_the_oldest_rows(#[values(0, 1, 5, 39, 40, 41, 10
     let (_single_dir, single) = store();
     let mut random = Random(9);
     let chunk = (0..40)
-        .map(|clock| Spec::random(&mut random, clock))
+        .map(|clock| random_decision(&mut random, clock))
         .collect::<Vec<_>>();
     for store in [&ranged, &single] {
         let txn = store.db.begin_write().unwrap();
         let mut batch = BatchWriter::new(&txn).unwrap();
         for decision in &chunk {
-            batch.record(&decision.as_new()).unwrap();
+            batch.record(decision, PolicyInputGeneration::default()).unwrap();
         }
         batch.finish().unwrap();
         txn.commit().unwrap();
