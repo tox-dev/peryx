@@ -242,7 +242,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: 📦 Install locked release tools
-        uses: tox-dev/github-workflows/install-locked-tools@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        uses: tox-dev/github-workflows/install-locked-tools@29d4d5e6900db30502d7249043b59c18284a9777 # 6.2.0
         with:
           groups: release-notes
           venv: ${{ runner.temp }}/release-tools
@@ -254,7 +254,7 @@ jobs:
         run: |
           [[ "$PUBLISH_PYPI" != true ]] || echo "url=https://pypi.org/project/peryx/${RELEASE_TAG#v}/" >>"$GITHUB_OUTPUT"
       - name: 📝 Render changelog notes
-        uses: tox-dev/github-workflows/render-release-notes@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        uses: tox-dev/github-workflows/render-release-notes@29d4d5e6900db30502d7249043b59c18284a9777 # 6.2.0
         with:
           tag: ${{ needs.plan.outputs.tag }}
           changelog: CHANGELOG.md
@@ -580,7 +580,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: 🔍 Verify PyPI artifacts
-        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        uses: tox-dev/github-workflows/reconcile-pypi-artifacts@29d4d5e6900db30502d7249043b59c18284a9777 # 6.2.0
         with:
           project: peryx
           version: ${{ fromJson(needs.plan.outputs.val).releases[0].app_version }}
@@ -625,7 +625,7 @@ jobs:
           artifact-ids: ${{ needs.host.outputs.assets-artifact-id }}
           path: artifacts
       - name: 🚀 Publish GitHub Release
-        uses: tox-dev/github-workflows/publish-github-release@259a3d3fb578d00517ffb73341fdd463259b0b2f # 6.0.1
+        uses: tox-dev/github-workflows/publish-github-release@29d4d5e6900db30502d7249043b59c18284a9777 # 6.2.0
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
