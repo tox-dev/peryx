@@ -1,0 +1,37 @@
+name: 🚦 PR gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions: {}
+concurrency:
+  group: pr-gate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    name: 🧪 CI
+    uses: $/.github/workflows/ci.yml
+    permissions:
+      actions: read
+      contents: read
+  codspeed:
+    name: ⏱️ CodSpeed
+    uses: $/.github/workflows/codspeed.yml
+    permissions:
+      contents: read
+      id-token: write
+  conformance:
+    name: 🧪 OCI conformance
+    uses: $/.github/workflows/conformance.yml
+    permissions:
+      contents: read
+  gate:
+    name: 🚦 Required checks pass
+    if: always()
+    needs: [ci, codspeed, conformance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 🚦 Require all needed jobs to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: jq -e 'all(to_entries[]; .value.result == "success")' <<<"$NEEDS_JSON"

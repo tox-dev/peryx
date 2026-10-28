@@ -2,7 +2,7 @@ name: ⏱️ CodSpeed
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read
@@ -38,6 +38,7 @@ jobs:
               - 'justfile'
               - '.github/actions/**'
               - '.github/workflows/codspeed.yml'
+              - '.github/workflows/pr-gate.yml'
               - '!crates/**/tests/**'
               - '!**/*.md'
   benchmarks:

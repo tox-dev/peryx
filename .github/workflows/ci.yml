@@ -2,8 +2,7 @@ name: 🧪 CI
 on:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
     inputs:
       nightly:

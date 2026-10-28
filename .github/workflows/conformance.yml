@@ -2,7 +2,7 @@ name: 🧪 OCI conformance
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read
@@ -49,6 +49,7 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain*'
               - '.github/workflows/conformance.yml'
+              - '.github/workflows/pr-gate.yml'
               - 'justfile'
             oci:
               - 'crates/peryx-ecosystem-oci/**'
