@@ -89,6 +89,16 @@ SHA.
 | The operator enables anonymous writes and someone uploads                    | Not a vulnerability | Operator choice.                          |
 | Search results rank oddly                                                    | Bug                 | No boundary crossed.                      |
 
+## Severity
+
+- **Critical:** an unauthenticated client reads private content or writes to an index, or a client credential reaches an
+  upstream.
+- **High:** an authenticated client acts beyond its grant or the index ACL, a scoped token exceeds its creator or
+  survives revocation, or content is served under a digest it does not match.
+- **Medium:** a revoked digest is still served, a webhook goes out unsigned or to an unconfigured target, or small
+  unauthenticated requests exhaust memory or workers.
+- **Low:** a crash or error on a malformed request that recovers without exposing data.
+
 ## Accepted risks
 
 - peryx serves HTTP until TLS is configured; use HTTPS whenever clients cross a host or network boundary.
