@@ -272,7 +272,7 @@ async fn claimed_metadata(
         Err(err) => return Err(err),
     };
     state.blobs.put_bytes_as(&bytes, &metadata_digest).await?;
-    record_sidecar_placement(state, &metadata_digest, ArtifactSource::Proxy);
+    record_fetched_sidecar(state, &metadata_digest).await;
     Ok(bytes)
 }
 
@@ -313,7 +313,7 @@ async fn recover_claimed_metadata(
         return Err(CacheError::AdvertisedMetadataMismatch);
     }
     state.blobs.put_bytes_as(&bytes, metadata_digest).await?;
-    record_generated_metadata(state, artifact_digest, metadata_digest, route, artifact_filename)?;
+    record_generated_metadata(state, artifact_digest, metadata_digest, route, artifact_filename).await?;
     Ok(Bytes::from(bytes))
 }
 
@@ -335,23 +335,49 @@ async fn write_generated_metadata(
 ) -> Result<Bytes, CacheError> {
     let bytes = generated_metadata_bytes(state, index, artifact_digest, route, artifact_filename).await?;
     let metadata_digest = state.blobs.put_bytes(&bytes).await?;
-    record_generated_metadata(state, artifact_digest, &metadata_digest, route, artifact_filename)?;
+    record_generated_metadata(state, artifact_digest, &metadata_digest, route, artifact_filename).await?;
     Ok(Bytes::from(bytes))
 }
 
-fn record_generated_metadata(
-    state: &ServingState,
+async fn record_generated_metadata(
+    state: &Arc<ServingState>,
     artifact_digest: &Digest,
     metadata_digest: &Digest,
     route: &str,
     artifact_filename: &str,
 ) -> Result<(), CacheError> {
-    state
-        .meta
-        .put_metadata(artifact_digest.as_str(), metadata_digest.as_str())?;
-    record_sidecar_placement(state, metadata_digest, ArtifactSource::Generated);
+    let (task_artifact, task_metadata) = (artifact_digest.clone(), metadata_digest.clone());
+    on_blocking_pool(state, move |state| {
+        state
+            .meta
+            .put_metadata(task_artifact.as_str(), task_metadata.as_str())?;
+        record_sidecar_placement(state, &task_metadata, ArtifactSource::Generated);
+        Ok::<_, CacheError>(())
+    })
+    .await?;
     super::invalidate_project_route(state, route, &crate::project_of_filename(artifact_filename));
     Ok(())
+}
+
+async fn record_fetched_sidecar(state: &Arc<ServingState>, metadata_digest: &Digest) {
+    let task_digest = metadata_digest.clone();
+    on_blocking_pool(state, move |state| {
+        record_sidecar_placement(state, &task_digest, ArtifactSource::Proxy);
+    })
+    .await;
+}
+
+/// A redb commit syncs to disk and parks its thread. On an async worker that stops every connection
+/// the worker would have served, `/+status` included. Both writes are idempotent, so a caller dropped
+/// mid-write leaves nothing to undo.
+async fn on_blocking_pool<T: Send + 'static>(
+    state: &Arc<ServingState>,
+    write: impl FnOnce(&ServingState) -> T + Send + 'static,
+) -> T {
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || write(&state))
+        .await
+        .expect("the metadata write task runs to completion")
 }
 
 /// Record the sidecar blob this node just committed, so the projection answers for it the way it does
