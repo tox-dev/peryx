@@ -367,14 +367,12 @@ async fn record_fetched_sidecar(state: &Arc<ServingState>, metadata_digest: &Dig
     .await;
 }
 
-/// A redb commit syncs to disk and parks its thread. On an async worker that stops every connection
-/// the worker would have served, `/+status` included. Both writes are idempotent, so a caller dropped
-/// mid-write leaves nothing to undo.
 async fn on_blocking_pool<T: Send + 'static>(
     state: &Arc<ServingState>,
     write: impl FnOnce(&ServingState) -> T + Send + 'static,
 ) -> T {
     let state = Arc::clone(state);
+    // redb syncs commits to disk, so these writes cannot run on an async worker.
     tokio::task::spawn_blocking(move || write(&state))
         .await
         .expect("the metadata write task runs to completion")

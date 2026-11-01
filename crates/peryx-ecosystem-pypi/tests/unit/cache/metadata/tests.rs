@@ -696,15 +696,14 @@ async fn test_a_wheel_member_is_read_back_whole_over_ranges() {
     assert!(matches!(&outcome, RemoteMetadata::Found(metadata) if metadata == RANGED_METADATA.as_bytes()));
 }
 
-/// Parks the first data sync after arming until the test releases it, as a slow disk does. Redb syncs
-/// on every commit, so the sync is the one point inside a write that a test can hold without a clock.
+// redb commits call sync_data, so parking it reproduces a slow disk without sleeping.
 #[derive(Debug)]
 struct ParkedSync {
     inner: redb::backends::InMemoryBackend,
     armed: Arc<std::sync::atomic::AtomicBool>,
     arrived: Arc<tokio::sync::Notify>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
-    expired: Arc<std::sync::atomic::AtomicBool>,
+    timed_out: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl redb::StorageBackend for ParkedSync {
@@ -730,7 +729,7 @@ impl redb::StorageBackend for ParkedSync {
                 .lock()
                 .unwrap()
                 .recv_timeout(std::time::Duration::from_secs(5));
-            self.expired.store(released.is_err(), SeqCst);
+            self.timed_out.store(released.is_err(), SeqCst);
         }
         self.inner.sync_data()
     }
@@ -740,10 +739,6 @@ impl redb::StorageBackend for ParkedSync {
     }
 }
 
-/// A sidecar's row commits off the async worker, whether peryx derived the sidecar from the wheel or
-/// fetched the one the index advertised. The test runtime has one worker, and only a task on it can
-/// release the parked sync, so a commit made on the worker waits out the timeout and fails. Any task
-/// that shares the worker stalls the same way, `/+status` among them.
 #[rstest::rstest]
 #[case::generated(false)]
 #[case::fetched(true)]
@@ -759,7 +754,7 @@ async fn test_sidecar_row_commits_off_the_async_worker(#[case] fetched: bool) {
         .await;
     let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let arrived = Arc::new(tokio::sync::Notify::new());
-    let expired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (release, parked) = std::sync::mpsc::channel();
     let kind = IndexKind::Cached {
         client: UpstreamClient::new(&format!("{}/simple/", upstream.uri())).unwrap(),
@@ -771,7 +766,7 @@ async fn test_sidecar_row_commits_off_the_async_worker(#[case] fetched: bool) {
             armed: Arc::clone(&armed),
             arrived: Arc::clone(&arrived),
             release: Mutex::new(parked),
-            expired: Arc::clone(&expired),
+            timed_out: Arc::clone(&timed_out),
         })
         .unwrap()
     });
@@ -806,13 +801,12 @@ async fn test_sidecar_row_commits_off_the_async_worker(#[case] fetched: bool) {
     assert_eq!(&task.await.unwrap().unwrap()[..], EXTRACTED);
 
     assert!(
-        !expired.load(SeqCst),
+        !timed_out.load(SeqCst),
         "the commit held the only async worker, so nothing could release it"
     );
     assert!(state.meta.get_artifact_placement(sidecar.as_str()).unwrap().is_some());
 }
 
-/// Fails the first data sync after arming, so the commit that follows reports a store fault.
 #[derive(Debug)]
 struct FailingSync {
     inner: redb::backends::InMemoryBackend,
@@ -844,8 +838,6 @@ impl redb::StorageBackend for FailingSync {
     }
 }
 
-/// A store fault while recording a sidecar row fails the request on both paths that record one. The
-/// row moved to the blocking pool, so the error now crosses a task boundary on its way back.
 #[rstest::rstest]
 #[case::generated(false)]
 #[case::recovered_after_a_404(true)]
