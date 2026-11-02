@@ -1,8 +1,5 @@
 {
   "theme": "base",
-  "flowchart": {
-    "wrappingWidth": 200
-  },
   "themeVariables": {
     "background": "#f7f4ef",
     "fontFamily": "system-ui, -apple-system, sans-serif",
