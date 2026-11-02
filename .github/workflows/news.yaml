@@ -2,11 +2,9 @@ name: 📝 Changelog
 on:
   pull_request:
     types: [opened, reopened, synchronize, labeled, unlabeled]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 permissions:
   contents: read
+  pull-requests: read
 jobs:
   changelog:
     name: 📝 News fragment
@@ -33,7 +31,7 @@ jobs:
           if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
       - name: 📦 Install locked release tools
         if: steps.news-change.outputs.changed == 'true'
-        uses: tox-dev/github-workflows/install-locked-tools@57a765127aae73adf7d0e24a7fe0f067f2d3ea3e # 6.2.1
+        uses: tox-dev/github-workflows/install-locked-tools@99024bcb5749b178c5514f86acfcf1e80c865e75 # 6.3.0
         with:
           groups: release-notes
           venv: ${{ runner.temp }}/release-tools
@@ -42,12 +40,15 @@ jobs:
         id: news
         run: echo "count=$("$RUNNER_TEMP/release-tools/bin/release-creator" validate-news --format knope --base "$GITHUB_BASE_REF")" >>"$GITHUB_OUTPUT"
       - name: 🔍 Require a change file
-        if: >-
-          github.event.pull_request.user.type != 'Bot' && !contains(github.event.pull_request.labels.*.name, 'skip news')
+        if: github.event.pull_request.user.type != 'Bot'
         env:
+          GH_TOKEN: ${{ github.token }}
+          PULL: ${{ github.event.pull_request.number }}
           NEWS_COUNT: ${{ steps.news.outputs.count }}
         run: |
-          if ((NEWS_COUNT == 0)); then
+          # The event lists the labels at opening; `gh pr create --label` adds them a moment later.
+          skip=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PULL" --jq 'any(.labels[]; .name == "skip news")')
+          if [[ "$skip" != true ]] && ((NEWS_COUNT == 0)); then
             echo '::error::add a .changeset/*.md file or apply the skip news label'
             exit 1
           fi
@@ -60,6 +61,6 @@ jobs:
           if [[ -n "$changed" ]]; then echo 'changed=true' >>"$GITHUB_OUTPUT"; fi
       - name: 🔒 Check the release lock against the project
         if: steps.lock-change.outputs.changed == 'true'
-        uses: tox-dev/github-workflows/refresh-release-lock@57a765127aae73adf7d0e24a7fe0f067f2d3ea3e # 6.2.1
+        uses: tox-dev/github-workflows/refresh-release-lock@99024bcb5749b178c5514f86acfcf1e80c865e75 # 6.3.0
         with:
           mode: check
