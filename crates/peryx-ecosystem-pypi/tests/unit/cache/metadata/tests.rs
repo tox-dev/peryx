@@ -249,8 +249,15 @@ fn upstream_kind() -> IndexKind {
 }
 
 fn state_with(indexes: Vec<Index>) -> (tempfile::TempDir, Arc<ServingState>) {
+    state_with_meta(indexes, |dir| MetaStore::open(dir.join("peryx.redb")).unwrap())
+}
+
+fn state_with_meta(
+    indexes: Vec<Index>,
+    open: impl FnOnce(&std::path::Path) -> MetaStore,
+) -> (tempfile::TempDir, Arc<ServingState>) {
     let dir = tempfile::tempdir().unwrap();
-    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let meta = open(dir.path());
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let mut state = peryx_driver::AppState::new(meta, blobs, 60, indexes);
     peryx_plugin_registry::PluginRegistry::new(vec![crate::registration()])
@@ -687,4 +694,196 @@ async fn test_a_wheel_member_is_read_back_whole_over_ranges() {
         .unwrap();
 
     assert!(matches!(&outcome, RemoteMetadata::Found(metadata) if metadata == RANGED_METADATA.as_bytes()));
+}
+
+// redb commits call sync_data, so parking it reproduces a slow disk without sleeping.
+#[derive(Debug)]
+struct ParkedSync {
+    inner: redb::backends::InMemoryBackend,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    arrived: Arc<tokio::sync::Notify>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    timed_out: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl redb::StorageBackend for ParkedSync {
+    fn len(&self) -> std::io::Result<u64> {
+        self.inner.len()
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read(offset, out)
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.inner.set_len(len)
+    }
+
+    fn sync_data(&self) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        if self.armed.swap(false, SeqCst) {
+            self.arrived.notify_one();
+            let released = self
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5));
+            self.timed_out.store(released.is_err(), SeqCst);
+        }
+        self.inner.sync_data()
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.inner.write(offset, data)
+    }
+}
+
+#[rstest::rstest]
+#[case::generated(false)]
+#[case::fetched(true)]
+#[tokio::test]
+async fn test_sidecar_row_commits_off_the_async_worker(#[case] fetched: bool) {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let upstream = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/sidecar"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(EXTRACTED))
+        .mount(&upstream)
+        .await;
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (release, parked) = std::sync::mpsc::channel();
+    let kind = IndexKind::Cached {
+        client: UpstreamClient::new(&format!("{}/simple/", upstream.uri())).unwrap(),
+        offline: false,
+    };
+    let (_dir, state) = state_with_meta(vec![index("pypi", kind)], |_| {
+        MetaStore::open_backend(ParkedSync {
+            inner: redb::backends::InMemoryBackend::new(),
+            armed: Arc::clone(&armed),
+            arrived: Arc::clone(&arrived),
+            release: Mutex::new(parked),
+            timed_out: Arc::clone(&timed_out),
+        })
+        .unwrap()
+    });
+    let artifact = state.blobs.put_bytes(&test_wheel(EXTRACTED)).await.unwrap();
+    let sidecar = Digest::of(EXTRACTED);
+    if fetched {
+        crate::tests::register_publication(
+            &state.meta,
+            "pypi",
+            WHEEL,
+            artifact.as_str(),
+            Some((&format!("{}/sidecar", upstream.uri()), sidecar.as_str())),
+        );
+    }
+    armed.store(true, SeqCst);
+
+    let task = tokio::spawn({
+        let (state, artifact) = (state.clone(), artifact.clone());
+        async move {
+            metadata_bytes(
+                &state,
+                state.index_at(0),
+                &artifact,
+                "pypi",
+                &format!("{WHEEL}.metadata"),
+            )
+            .await
+        }
+    });
+    arrived.notified().await;
+    release.send(()).unwrap();
+    assert_eq!(&task.await.unwrap().unwrap()[..], EXTRACTED);
+
+    assert!(
+        !timed_out.load(SeqCst),
+        "the commit held the only async worker, so nothing could release it"
+    );
+    assert!(state.meta.get_artifact_placement(sidecar.as_str()).unwrap().is_some());
+}
+
+#[derive(Debug)]
+struct FailingSync {
+    inner: redb::backends::InMemoryBackend,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl redb::StorageBackend for FailingSync {
+    fn len(&self) -> std::io::Result<u64> {
+        self.inner.len()
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read(offset, out)
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.inner.set_len(len)
+    }
+
+    fn sync_data(&self) -> std::io::Result<()> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected sync failure"));
+        }
+        self.inner.sync_data()
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.inner.write(offset, data)
+    }
+}
+
+#[rstest::rstest]
+#[case::generated(false)]
+#[case::recovered_after_a_404(true)]
+#[tokio::test]
+async fn test_a_store_fault_recording_the_sidecar_row_fails_the_request(#[case] recovered: bool) {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let upstream = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/sidecar"))
+        .respond_with(wiremock::ResponseTemplate::new(404))
+        .mount(&upstream)
+        .await;
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let kind = IndexKind::Cached {
+        client: UpstreamClient::new(&format!("{}/simple/", upstream.uri())).unwrap(),
+        offline: false,
+    };
+    let (_dir, state) = state_with_meta(vec![index("pypi", kind)], |_| {
+        MetaStore::open_backend(FailingSync {
+            inner: redb::backends::InMemoryBackend::new(),
+            armed: Arc::clone(&armed),
+        })
+        .unwrap()
+    });
+    let artifact = state.blobs.put_bytes(&test_wheel(EXTRACTED)).await.unwrap();
+    if recovered {
+        crate::tests::register_publication(
+            &state.meta,
+            "pypi",
+            WHEEL,
+            artifact.as_str(),
+            Some((&format!("{}/sidecar", upstream.uri()), Digest::of(EXTRACTED).as_str())),
+        );
+    }
+    armed.store(true, SeqCst);
+
+    let err = metadata_bytes(
+        &state,
+        state.index_at(0),
+        &artifact,
+        "pypi",
+        &format!("{WHEEL}.metadata"),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(err, CacheError::Meta(_)), "{err:?}");
 }
