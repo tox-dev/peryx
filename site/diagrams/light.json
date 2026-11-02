@@ -1,7 +1,5 @@
 {
   "theme": "base",
-  "look": "classic",
-  "layout": "dagre",
   "flowchart": {
     "wrappingWidth": 200
   },
