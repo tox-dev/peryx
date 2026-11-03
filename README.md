@@ -3,6 +3,8 @@
 [![CI](https://github.com/tox-dev/peryx/actions/workflows/ci.yml/badge.svg)](https://github.com/tox-dev/peryx/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/readthedocs/peryx?logo=readthedocs&logoColor=white)](https://peryx.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tox-dev/peryx/badge)](https://scorecard.dev/viewer/?uri=github.com/tox-dev/peryx)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16267/badge)](https://www.bestpractices.dev/projects/16267)
 
 Peryx is an artifact cache and private registry. One executable serves each supported artifact format. Each `[[index]]`
 selects a format through its `ecosystem` setting; `[availability].mode` selects `none`, `dc`, or `ha`. Unselected
