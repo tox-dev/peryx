@@ -48,7 +48,7 @@ jobs:
         run: cp "$(mise which dist)" "$RUNNER_TEMP/dist"
       - name: 📤 Cache dist
         id: dist-cache
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-dist-cache
           path: ${{ runner.temp }}/dist
@@ -71,7 +71,7 @@ jobs:
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >>"$GITHUB_OUTPUT"
       - name: 📤 Upload dist-manifest.json
         id: plan-manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
@@ -103,7 +103,7 @@ jobs:
         with:
           tools: aqua:axodotdev/cargo-dist cargo:cargo-auditable cargo:cargo-cyclonedx
       - name: 📩 Fetch local artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
@@ -132,7 +132,7 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: 📤 Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
@@ -162,7 +162,7 @@ jobs:
         with:
           tools: cargo:cargo-cyclonedx
       - name: 📩 Install cached dist
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
@@ -171,14 +171,14 @@ jobs:
       - name: ⚙️ Make dist executable
         run: chmod +x ~/.cargo/bin/dist
       - name: 📩 Fetch release plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
           artifact-ids: ${{ needs.plan.outputs.plan-artifact-id }}
           path: target/distrib/
       - name: 📩 Fetch local artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-build-local-*
           path: ${{ runner.temp }}/local-artifacts
@@ -212,7 +212,7 @@ jobs:
           cp crates/peryx/peryx.cdx.xml target/distrib/peryx.cdx.xml
       - name: 📤 Upload artifacts
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-build-global
           path: |
@@ -264,7 +264,7 @@ jobs:
         run: echo "sha256=$(sha256sum "$RUNNER_TEMP/release-notes.md" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: 📤 Upload changelog notes
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: changelog-notes
           path: ${{ runner.temp }}/release-notes.md
@@ -296,7 +296,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: 📩 Download changelog notes
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.notes.outputs.artifact-id }}
           path: ${{ runner.temp }}/release-notes
@@ -305,7 +305,7 @@ jobs:
           NOTES_SHA256: ${{ needs.notes.outputs.digest }}
         run: printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/release-notes.md" | sha256sum --check --status
       - name: 📩 Install cached dist
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
@@ -314,19 +314,19 @@ jobs:
       - name: ⚙️ Make dist executable
         run: chmod +x ~/.cargo/bin/dist
       - name: 📩 Fetch release plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
           artifact-ids: ${{ needs.plan.outputs.plan-artifact-id }}
           path: target/distrib/
       - name: 📩 Fetch local artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-build-local-*
           path: ${{ runner.temp }}/local-artifacts
       - name: 📩 Fetch global artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build-global-artifacts.outputs.artifact-id }}
           path: ${{ runner.temp }}/global-artifacts
@@ -357,20 +357,20 @@ jobs:
       - name: 🔍 Check selected release assets
         run: sha256sum --check --status "$RUNNER_TEMP/release-assets.sha256"
       - name: 📤 Upload dist-manifest.json
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-dist-manifest
           path: dist-manifest.json
       - name: 📤 Upload release assets
         id: upload-assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets
           path: artifacts
           if-no-files-found: error
       - name: 📤 Upload release asset checksums
         id: upload-assets-sha256
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-sha256
           path: ${{ runner.temp }}/release-assets.sha256
@@ -390,7 +390,7 @@ jobs:
         run: echo "sha256=$(sha256sum "$RUNNER_TEMP/release-notes.md" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: 📤 Upload final release notes
         id: upload-notes
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: final-release-notes
           path: ${{ runner.temp }}/release-notes.md
@@ -407,12 +407,12 @@ jobs:
       id-token: write
     steps:
       - name: 📩 Download release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.host.outputs.assets-artifact-id }}
           path: artifacts
       - name: 📩 Download release asset checksums
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.host.outputs.assets-sha256-artifact-id }}
           path: ${{ runner.temp }}/assets
@@ -460,7 +460,7 @@ jobs:
         with:
           persist-credentials: false
       - name: 📩 Download wheels
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wheels-*
           path: wheels
@@ -490,7 +490,7 @@ jobs:
           echo "sha256=$(sha256sum "$RUNNER_TEMP/python-artifacts.sha256" | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: 📤 Upload artifact checksums
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-artifacts-sha256
           path: ${{ runner.temp }}/python-artifacts.sha256
@@ -508,7 +508,7 @@ jobs:
       "id-token": "write" # Authenticate to PyPI without a stored token.
     steps:
       - name: 📩 Download wheels
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:
@@ -516,7 +516,7 @@ jobs:
           merge-multiple: true
           path: dist
       - name: 📩 Download artifact checksums
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.validate-pypi-artifacts.outputs.artifact-id }}
           path: ${{ runner.temp }}/checks
@@ -535,7 +535,7 @@ jobs:
         run: |-
           sha256sum --check --status "$RUNNER_TEMP/checks/python-artifacts.sha256"
       - name: 🚀 Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist
   verify-pypi-artifacts:
@@ -556,13 +556,13 @@ jobs:
         with:
           persist-credentials: false
       - name: 📩 Download wheels
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
       - name: 📩 Download artifact checksums
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.validate-pypi-artifacts.outputs.artifact-id }}
           path: ${{ runner.temp }}/checks
@@ -609,7 +609,7 @@ jobs:
       contents: write
     steps:
       - name: 📩 Download final release notes
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.host.outputs.notes-artifact-id }}
           path: ${{ runner.temp }}/release-notes
@@ -618,7 +618,7 @@ jobs:
           NOTES_SHA256: ${{ needs.host.outputs.notes-digest }}
         run: printf '%s  %s\n' "$NOTES_SHA256" "$RUNNER_TEMP/release-notes/release-notes.md" | sha256sum --check --status
       - name: 📩 Download release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/actions/download-artifact/issues/484
         with:

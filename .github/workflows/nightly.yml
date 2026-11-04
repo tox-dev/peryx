@@ -56,7 +56,7 @@ jobs:
       - name: 🏗️ Build sanitizer archive
         run: just sanitizer-archive .tox/sanitizer-address.tar.zst
       - name: 📤 Upload sanitizer archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sanitizer-address
           path: .tox/sanitizer-address.tar.zst
@@ -89,7 +89,7 @@ jobs:
       - name: 📩 Download sanitizer archive
         id: archive
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sanitizer-address
           path: .tox/sanitizer
@@ -98,7 +98,7 @@ jobs:
         run: sleep 30
       - name: 📩 Retry sanitizer archive download
         if: steps.archive.outcome == 'failure'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sanitizer-address
           path: .tox/sanitizer
@@ -133,7 +133,7 @@ jobs:
           echo "count=$shards" >> "$GITHUB_OUTPUT"
           echo "indices=$(jq --null-input --compact-output --argjson count "$shards" '[range(0; $count)]')" >> "$GITHUB_OUTPUT"
       - name: 📤 Upload mutation baseline archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline.tar.zst
@@ -164,7 +164,7 @@ jobs:
       - name: 📩 Download mutation baseline archive
         id: archive
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline
@@ -173,7 +173,7 @@ jobs:
         run: sleep 30
       - name: 📩 Retry mutation baseline download
         if: steps.archive.outcome == 'failure'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline
@@ -226,7 +226,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.mutation-baseline-build.outputs.shard_count }}
       - name: 📤 Upload mutation results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: mutation-${{ matrix.shard }}-${{ needs.mutation-baseline-build.outputs.shard_count }}
