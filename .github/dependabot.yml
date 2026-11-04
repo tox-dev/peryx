@@ -13,3 +13,87 @@ updates:
       pre-commit:
         patterns:
           - '*'
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels:
+      - dependencies
+      - skip news
+    groups:
+      cargo:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: npm
+    directory: "/site"
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels:
+      - dependencies
+      - skip news
+    groups:
+      npm:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: npm
+    directory: "/crates/peryx-web/tests/frontend"
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels:
+      - dependencies
+      - skip news
+    groups:
+      npm:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: npm
+    directory: "/crates/peryx-ecosystem-pypi/tests/frontend"
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels:
+      - dependencies
+      - skip news
+    groups:
+      npm:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: npm
+    directory: "/crates/peryx-ecosystem-oci/tests/frontend"
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels:
+      - dependencies
+      - skip news
+    groups:
+      npm:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: tuesday
+    labels:
+      - dependencies
+      - skip news
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
