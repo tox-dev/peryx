@@ -6,8 +6,11 @@
     ":preserveSemverRanges"
   ],
   "timezone": "America/Los_Angeles",
-  "minimumReleaseAge": "3 days",
+  "minimumReleaseAge": "7 days",
   "schedule": ["before 6am on Tuesday"],
+  "pre-commit": {
+    "enabled": false
+  },
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 6am on Tuesday"]
