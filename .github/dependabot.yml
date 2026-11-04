@@ -29,6 +29,10 @@ updates:
       default-days: 7
   - package-ecosystem: npm
     directory: "/site"
+    ignore:
+      - dependency-name: "@playwright/test"
+      - dependency-name: "puppeteer-core"
+      - dependency-name: "puppeteer"
     schedule:
       interval: weekly
       day: tuesday
@@ -43,6 +47,9 @@ updates:
       default-days: 7
   - package-ecosystem: npm
     directory: "/crates/peryx-web/tests/frontend"
+    ignore:
+      - dependency-name: "@playwright/test"
+      - dependency-name: "puppeteer-core"
     schedule:
       interval: weekly
       day: tuesday
@@ -57,6 +64,9 @@ updates:
       default-days: 7
   - package-ecosystem: npm
     directory: "/crates/peryx-ecosystem-pypi/tests/frontend"
+    ignore:
+      - dependency-name: "@playwright/test"
+      - dependency-name: "puppeteer-core"
     schedule:
       interval: weekly
       day: tuesday
@@ -71,6 +81,9 @@ updates:
       default-days: 7
   - package-ecosystem: npm
     directory: "/crates/peryx-ecosystem-oci/tests/frontend"
+    ignore:
+      - dependency-name: "@playwright/test"
+      - dependency-name: "puppeteer-core"
     schedule:
       interval: weekly
       day: tuesday
