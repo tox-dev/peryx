@@ -86,7 +86,7 @@ futures-util = "0.3"
 fs4 = "1.1.0"
 getrandom = "0.4"
 moka = { version = "0.12", features = ["sync"] }
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 tokio-util = { version = "0.7.19", features = ["io"] }
 base64 = "0.23.1"
 caseless = "0.2.2"
@@ -95,13 +95,13 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc", "pass
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 url = "2.5.8"
 wiremock = "0.6"
-rstest = "0.27"
+rstest = "0.28"
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # 0.1.26 ships Unicode 18 data; USER_NAME_CANONICAL_VERSION records Unicode 17 normalization, so moving
 # past it changes stored identity keys and needs its own release.
-unicode-normalization = "=0.1.25"
+unicode-normalization = "=0.1.26"
 unicode-ident = "1.0.26"
 uuid = { version = "1.26", features = ["serde", "v4"] }
 tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "columnar-zstd-compression"] }
@@ -125,7 +125,7 @@ leptos_meta = "0.8.6"
 leptos_router = "0.8.15"
 wasm-bindgen = "0.2.129"
 # 0.3.9 bundles LLVM 23/raw profile v11: https://github.com/Amanieu/minicov/compare/v0.3.8...v0.3.9
-minicov = "=0.3.8"
+minicov = "=0.3.9"
 rustls-native-certs = "0.8.4"
 rustix = { version = "1.1.5", features = ["process"] }
 regex = "1.13"
@@ -145,7 +145,7 @@ criterion = { package = "codspeed-criterion-compat", version = "5.0", default-fe
 stats_alloc = "0.1.10"
 statrs = "0.19"
 hdrhistogram = { version = "7.6", default-features = false }
-uv-netrc = "0.0.86"
+uv-netrc = "0.0.88"
 
 [patch.crates-io]
 # https://github.com/GnomedDev/proc-macro-error-2/pull/14 fixes Rust 1.96 future incompatibility.
