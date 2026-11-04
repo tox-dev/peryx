@@ -22,6 +22,12 @@
       "enabled": false
     },
     {
+      "description": "Update browser packages with their binaries",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@playwright/test", "puppeteer-core"],
+      "enabled": false
+    },
+    {
       "description": "Update the mise installer atomically",
       "matchDepNames": ["jdx/mise"],
       "groupName": "mise installer"
