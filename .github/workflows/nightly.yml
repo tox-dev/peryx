@@ -108,6 +108,8 @@ jobs:
           PARTITION: ${{ matrix.partition }}
   mutation-baseline-build:
     name: 🏗️ mutation baseline build
+    # mutation testing runs on demand only; the daily schedule skips it and the stages that need it
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     outputs:
@@ -296,6 +298,7 @@ jobs:
       # it, which lost 89 of them.
       - name: 🚦 Fail on unmet nightly stages
         env:
+          EVENT: ${{ github.event_name }}
           RESULTS: >-
             analysis=${{ needs.analysis.result }} sanitizer-build=${{ needs.sanitizer-build.result }} sanitizer=${{ needs.sanitizer.result }} mutation-baseline-build=${{ needs.mutation-baseline-build.result }} mutation-baseline=${{ needs.mutation-baseline.result }} mutation=${{ needs.mutation.result }} fuzz=${{ needs.fuzz.result }} live-client=${{ needs.live-client.result }}
         run: |
@@ -304,6 +307,7 @@ jobs:
           for stage in $RESULTS; do
             case "$stage" in
               *=success) ;;
+              mutation*=skipped) [[ $EVENT == schedule ]] || unmet="$unmet $stage" ;;
               *) unmet="$unmet $stage" ;;
             esac
           done
