@@ -3,6 +3,19 @@
 Each release lists user-facing changes merged since the previous one. Versions follow the calendar as `YYYY.MDD.N`: the
 year, the month and zero-padded day, and a counter for several releases on one day.
 
+<a name="release-2026-1104-0"></a>
+
+## 2026.1104.0 (2026-11-04)
+
+<a name="release-2026-1104-0-fixed"></a>
+
+### Fixed
+
+#### Commit sidecar rows off the async worker ([#2394](https://github.com/tox-dev/peryx/pull/2394)) by [@amitmi704](https://github.com/amitmi704) and [@gaborbernat](https://github.com/gaborbernat)
+
+A burst of cold wheel metadata sidecars no longer holds the request workers while the metadata store syncs to disk, so
+`/+status` keeps answering during the burst.
+
 <a name="release-2026-1027-1"></a>
 
 ## 2026.1027.1 (2026-10-27)

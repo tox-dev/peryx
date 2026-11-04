@@ -12,7 +12,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-peryx-ecosystem-pypi = { version = "2026.1027.1", path = ".." }
+peryx-ecosystem-pypi = { version = "2026.1104.0", path = ".." }
 
 [[bin]]
 name = "pypi_filename"

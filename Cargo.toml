@@ -8,7 +8,7 @@ members = [
 default-members = ["crates/peryx"]
 
 [workspace.package]
-version = "2026.1027.1"
+version = "2026.1104.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
@@ -27,27 +27,27 @@ unused_variables = "warn"
 unused_imports = "warn"
 
 [workspace.dependencies]
-peryx-archive = { version = "2026.1027.1", path = "crates/peryx-archive" }
-peryx-core = { version = "2026.1027.1", path = "crates/peryx-core" }
-peryx-driver = { version = "2026.1027.1", path = "crates/peryx-driver" }
-peryx-events = { version = "2026.1027.1", path = "crates/peryx-events" }
-peryx-bench-core = { version = "2026.1027.1", path = "crates/peryx-bench-core" }
-peryx-bench = { version = "2026.1027.1", path = "crates/peryx-bench" }
-peryx-index = { version = "2026.1027.1", path = "crates/peryx-index" }
-peryx-search = { version = "2026.1027.1", path = "crates/peryx-search" }
-peryx-ecosystem-pypi = { version = "2026.1027.1", path = "crates/peryx-ecosystem-pypi" }
-peryx-ecosystem-oci = { version = "2026.1027.1", path = "crates/peryx-ecosystem-oci" }
-peryx-policy = { version = "2026.1027.1", path = "crates/peryx-policy" }
-peryx-pql = { version = "2026.1027.1", path = "crates/peryx-pql" }
-peryx-identity = { version = "2026.1027.1", path = "crates/peryx-identity" }
-peryx-plugin-registry = { version = "2026.1027.1", path = "crates/peryx-plugin-registry" }
-peryx-ha = { version = "2026.1027.1", path = "crates/peryx-ha" }
-peryx-ha-distributed = { version = "2026.1027.1", path = "crates/peryx-ha-distributed" }
-peryx-storage = { version = "2026.1027.1", path = "crates/peryx-storage" }
-peryx-upstream = { version = "2026.1027.1", path = "crates/peryx-upstream" }
-peryx-http = { version = "2026.1027.1", path = "crates/peryx-http" }
-peryx-web = { version = "2026.1027.1", path = "crates/peryx-web" }
-peryx-test-support = { version = "2026.1027.1", path = "crates/peryx-test-support" }
+peryx-archive = { version = "2026.1104.0", path = "crates/peryx-archive" }
+peryx-core = { version = "2026.1104.0", path = "crates/peryx-core" }
+peryx-driver = { version = "2026.1104.0", path = "crates/peryx-driver" }
+peryx-events = { version = "2026.1104.0", path = "crates/peryx-events" }
+peryx-bench-core = { version = "2026.1104.0", path = "crates/peryx-bench-core" }
+peryx-bench = { version = "2026.1104.0", path = "crates/peryx-bench" }
+peryx-index = { version = "2026.1104.0", path = "crates/peryx-index" }
+peryx-search = { version = "2026.1104.0", path = "crates/peryx-search" }
+peryx-ecosystem-pypi = { version = "2026.1104.0", path = "crates/peryx-ecosystem-pypi" }
+peryx-ecosystem-oci = { version = "2026.1104.0", path = "crates/peryx-ecosystem-oci" }
+peryx-policy = { version = "2026.1104.0", path = "crates/peryx-policy" }
+peryx-pql = { version = "2026.1104.0", path = "crates/peryx-pql" }
+peryx-identity = { version = "2026.1104.0", path = "crates/peryx-identity" }
+peryx-plugin-registry = { version = "2026.1104.0", path = "crates/peryx-plugin-registry" }
+peryx-ha = { version = "2026.1104.0", path = "crates/peryx-ha" }
+peryx-ha-distributed = { version = "2026.1104.0", path = "crates/peryx-ha-distributed" }
+peryx-storage = { version = "2026.1104.0", path = "crates/peryx-storage" }
+peryx-upstream = { version = "2026.1104.0", path = "crates/peryx-upstream" }
+peryx-http = { version = "2026.1104.0", path = "crates/peryx-http" }
+peryx-web = { version = "2026.1104.0", path = "crates/peryx-web" }
+peryx-test-support = { version = "2026.1104.0", path = "crates/peryx-test-support" }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "original-uri", "query", "tokio", "tower-log", "tracing"] }
 tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["trace"] }

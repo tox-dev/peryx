@@ -13,13 +13,13 @@ cargo-fuzz = true
 [dependencies]
 axum = "0.8.9"
 libfuzzer-sys = "0.4"
-peryx-driver = { version = "2026.1027.1", path = "../../peryx-driver" }
-peryx-ecosystem-oci = { version = "2026.1027.1", path = ".." }
-peryx-identity = { version = "2026.1027.1", path = "../../peryx-identity" }
-peryx-index = { version = "2026.1027.1", path = "../../peryx-index" }
-peryx-policy = { version = "2026.1027.1", path = "../../peryx-policy" }
-peryx-plugin-registry = { version = "2026.1027.1", path = "../../peryx-plugin-registry" }
-peryx-storage = { version = "2026.1027.1", path = "../../peryx-storage" }
+peryx-driver = { version = "2026.1104.0", path = "../../peryx-driver" }
+peryx-ecosystem-oci = { version = "2026.1104.0", path = ".." }
+peryx-identity = { version = "2026.1104.0", path = "../../peryx-identity" }
+peryx-index = { version = "2026.1104.0", path = "../../peryx-index" }
+peryx-policy = { version = "2026.1104.0", path = "../../peryx-policy" }
+peryx-plugin-registry = { version = "2026.1104.0", path = "../../peryx-plugin-registry" }
+peryx-storage = { version = "2026.1104.0", path = "../../peryx-storage" }
 tempfile = "3.27"
 tokio = { version = "1.53", features = ["rt"] }
 
