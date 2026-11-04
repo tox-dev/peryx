@@ -43,13 +43,13 @@ jobs:
           targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
           tools: just ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
       - name: 🐍 Install uv and Python
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
       - name: 📦 Install checked build backend
-        uses: tox-dev/github-workflows/install-locked-tools@57a765127aae73adf7d0e24a7fe0f067f2d3ea3e # 6.2.1
+        uses: tox-dev/github-workflows/install-locked-tools@2c1f5e4ceda37c41eb8367b5cbeaa741aa60a566 # 6.5.2
         with:
           groups: build
           venv: .tox/tools/build-tools
@@ -89,13 +89,13 @@ jobs:
         with:
           tools: just
       - name: 🐍 Install uv and Python
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
       - name: 📦 Install checked build backend
-        uses: tox-dev/github-workflows/install-locked-tools@57a765127aae73adf7d0e24a7fe0f067f2d3ea3e # 6.2.1
+        uses: tox-dev/github-workflows/install-locked-tools@2c1f5e4ceda37c41eb8367b5cbeaa741aa60a566 # 6.5.2
         with:
           groups: build
           venv: .tox/tools/build-tools

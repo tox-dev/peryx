@@ -6,7 +6,9 @@
     ":preserveSemverRanges"
   ],
   "timezone": "America/Los_Angeles",
-  "minimumReleaseAge": "3 days",
+  "minimumReleaseAge": "7 days",
+  "dependencyDashboard": false,
+  "enabledManagers": ["cargo", "npm", "mise", "custom.regex"],
   "schedule": ["before 6am on Tuesday"],
   "lockFileMaintenance": {
     "enabled": true,
@@ -14,22 +16,10 @@
   },
   "packageRules": [
     {
-      "description": "Update compatible Rust dependencies together",
-      "matchManagers": ["cargo"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "groupName": "Rust dependencies"
-    },
-    {
-      "description": "Keep action digest updates in one review",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "groupName": "GitHub Actions"
-    },
-    {
-      "description": "Update compatible frontend dependencies together",
-      "matchManagers": ["npm"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "groupName": "Frontend dependencies"
+      "description": "Dependabot owns regular cargo and npm updates; Renovate keeps only their lock file maintenance",
+      "matchManagers": ["cargo", "npm"],
+      "matchUpdateTypes": ["major", "minor", "patch", "pin", "digest", "bump", "replacement"],
+      "enabled": false
     },
     {
       "description": "Update browser packages with their binaries",
@@ -41,12 +31,6 @@
       "description": "Update the mise installer atomically",
       "matchDepNames": ["jdx/mise"],
       "groupName": "mise installer"
-    },
-    {
-      "description": "Update compatible container images together",
-      "matchManagers": ["dockerfile", "docker-compose"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "groupName": "Container images"
     }
   ],
   "customManagers": [
