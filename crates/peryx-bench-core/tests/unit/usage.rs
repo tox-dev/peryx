@@ -93,7 +93,7 @@ fn cpu_percent_converts_to_milliseconds_of_a_tick() {
 fn the_tree_holds_the_root_and_its_descendants_only() {
     let mut child = idle_child().spawn().expect("the child starts");
     let descendant = Pid::from_u32(child.id());
-    let mut system = System::new();
+    let mut system = System::new().expect("system information");
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,

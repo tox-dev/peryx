@@ -135,6 +135,8 @@ anyhow = { workspace = true, optional = true }
 html5ever = { version = "0.40", optional = true }
 regex = { workspace = true, optional = true }
 sigstore-verify = { version = "0.15.1", default-features = false, features = ["aws-lc-rs"], optional = true }
+# 0.3 waits on sigstore, which holds the RustCrypto ASN.1 stack at 0.2 until cms 0.3 is stable:
+# https://github.com/sigstore/sigstore-rust/issues/224
 x509-cert = { version = "0.2.5", optional = true }
 
 [dev-dependencies]

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail};
+use anyhow::{Context as _, anyhow, bail};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
@@ -47,7 +47,7 @@ impl Usage {
             });
         };
         let root = Pid::from_u32(pid);
-        let mut system = System::new();
+        let mut system = System::new().context("read the host's process table")?;
         Self::watch_with(
             SAMPLE_INTERVAL,
             Box::new(move || {
