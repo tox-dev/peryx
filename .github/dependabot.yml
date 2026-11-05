@@ -15,6 +15,10 @@ updates:
           - '*'
   - package-ecosystem: cargo
     directory: "/"
+    # Exact pins in Cargo.toml; the comment beside each says why moving it needs its own change.
+    ignore:
+      - dependency-name: "minicov"
+      - dependency-name: "unicode-normalization"
     schedule:
       interval: weekly
       day: tuesday
