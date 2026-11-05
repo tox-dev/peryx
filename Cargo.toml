@@ -86,7 +86,7 @@ futures-util = "0.3"
 fs4 = "1.1.0"
 getrandom = "0.4"
 moka = { version = "0.12", features = ["sync"] }
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 tokio-util = { version = "0.7.19", features = ["io"] }
 base64 = "0.23.1"
 caseless = "0.2.2"
@@ -117,7 +117,7 @@ arc-swap = "1.9"
 command-group = { version = "5.0.1", features = ["with-tokio"] }
 anyhow = "1.0.104"
 tracing = "0.1.44"
-sysinfo = { version = "0.39", default-features = false, features = ["disk", "system"] }
+sysinfo = { version = "0.40", default-features = false, features = ["disk", "system"] }
 utoipa = "6.0"
 leptos = "0.8.20"
 leptos_axum = "0.8.10"
