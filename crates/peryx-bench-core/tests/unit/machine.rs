@@ -82,8 +82,8 @@ async fn profile_writes_host_volumes_and_baselines() {
 fn host_fallbacks_are_explicit() {
     assert_eq!(or_unknown(None), "unknown");
     assert_eq!(or_unknown(Some("value".to_owned())), "value");
-    assert_eq!(cpu(&System::new()), "unknown");
-    assert!(!cpu(&System::new_all()).is_empty());
+    assert_eq!(cpu(&System::new().expect("system information")), "unknown");
+    assert!(!cpu(&System::new_all().expect("system information")).is_empty());
 }
 
 #[cfg(target_os = "macos")]
@@ -115,7 +115,7 @@ fn core_description_handles_split_and_uniform_cpus() {
 #[cfg(target_os = "macos")]
 #[test]
 fn cores_reports_what_sysctl_and_the_system_report() {
-    let logical = System::new_all().cpus().len();
+    let logical = System::new_all().expect("system information").cpus().len();
     assert_eq!(
         cores(logical),
         describe_split_cores(
@@ -154,8 +154,11 @@ async fn baselines_propagate_each_file_measurement_failure() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn cores_reports_the_logical_and_physical_counts_the_system_reports() {
-    let logical = System::new_all().cpus().len();
-    assert_eq!(cores(logical), describe_cores(logical, System::physical_core_count()));
+    let logical = System::new_all().expect("system information").cpus().len();
+    assert_eq!(
+        cores(logical),
+        describe_cores(logical, System::physical_core_count().ok())
+    );
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -181,7 +184,7 @@ fn core_and_model_descriptions_handle_missing_metadata() {
 
 #[test]
 fn mount_selection_falls_back_for_missing_descendants() {
-    let disks = Disks::new_with_refreshed_list();
+    let disks = Disks::new_with_refreshed_list().expect("disk list");
     let missing = repo_root().join("peryx-missing-mount-probe");
     let disk = mount_for(&disks, &missing).expect("repository has a containing mount");
     assert!(missing.starts_with(disk.mount_point()));
@@ -193,7 +196,7 @@ fn mount_selection_falls_back_for_missing_descendants() {
 
 #[test]
 fn volume_roles_merge_on_one_mount() {
-    let volumes = volumes(&repo_root());
+    let volumes = volumes(&repo_root()).expect("volumes");
     assert!(
         volumes
             .iter()
@@ -343,8 +346,8 @@ fn reported_mount_reads_the_mount_point_df_names() {
 
 #[test]
 fn exact_mount_matches_a_whole_mount_point() {
-    let disks = Disks::new_with_refreshed_list();
-    let first = disks.list().first().expect("the host reports at least one disk");
+    let disks = Disks::new_with_refreshed_list().expect("disk list");
+    let first = disks.first().expect("the host reports at least one disk");
     assert_eq!(
         exact_mount(&disks, first.mount_point()).map(sysinfo::Disk::mount_point),
         Some(first.mount_point())

@@ -65,9 +65,9 @@ pub async fn write_profile(path: &Path, scratch: &Path, settings: ProfileSetting
     );
     anyhow::ensure!(settings.chunk_bytes > 0, "chunk size must be positive");
     anyhow::ensure!(settings.rounds > 0, "round count must be positive");
-    let volumes = volumes(scratch);
+    let volumes = volumes(scratch)?;
     let profile = Machine {
-        host: host(),
+        host: host()?,
         baselines: baselines(scratch, &volumes, settings).await?,
         volumes,
     };
@@ -97,17 +97,17 @@ struct Host {
     kernel: String,
 }
 
-fn host() -> Host {
-    let system = System::new_all();
-    Host {
+fn host() -> anyhow::Result<Host> {
+    let system = System::new_all().context("read the host's system information")?;
+    Ok(Host {
         model: model(),
         cpu: cpu(&system),
         architecture: System::cpu_arch(),
         cores: cores(system.cpus().len()),
         memory: gibibytes(system.total_memory()),
-        os: or_unknown(System::long_os_version()),
-        kernel: or_unknown(System::kernel_version()),
-    }
+        os: or_unknown(System::long_os_version().ok()),
+        kernel: or_unknown(System::kernel_version().ok()),
+    })
 }
 
 fn cpu(system: &System) -> String {
@@ -147,7 +147,7 @@ fn cores(logical: usize) -> String {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        describe_cores(logical, System::physical_core_count())
+        describe_cores(logical, System::physical_core_count().ok())
     }
 }
 
@@ -200,8 +200,8 @@ struct Volume {
 /// The volumes the run actually touches: where the servers keep their stores, and where the
 /// repository (and so the peryx binary) lives. On this box they are different disks, and only the
 /// scratch volume ever carries benchmark data.
-fn volumes(scratch: &Path) -> Vec<Volume> {
-    let disks = Disks::new_with_refreshed_list();
+fn volumes(scratch: &Path) -> anyhow::Result<Vec<Volume>> {
+    let disks = Disks::new_with_refreshed_list().context("list the host's disks")?;
     let roles = [
         (
             scratch.to_path_buf(),
@@ -233,7 +233,7 @@ fn volumes(scratch: &Path) -> Vec<Volume> {
             benchmarked,
         });
     }
-    seen
+    Ok(seen)
 }
 
 /// Asking `df` rather than prefix-matching mount points: macOS firmlinks `/var` onto the data
@@ -246,12 +246,11 @@ fn mount_for<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
 }
 
 fn exact_mount<'a>(disks: &'a Disks, mount: &Path) -> Option<&'a sysinfo::Disk> {
-    disks.list().iter().find(|disk| disk.mount_point() == mount)
+    disks.iter().find(|disk| disk.mount_point() == mount)
 }
 
 fn longest_prefix<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
     disks
-        .list()
         .iter()
         .filter(|disk| path.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
