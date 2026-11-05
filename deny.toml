@@ -4,6 +4,7 @@ all-features = true
 [advisories]
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "Leptos 0.8 and Simba 0.9 depend on paste." },
+  { id = "RUSTSEC-2026-0440", reason = "testcontainers 0.28 depends on astral-tokio-tar." },
 ]
 unused-ignored-advisory = "deny"
 
