@@ -134,7 +134,7 @@ toml = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 html5ever = { version = "0.40", optional = true }
 regex = { workspace = true, optional = true }
-sigstore-verify = { version = "0.13.0", default-features = false, optional = true }
+sigstore-verify = { version = "0.15.1", default-features = false, features = ["aws-lc-rs"], optional = true }
 x509-cert = { version = "0.2.5", optional = true }
 
 [dev-dependencies]
