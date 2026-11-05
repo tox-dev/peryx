@@ -34,7 +34,7 @@
       "name": "MIT"
     },
     "title": "peryx",
-    "version": "2026.1104.0"
+    "version": "2026.1105.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -921,7 +921,7 @@
                     "status": "http://127.0.0.1:4433/+status",
                     "web": "http://127.0.0.1:4433/"
                   },
-                  "version": "2026.1104.0"
+                  "version": "2026.1105.0"
                 }
               }
             },
@@ -4121,7 +4121,7 @@
                   "requests": 128,
                   "role": "writer",
                   "serial": 42,
-                  "version": "2026.1104.0"
+                  "version": "2026.1105.0"
                 }
               }
             },
@@ -4893,7 +4893,7 @@
                 "example": {
                   "info": {
                     "title": "peryx",
-                    "version": "2026.1104.0"
+                    "version": "2026.1105.0"
                   },
                   "openapi": "3.1.0",
                   "paths": {}
@@ -7850,7 +7850,7 @@
                       "web": "http://127.0.0.1:4433/browse?index=root%2Fpypi"
                     }
                   },
-                  "version": "2026.1104.0"
+                  "version": "2026.1105.0"
                 }
               }
             },

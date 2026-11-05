@@ -8,7 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-peryx = { path = "../../../peryx", version = "2026.1104.0", default-features = false, features = ["composition-oci"] }
+peryx = { path = "../../../peryx", version = "2026.1105.0", default-features = false, features = ["composition-oci"] }
 
 [dev-dependencies]
 axum.workspace = true
