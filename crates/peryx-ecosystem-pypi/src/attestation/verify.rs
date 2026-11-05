@@ -53,10 +53,10 @@ impl VerificationContext {
         let envelope = DsseEnvelope::new(
             DSSE_PAYLOAD_TYPE.to_owned(),
             PayloadBytes::new(STANDARD.decode(input.envelope.statement).map_err(|_| ())?),
-            DsseSignature {
-                sig: SignatureBytes::new(STANDARD.decode(input.envelope.signature).map_err(|_| ())?),
-                keyid: KeyId::default(),
-            },
+            DsseSignature::new(
+                SignatureBytes::new(STANDARD.decode(input.envelope.signature).map_err(|_| ())?),
+                KeyId::default(),
+            ),
         );
         let mut bundle = BundleV03::with_certificate_and_dsse(DerCertificate::new(certificate.clone()), envelope);
         for entry in input.verification_material.transparency_entries {
@@ -71,7 +71,10 @@ impl VerificationContext {
             )
             .map_err(|_| ())?;
         let mut claims = self.verify_claims(&certificate)?;
-        claims.insert("identity".to_owned(), verified.identity().ok_or(())?.to_owned());
+        claims.insert(
+            "identity".to_owned(),
+            verified.identity().ok_or(())?.as_str().to_owned(),
+        );
         Ok(Publisher {
             kind: verified.issuer().ok_or(())?.to_owned(),
             claims,

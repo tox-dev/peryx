@@ -4,6 +4,7 @@ all-features = true
 [advisories]
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "Leptos 0.8 and Simba 0.9 depend on paste." },
+  { id = "RUSTSEC-2026-0440", reason = "testcontainers 0.28 depends on astral-tokio-tar." },
 ]
 unused-ignored-advisory = "deny"
 
@@ -38,7 +39,7 @@ skip = [
   { crate = "base64@0.22.1", reason = "Axum 0.8, Leptos 0.8, and current AWS crates require base64 0.22." },
   { crate = "block-buffer@0.10.4", reason = "digest 0.10 requires block-buffer 0.10." },
   { crate = "convert_case@0.6.0", reason = "config 0.15.25 requires convert_case 0.6." },
-  { crate = "const-oid@0.9.6", reason = "Sigstore 0.13 requires const-oid 0.9." },
+  { crate = "const-oid@0.9.6", reason = "Sigstore 0.15 requires const-oid 0.9." },
   { crate = "cpufeatures@0.2.17", reason = "sha1 0.10 and sha2 0.10 require cpufeatures 0.2." },
   { crate = "crypto-common@0.1.7", reason = "digest 0.10 requires crypto-common 0.1." },
   { crate = "digest@0.10.7", reason = "sha1 0.10, sha2 0.10, and AWS checksum crates require digest 0.10." },
@@ -54,7 +55,7 @@ skip = [
   { crate = "linux-raw-sys@0.4.15", reason = "rustix 0.38 requires linux-raw-sys 0.4." },
   { crate = "nix@0.27.1", reason = "command-group 5.0.1 requires nix 0.27." },
   { crate = "nix@0.30.1", reason = "homedir 0.3 requires nix 0.30." },
-  { crate = "prettyplease@0.2.37", reason = "Leptos 0.8 requires prettyplease 0.2." },
+  { crate = "pem@3.0.6", reason = "rustls-acme 0.15 requires rcgen 0.13, which requires pem 3." },
   { crate = "r-efi@5.3.0", reason = "getrandom 0.3 requires r-efi 5." },
   { crate = "rand@0.8.8", reason = "OpenRaft 0.9 requires rand 0.8." },
   { crate = "rand@0.9.5", reason = "Leptos 0.8 requires rand 0.9." },
@@ -91,6 +92,4 @@ skip = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = [
-  "https://github.com/fgardt/proc-macro-error-2",
-]
+allow-git = []
