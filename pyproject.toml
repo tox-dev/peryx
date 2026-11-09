@@ -1,6 +1,6 @@
 [build-system]
-build-backend = "maturin"
-requires = [ "maturin<2,>=1.14.1" ]
+build-backend = "python_sbom.backend"
+requires = [ "maturin<2,>=1.14.1", "python-sbom>=0.3" ]
 
 [project]
 name = "peryx"
@@ -38,6 +38,7 @@ urls.Source = "https://github.com/tox-dev/peryx"
 build = [
   "cython>=3",
   "maturin<2,>=1.14.1",
+  "python-sbom>=0.3",
   "setuptools>=80",
 ]
 release-notes = [
@@ -64,6 +65,10 @@ include = [
 bindings = "bin"
 manifest-path = "crates/peryx/Cargo.toml"
 
+[tool.python-sbom]
+build-backend = "maturin"
+supplier = { name = "tox-dev", url = [ "https://github.com/tox-dev" ] }
+
 [tool.nab]
 mode = "universal"
 base-group = "project-runtime"
@@ -77,3 +82,7 @@ platforms = [ "linux_x86_64", "linux_aarch64", "macos_arm64", "windows_amd64", "
 # release-creator 4.4.0 needs a seven-day cutoff exception through 2026-11-09.
 [tool.nab.packages."release-creator"]
 uploaded-prior-to = 2026-11-02T21:45:00Z
+
+# python-sbom 0.3.0 needs a seven-day cutoff exception through 2026-11-16.
+[tool.nab.packages."python-sbom"]
+uploaded-prior-to = 2026-11-09T23:18:00Z
