@@ -31,7 +31,7 @@ jobs:
           - {os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc}
     steps:
       - name: 📥 Check out code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: ⚙️ Set source timestamp
@@ -43,13 +43,13 @@ jobs:
           targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
           tools: just ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
       - name: 🐍 Install uv and Python
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
       - name: 📦 Install checked build backend
-        uses: tox-dev/github-workflows/install-locked-tools@bf1c3ab0aa137d307a07aad844d507af73039387 # 6.8.0
+        uses: tox-dev/github-workflows/install-locked-tools@6.8.0
         with:
           groups: build
           venv: .tox/tools/build-tools
@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: uv run --no-project --python .tox/tools/build-tools python-sbom embed dist/*.whl
       - name: 📤 Upload wheels
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
@@ -84,7 +84,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: 📥 Check out code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: ⚙️ Set source timestamp
@@ -94,20 +94,20 @@ jobs:
         with:
           tools: just
       - name: 🐍 Install uv and Python
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           version: latest-known
           python-version: "3.15"
           enable-cache: false
       - name: 📦 Install checked build backend
-        uses: tox-dev/github-workflows/install-locked-tools@bf1c3ab0aa137d307a07aad844d507af73039387 # 6.8.0
+        uses: tox-dev/github-workflows/install-locked-tools@6.8.0
         with:
           groups: build
           venv: .tox/tools/build-tools
       - name: 🏗️ Build sdist
         run: just --no-deps package-sdist
       - name: 📤 Upload sdist
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: wheels-sdist
           path: dist
