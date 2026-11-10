@@ -19,11 +19,11 @@ jobs:
       shared: ${{ steps.filter.outputs.shared }}
     steps:
       - name: 📥 Check out code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: 🧭 Detect changed paths
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           filters: |
@@ -64,11 +64,11 @@ jobs:
       contents: read
     steps:
       - name: 📥 Check out code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: 🦀 Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
         env:
           NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
         with:
@@ -78,7 +78,7 @@ jobs:
           rustflags: -D warnings
           build-warnings: ""
       - name: 🦀 Install just
-        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        uses: taiki-e/install-action@v2.90.0
         with:
           tool: just
       - name: 🧪 Run OCI conformance tests
