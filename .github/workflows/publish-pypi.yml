@@ -67,6 +67,11 @@ jobs:
           [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
           [[ -z $USE_ZIG ]] || args+=(--zig)
           just --no-deps package-wheel "${args[@]}"
+      # maturin build bypasses the python_sbom.backend wrapper, so describe the wheel after the fact. embed lists the
+      # packages of the environment it runs in as the build tools, and this is the one maturin built the wheel from.
+      - name: 📝 Write the SBOM into the wheel
+        shell: bash
+        run: uv run --no-project --python .tox/tools/build-tools python-sbom embed dist/*.whl
       - name: 📤 Upload wheels
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
