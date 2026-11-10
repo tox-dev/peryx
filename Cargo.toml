@@ -88,7 +88,7 @@ getrandom = "0.4"
 moka = { version = "0.12", features = ["sync"] }
 # 0.13 waits on moka, tokio, dashmap and string_cache, which still pull 0.12; bumping alone ships both.
 # https://github.com/moka-rs/moka/pull/613 https://github.com/tokio-rs/tokio/pull/8745
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 tokio-util = { version = "0.7.19", features = ["io"] }
 base64 = "0.23.1"
 caseless = "0.2.2"
