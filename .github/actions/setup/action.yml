@@ -28,7 +28,7 @@ runs:
   using: composite
   steps:
     - name: 🦀 Install Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
+      uses: actions-rust-lang/setup-rust-toolchain@v2.0.0 # zizmor: ignore[unpinned-uses] pinned by actions.lock
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
@@ -52,7 +52,7 @@ runs:
           fi
         done
     - name: 🧰 Install tools with mise
-      uses: jdx/mise-action@v4.3.0
+      uses: jdx/mise-action@v4.3.0 # zizmor: ignore[unpinned-uses] pinned by actions.lock
       with:
         version: 2026.9.14
         # sccache is a configured install dependency of every cargo: tool, so mise refuses to build
@@ -60,7 +60,7 @@ runs:
         install_args: --locked sccache ${{ inputs.tools }}
         cache_save: ${{ inputs.cache-save }}
     - name: 💾 Restore Rust cache
-      uses: Swatinem/rust-cache@v2.9.2
+      uses: Swatinem/rust-cache@v2.9.2 # zizmor: ignore[unpinned-uses] pinned by actions.lock
       env:
         NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
       with:
