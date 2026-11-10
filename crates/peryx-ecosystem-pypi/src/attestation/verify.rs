@@ -84,7 +84,7 @@ impl VerificationContext {
     fn verify_claims(&self, certificate: &[u8]) -> Result<BTreeMap<String, String>, ()> {
         let certificate = Certificate::from_der(certificate).map_err(|_| ())?;
         let mut actual = BTreeMap::new();
-        for extension in certificate.tbs_certificate().extensions().into_iter().flatten() {
+        for extension in certificate.tbs_certificate.extensions.iter().flatten() {
             let oid = extension.extn_id.to_string();
             if self.claims.contains_key(&oid) {
                 let value = Utf8StringRef::from_der(extension.extn_value.as_bytes())

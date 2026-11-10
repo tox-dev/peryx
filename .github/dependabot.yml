@@ -15,10 +15,14 @@ updates:
           - '*'
   - package-ecosystem: cargo
     directory: "/"
-    # Exact pins in Cargo.toml; the comment beside each says why moving it needs its own change.
+    # Cargo.toml documents why these versions are held.
     ignore:
       - dependency-name: "minicov"
+      # Moka and Tokio still need 0.12; the workspace rejects duplicate lock crates.
+      - dependency-name: "parking_lot"
       - dependency-name: "unicode-normalization"
+      # Sigstore still needs the 0.2 ASN.1 stack; the workspace rejects duplicates.
+      - dependency-name: "x509-cert"
     schedule:
       interval: weekly
       day: tuesday
