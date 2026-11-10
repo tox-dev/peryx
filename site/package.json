@@ -5,7 +5,7 @@
   "description": "Documentation build dependencies.",
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "12.2.0",
-    "pagefind": "1.5.2",
+    "pagefind": "1.6.0",
     "puppeteer": "npm:puppeteer-core@25.16.0"
   }
 }
