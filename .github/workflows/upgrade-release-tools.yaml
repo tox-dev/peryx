@@ -16,7 +16,6 @@ jobs:
     secrets:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
     with:
-      commit-message: "build(deps): refresh release tools"
       pull-request-title: "build(deps): refresh release tools"
       pull-request-body: |-
         Refresh release tools after the seven-day cutoff.
