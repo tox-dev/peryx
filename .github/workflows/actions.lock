@@ -36,7 +36,7 @@ workflows:
     '.github/workflows/news.yaml':
         - 'actions/checkout@v7.0.1'
         - 'astral-sh/setup-uv@v10.3.3'
-        - 'tox-dev/github-workflows@6.8.0'
+        - 'tox-dev/github-workflows@6.8.3'
     '.github/workflows/nightly.yml':
         - 'actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f'
         - 'actions/checkout@v7.0.1'
@@ -45,7 +45,7 @@ workflows:
         - 'jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c'
         - 'swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
     '.github/workflows/pr-gate.yml':
-        - 'tox-dev/github-workflows@6.8.0'
+        - 'tox-dev/github-workflows@6.8.3'
     '.github/workflows/prepare-release.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/create-github-app-token@v3.3.0'
@@ -53,7 +53,7 @@ workflows:
         - 'actions/upload-artifact@v7.0.2'
         - 'astral-sh/setup-uv@v10.3.3'
         - 'jdx/mise-action@v5.2.6'
-        - 'tox-dev/github-workflows@6.8.0'
+        - 'tox-dev/github-workflows@6.8.3'
     '.github/workflows/publish-pypi.yml':
         - 'actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f'
         - 'actions/checkout@v7.0.1'
@@ -61,7 +61,7 @@ workflows:
         - 'astral-sh/setup-uv@v10.3.3'
         - 'jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c'
         - 'swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
-        - 'tox-dev/github-workflows@6.8.0'
+        - 'tox-dev/github-workflows@6.8.3'
     '.github/workflows/release.yml':
         - 'actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f'
         - 'actions/attest@v4.2.2'
@@ -72,7 +72,7 @@ workflows:
         - 'jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c'
         - 'pypa/gh-action-pypi-publish@v1.14.3'
         - 'swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
-        - 'tox-dev/github-workflows@6.8.0'
+        - 'tox-dev/github-workflows@6.8.3'
     '.github/workflows/scorecard.yaml': []
     '.github/workflows/upgrade-release-tools.yaml': []
 dependencies:
@@ -185,8 +185,8 @@ dependencies:
         commit: 'sha1-b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2'
         owner_id: 43724913
         repo_id: 442947557
-    'tox-dev/github-workflows@6.8.0':
-        ref: '6.8.0'
-        commit: 'sha1-bf1c3ab0aa137d307a07aad844d507af73039387'
+    'tox-dev/github-workflows@6.8.3':
+        ref: '6.8.3'
+        commit: 'sha1-ef0cd88bef592260a48345753b8b509b209ab189'
         owner_id: 20345659
         repo_id: 1426182029
