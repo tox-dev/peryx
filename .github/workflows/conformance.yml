@@ -78,7 +78,7 @@ jobs:
           rustflags: -D warnings
           build-warnings: ""
       - name: 🦀 Install just
-        uses: taiki-e/install-action@v2.90.0
+        uses: taiki-e/install-action@v2.90.3
         with:
           tool: just
       - name: 🧪 Run OCI conformance tests
