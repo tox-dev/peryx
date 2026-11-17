@@ -992,29 +992,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-server"
-version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3766086d344b8f8d2a9cf6fb211b581de5b160e052d7bc75a92e58cc41909054"
-dependencies = [
- "arc-swap",
- "bytes",
- "either",
- "fs-err",
- "http 1.5.0",
- "http-body",
- "hyper",
- "hyper-util",
- "pin-project-lite",
- "rustls",
- "rustls-pki-types",
- "socket2",
- "tokio",
- "tokio-rustls",
- "tower-service",
-]
-
-[[package]]
 name = "base16"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4679,7 +4656,7 @@ dependencies = [
  "async-trait",
  "axoupdater",
  "axum",
- "axum-server 0.9.2",
+ "axum-server",
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
@@ -4689,7 +4666,7 @@ dependencies = [
  "http-body-util",
  "ipnet",
  "mimalloc",
- "nix 0.31.3",
+ "nix 0.32.0",
  "peryx-core",
  "peryx-driver",
  "peryx-ecosystem-oci",
@@ -5234,7 +5211,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "http-body-util",
- "nix 0.31.3",
+ "nix 0.32.0",
  "peryx",
  "peryx-core",
  "peryx-driver",
@@ -5330,7 +5307,7 @@ version = "2026.1105.0"
 dependencies = [
  "async-trait",
  "axum",
- "nix 0.31.3",
+ "nix 0.32.0",
  "peryx-core",
  "peryx-driver",
  "peryx-storage",
@@ -6344,7 +6321,7 @@ dependencies = [
  "async-trait",
  "async-web-client",
  "aws-lc-rs",
- "axum-server 0.8.0",
+ "axum-server",
  "base64 0.22.1",
  "blocking",
  "chrono",

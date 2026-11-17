@@ -664,7 +664,7 @@ async fn test_yank_reports_an_override_store_error() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         body,
-        "file removal: metadata store error: journal is of type Table<&str, &[u8]>"
+        "file removal: metadata store error: journal has key type &str and value type &[u8]"
     );
 }
 
@@ -675,7 +675,7 @@ async fn test_delete_reports_an_override_store_error() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         body,
-        "file removal: metadata store error: journal is of type Table<&str, &[u8]>"
+        "file removal: metadata store error: journal has key type &str and value type &[u8]"
     );
 }
 
