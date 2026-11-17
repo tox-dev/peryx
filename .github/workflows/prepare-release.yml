@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: 🧰 Install release tools with mise
-        uses: jdx/mise-action@v5.2.6
+        uses: jdx/mise-action@v5.2.7
         with:
           version: 2026.9.14
           install_args: --locked github:knope-dev/knope
