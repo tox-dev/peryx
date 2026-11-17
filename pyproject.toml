@@ -78,8 +78,3 @@ decision-order = "stable"
 [tool.nab.matrix]
 python = ">=3.15,<3.16"
 platforms = [ "linux_x86_64", "linux_aarch64", "macos_arm64", "windows_amd64", "windows_arm64" ]
-
-# python-sbom 0.3.0 needs a seven-day cutoff exception.
-# expires 2026-11-24
-[tool.nab.packages."python-sbom"]
-uploaded-prior-to = 2026-11-09T23:18:00Z
