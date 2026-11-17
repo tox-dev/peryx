@@ -161,7 +161,10 @@ async fn browse_http_reports_a_placement_record_read_failure() {
     let (status, _, body) = send(state, Method::GET, "/browse?index=pypi&project=flask", None).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(body.contains("artifact_placement is of type"), "{body}");
+    assert!(
+        body.contains("artifact_placement has key type &str and value type &str"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

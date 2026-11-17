@@ -40,7 +40,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "test-util", "time"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["fs", "poll", "signal"] }
+nix = { version = "0.32.0", features = ["fs", "poll", "signal"] }
 unix-ancillary = "0.6.0"
 
 [target.'cfg(windows)'.dependencies]

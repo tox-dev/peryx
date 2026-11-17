@@ -65,7 +65,7 @@ wiremock.workspace = true
 zip.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
-nix = { version = "0.31.3", features = ["fs"] }
+nix = { version = "0.32.0", features = ["fs"] }
 
 [lints]
 workspace = true
