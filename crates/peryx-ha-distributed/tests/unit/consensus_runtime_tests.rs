@@ -12,10 +12,10 @@ use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcHandler, Raft
 use crate::raft::persistence::RaftLogStore;
 use crate::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode, TypeConfig};
 use axum::body::Bytes;
-use openraft::error::{ClientWriteError, ForwardToLeader, RaftError};
+use openraft::alias::WatchOf;
+use openraft::async_runtime::{Watch, WatchReceiver as _};
+use openraft::errors::{ClientWriteError, ForwardToLeader, RaftError};
 use openraft::raft::AppendEntriesRequest;
-use openraft::storage::RaftStateMachine as _;
-use openraft::testing::log_id;
 use openraft::{Entry, EntryPayload};
 use peryx_core::Clock;
 use peryx_ha::{
@@ -228,7 +228,7 @@ impl GatedCluster {
 
     fn tenure(&self, index: usize) -> (Option<u64>, u64) {
         let metrics = self.node(index).metrics();
-        let observed = metrics.borrow();
+        let observed = metrics.borrow_watched();
         (observed.current_leader, observed.current_term)
     }
 
@@ -236,7 +236,7 @@ impl GatedCluster {
         let mut metrics = self.node(0).metrics();
         let elected = tokio::time::timeout(
             Duration::from_secs(10),
-            metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+            metrics.wait_until(|metrics| metrics.current_leader.is_some()),
         )
         .await
         .unwrap()
@@ -477,7 +477,7 @@ async fn test_ignite_reports_a_consensus_core_that_stops_under_the_executor() {
 
     assert_eq!(
         failures.wait().await,
-        "ownership consensus executor failed: watch ownership consensus leadership: channel closed"
+        "ownership consensus executor failed: watch ownership consensus leadership: watch channel closed"
     );
     let (_, executor) = started.commit();
     let exit = tokio::task::spawn_blocking(move || executor.shutdown_and_join())
@@ -485,7 +485,7 @@ async fn test_ignite_reports_a_consensus_core_that_stops_under_the_executor() {
         .unwrap();
     assert_eq!(
         format!("{:#}", exit.unwrap_err()),
-        "watch ownership consensus leadership: channel closed"
+        "watch ownership consensus leadership: watch channel closed"
     );
 }
 
@@ -527,7 +527,7 @@ async fn test_ignite_starts_and_bootstraps_a_single_node_group() {
     let mut metrics = node.metrics();
     tokio::time::timeout(
         Duration::from_secs(5),
-        metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+        metrics.wait_until(|metrics| metrics.current_leader.is_some()),
     )
     .await
     .unwrap()
@@ -601,7 +601,7 @@ async fn test_ignite_keeps_an_audit_pending_when_projection_is_read_only() {
     let mut metrics = restarted.metrics();
     tokio::time::timeout(
         Duration::from_secs(5),
-        metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+        metrics.wait_until(|metrics| metrics.current_leader.is_some()),
     )
     .await
     .unwrap()
@@ -806,7 +806,7 @@ async fn leader_node(dir: &TempDir) -> RaftNode {
     let mut metrics = node.metrics();
     tokio::time::timeout(
         Duration::from_secs(5),
-        metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+        metrics.wait_until(|metrics| metrics.current_leader.is_some()),
     )
     .await
     .unwrap()
@@ -1048,18 +1048,17 @@ async fn test_claim_home_without_a_leader_reports_not_leader() {
 async fn test_claim_home_checks_leadership_before_returning_a_cached_assignment() {
     let dir = tempfile::tempdir().unwrap();
     let node = started_node(&dir).await;
-    let mut state_machine = node.state_machine().clone();
+    let state_machine = node.state_machine().clone();
     state_machine
-        .apply([Entry {
-            log_id: log_id(1, voter_id("east"), 1),
+        .apply_entries(vec![Entry {
+            log_id: openraft::testing::log_id::<TypeConfig>(1, voter_id("east"), 1),
             payload: EntryPayload::Normal(OwnershipCommand::AssignHome {
                 authority: crate::AuthorityKey("proj".to_owned()),
                 home: DatacenterId("east".to_owned()),
                 cause: AssignmentCause::FirstPublish,
             }),
         }])
-        .await
-        .unwrap();
+        .await;
     let group = OwnershipGroup::new(node, DatacenterId("east".to_owned()));
 
     assert!(matches!(
@@ -1344,7 +1343,7 @@ async fn test_cluster_status_excludes_a_committed_learner() {
     assert_eq!(
         (
             node.metrics()
-                .borrow()
+                .borrow_watched()
                 .membership_config
                 .nodes()
                 .map(|(_, member)| member.datacenter.0.clone())
@@ -1362,7 +1361,7 @@ async fn test_cluster_status_excludes_a_committed_learner() {
 async fn test_membership_publication_times_out() {
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;
-    let (sender, metrics) = tokio::sync::watch::channel(node.metrics().borrow().clone());
+    let (sender, metrics) = <WatchOf<TypeConfig> as Watch>::channel(node.metrics().borrow_watched().clone());
 
     let error = crate::consensus_runtime::wait_for_membership_publication(metrics, 2, Duration::ZERO)
         .await
@@ -1380,7 +1379,7 @@ async fn test_membership_publication_times_out() {
 async fn test_membership_publication_fails_when_metrics_close() {
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;
-    let (sender, metrics) = tokio::sync::watch::channel(node.metrics().borrow().clone());
+    let (sender, metrics) = <WatchOf<TypeConfig> as Watch>::channel(node.metrics().borrow_watched().clone());
     drop(sender);
 
     let error = crate::consensus_runtime::wait_for_membership_publication(metrics, 2, Duration::from_secs(5))
@@ -1460,7 +1459,7 @@ async fn test_add_learner_records_the_canonical_endpoint() {
 
     let learner = node
         .metrics()
-        .borrow()
+        .borrow_watched()
         .membership_config
         .nodes()
         .find_map(|(id, node)| (*id == voter_id("west")).then(|| node.endpoint.clone()));
@@ -1741,7 +1740,7 @@ async fn mounted_leader(dir: &TempDir) -> (RaftNode, String, tokio::task::JoinHa
     tokio::time::timeout(
         Duration::from_secs(5),
         node.metrics()
-            .wait_for(|metrics| metrics.current_leader == Some(voter_id("east"))),
+            .wait_until(|metrics| metrics.current_leader == Some(voter_id("east"))),
     )
     .await
     .unwrap()
@@ -1815,7 +1814,7 @@ async fn test_a_forwarded_claim_is_unavailable_when_the_leader_listener_closes()
     tokio::time::timeout(
         Duration::from_secs(5),
         west.metrics()
-            .wait_for(|metrics| metrics.current_leader == Some(voter_id("east"))),
+            .wait_until(|metrics| metrics.current_leader == Some(voter_id("east"))),
     )
     .await
     .unwrap()
@@ -1860,14 +1859,14 @@ async fn test_a_learner_with_a_replication_backlog_is_promoted_only_once_it_catc
         .await
         .unwrap();
     let mut metrics = east.metrics();
-    let registered = metrics.borrow().last_log_index;
+    let registered = metrics.borrow_watched().last_log_index;
 
     let promoting = tokio::spawn({
         let group = Arc::clone(&group);
         async move { group.submit(None, promote("west")).await }
     });
     metrics
-        .wait_for(|metrics| metrics.last_log_index > registered)
+        .wait_until(|metrics| metrics.last_log_index > registered)
         .await
         .unwrap();
     let held = (group.cluster_status().voters, promoting.is_finished());
@@ -1918,7 +1917,7 @@ async fn test_replacing_a_voter_keeps_it_until_the_learner_catches_up() {
         _ = &mut replacing => "the replacement returned before the learner joined",
         () = async {
             metrics
-                .wait_for(|metrics| {
+                .wait_until(|metrics| {
                     metrics
                         .membership_config
                         .nodes()
@@ -1939,11 +1938,11 @@ async fn test_replacing_a_voter_keeps_it_until_the_learner_catches_up() {
     );
     stop_mounted(&east, east_served).await;
     west.raft().runtime_config().elect(true);
-    west.raft().trigger().elect().await.unwrap();
+    west.raft().trigger().elect(false).await.unwrap();
     tokio::time::timeout(
         Duration::from_secs(5),
         west.metrics()
-            .wait_for(|metrics| metrics.current_leader == Some(voter_id("west"))),
+            .wait_until(|metrics| metrics.current_leader == Some(voter_id("west"))),
     )
     .await
     .unwrap()
@@ -1977,7 +1976,7 @@ async fn test_a_timed_out_promotion_keeps_the_roster_and_retries_the_barrier() {
         .await
         .unwrap();
     let mut metrics = east.metrics();
-    let registered = metrics.borrow().last_log_index.unwrap();
+    let registered = metrics.borrow_watched().last_log_index.unwrap();
     let command = promote("west");
     let promoting = tokio::spawn({
         let group = Arc::clone(&group);
@@ -1985,7 +1984,7 @@ async fn test_a_timed_out_promotion_keeps_the_roster_and_retries_the_barrier() {
         async move { group.submit(Some("k1"), command).await }
     });
     metrics
-        .wait_for(|metrics| metrics.last_log_index.is_some_and(|index| index >= registered + 2))
+        .wait_until(|metrics| metrics.last_log_index.is_some_and(|index| index >= registered + 2))
         .await
         .unwrap();
     tokio::time::pause();
@@ -2069,7 +2068,7 @@ async fn test_removing_a_voter_frees_its_endpoint_for_the_replacement() {
     let mut membership = east.metrics();
     tokio::time::timeout(
         Duration::from_secs(5),
-        membership.wait_for(|metrics| metrics.current_leader == Some(voter_id("east"))),
+        membership.wait_until(|metrics| metrics.current_leader == Some(voter_id("east"))),
     )
     .await
     .unwrap()
@@ -2106,7 +2105,7 @@ async fn test_removing_a_voter_frees_its_endpoint_for_the_replacement() {
         .unwrap();
     tokio::time::timeout(
         Duration::from_secs(5),
-        membership.wait_for(|metrics| !metrics.membership_config.nodes().any(|(id, _)| *id == voter_id("west"))),
+        membership.wait_until(|metrics| !metrics.membership_config.nodes().any(|(id, _)| *id == voter_id("west"))),
     )
     .await
     .unwrap()
@@ -2229,13 +2228,13 @@ async fn test_advancing_an_unassigned_authority_is_invalid() {
 
 #[test]
 fn test_a_forward_to_a_known_leader_names_its_address() {
-    let error = RaftError::APIError(ClientWriteError::ForwardToLeader(ForwardToLeader {
-        leader_id: Some(voter_id("west")),
-        leader_node: Some(PeryxNode {
+    let error = RaftError::APIError(ClientWriteError::ForwardToLeader(ForwardToLeader::new(
+        voter_id("west"),
+        PeryxNode {
             datacenter: DatacenterId("west".to_owned()),
             endpoint: "http://west.internal:4460/".to_owned(),
-        }),
-    }));
+        },
+    )));
 
     assert_eq!(
         map_write_error(&error),
@@ -2421,7 +2420,7 @@ async fn test_replacing_a_voter_retries_after_a_joint_consensus_timeout() {
     });
     let mut east_metrics = east.metrics();
     east_metrics
-        .wait_for(|metrics| {
+        .wait_until(|metrics| {
             metrics
                 .membership_config
                 .nodes()
@@ -2435,7 +2434,7 @@ async fn test_replacing_a_voter_retries_after_a_joint_consensus_timeout() {
     // gate there leaves that commit nothing to wait on, where closing it earlier would have run out the
     // catch-up bound instead and told us about the wrong wait.
     east_metrics
-        .wait_for(|metrics| metrics.membership_config.voter_ids().any(|id| id == west_id))
+        .wait_until(|metrics| metrics.membership_config.voter_ids().any(|id| id == west_id))
         .await
         .unwrap();
     gate.block();
@@ -2454,10 +2453,10 @@ async fn test_replacing_a_voter_retries_after_a_joint_consensus_timeout() {
         group.cluster_status().voters,
         vec!["east".to_owned(), "west".to_owned()]
     );
-    let last_applied = east_metrics.borrow().last_applied;
+    let last_applied = east_metrics.borrow_watched().last_applied;
     gate.open();
     east_metrics
-        .wait_for(|metrics| metrics.last_applied > last_applied)
+        .wait_until(|metrics| metrics.last_applied > last_applied)
         .await
         .unwrap();
     let retried = group.submit(None, command).await.unwrap().receipt;

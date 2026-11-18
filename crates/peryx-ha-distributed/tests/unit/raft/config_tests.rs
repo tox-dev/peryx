@@ -31,14 +31,12 @@ fn test_defaults_map_to_a_validated_config() {
 }
 
 #[test]
-#[allow(deprecated)] // OpenRaft still exposes the deprecated snapshot field in Config.
 fn test_unowned_defaults_track_openraft() {
     let expected = Config::default();
     let actual = RaftConfig::default().into_openraft("ownership").unwrap();
 
     assert_eq!(
         (
-            actual.send_snapshot_timeout,
             actual.max_payload_entries,
             actual.snapshot_max_chunk_size,
             actual.purge_batch_size,
@@ -47,7 +45,6 @@ fn test_unowned_defaults_track_openraft() {
             actual.enable_elect,
         ),
         (
-            expected.send_snapshot_timeout,
             expected.max_payload_entries,
             expected.snapshot_max_chunk_size,
             expected.purge_batch_size,

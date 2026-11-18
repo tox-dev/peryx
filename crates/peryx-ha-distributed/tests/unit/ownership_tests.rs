@@ -975,3 +975,13 @@ fn test_publishing_to_a_forgotten_authority_assigns_it_again_from_epoch_one() {
         }
     );
 }
+
+#[test]
+fn test_a_command_displays_as_its_debug_form_in_consensus_logs() {
+    let command = assign("proj", "east");
+
+    assert_eq!(
+        command.to_string(),
+        r#"AssignHome { authority: AuthorityKey("proj"), home: DatacenterId("east"), cause: FirstPublish }"#
+    );
+}

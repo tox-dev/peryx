@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use openraft::error::{ClientWriteError, Fatal, ForwardToLeader, InitializeError, RaftError};
-use openraft::raft::{ClientWriteResponse, InstallSnapshotRequest};
-use openraft::{ServerState, SnapshotMeta, Vote};
+use openraft::ServerState;
+use openraft::async_runtime::WatchReceiver as _;
+use openraft::errors::{ClientWriteError, Fatal, ForwardToLeader, InitializeError, RaftError};
+use openraft::raft::ClientWriteResponse;
+use openraft_legacy::network_v1::{InstallSnapshotRequest, SnapshotMeta};
 use tempfile::TempDir;
 
 use crate::consensus_runtime::OwnershipGroup;
@@ -59,7 +61,7 @@ async fn test_a_bootstrapped_single_node_becomes_its_own_leader() {
     let node = leader_node(&dir).await;
 
     assert_eq!(node.leader(), Some((1, peer("east", "http://localhost:4460/"))));
-    assert_eq!(node.metrics().borrow().current_leader, Some(1));
+    assert_eq!(node.metrics().borrow_watched().current_leader, Some(1));
 }
 
 #[tokio::test]
@@ -161,7 +163,7 @@ async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
         .unwrap(),
     );
     let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
-    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<TypeConfig, ClientWriteError<TypeConfig>>> =
         serde_json::from_slice(&reply).unwrap();
     assert_eq!(
         response.unwrap().data,
@@ -181,7 +183,7 @@ async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
         .unwrap(),
     );
     let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
-    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<TypeConfig, ClientWriteError<TypeConfig>>> =
         serde_json::from_slice(&reply).unwrap();
     assert_eq!(
         response.unwrap().data,
@@ -196,7 +198,7 @@ async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
         .unwrap(),
     );
     let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
-    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<TypeConfig, ClientWriteError<TypeConfig>>> =
         serde_json::from_slice(&reply).unwrap();
     assert_eq!(
         response.unwrap().data,
@@ -211,7 +213,7 @@ async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
         .unwrap(),
     );
     let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
-    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<TypeConfig, ClientWriteError<TypeConfig>>> =
         serde_json::from_slice(&reply).unwrap();
     assert_eq!(
         response.unwrap().data,
@@ -282,7 +284,7 @@ async fn test_client_write_rpc_stamps_singleton_lease_times_with_the_leader_cloc
 async fn forward(handler: &dyn crate::raft::network::RaftRpcHandler, command: OwnershipCommand) -> OwnershipResponse {
     let body = Bytes::from(serde_json::to_vec(&command).unwrap());
     let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
-    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<TypeConfig, ClientWriteError<TypeConfig>>> =
         serde_json::from_slice(&reply).unwrap();
     response.unwrap().data
 }
@@ -372,10 +374,10 @@ async fn test_forward_target_prefers_the_error_leader_over_local_metrics() {
     let node = leader_node(&dir).await;
 
     let stamped = peer("west", "localhost:4470");
-    let error = RaftError::APIError(ClientWriteError::ForwardToLeader(ForwardToLeader {
-        leader_id: Some(2),
-        leader_node: Some(stamped.clone()),
-    }));
+    let error = RaftError::APIError(ClientWriteError::ForwardToLeader(ForwardToLeader::new(
+        2,
+        stamped.clone(),
+    )));
 
     assert_eq!(node.forward_target(&error), Some((2, stamped)));
 }
@@ -385,10 +387,7 @@ async fn test_forward_target_falls_back_to_local_metrics_without_a_stamped_leade
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;
 
-    let error = RaftError::APIError(ClientWriteError::ForwardToLeader(ForwardToLeader {
-        leader_id: None,
-        leader_node: None,
-    }));
+    let error = RaftError::APIError(ClientWriteError::ForwardToLeader(ForwardToLeader::empty()));
 
     assert_eq!(node.forward_target(&error), node.leader());
 }
@@ -423,7 +422,10 @@ async fn test_a_reassignment_returns_its_claim_through_the_shared_state() {
         })
     );
 
-    node.raft().ensure_linearizable().await.unwrap();
+    node.raft()
+        .ensure_linearizable(openraft::ReadPolicy::ReadIndex)
+        .await
+        .unwrap();
     let _ = node.state_machine();
 }
 
@@ -463,7 +465,7 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
     let mut metrics = nodes[0].metrics();
     let elected = tokio::time::timeout(
         Duration::from_secs(10),
-        metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+        metrics.wait_until(|metrics| metrics.current_leader.is_some()),
     )
     .await
     .unwrap()
@@ -471,14 +473,18 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
     .current_leader
     .unwrap();
 
-    let voters = nodes[0].metrics().borrow().membership_config.nodes().count();
+    let voters = nodes[0].metrics().borrow_watched().membership_config.nodes().count();
     assert_eq!(voters, 3, "all three voters are in the membership");
 
     let follower = (1..=3u64).find(|id| *id != elected).unwrap();
     let mut follower_metrics = nodes[usize::try_from(follower - 1).unwrap()].metrics();
+    // A follower learns who leads before the membership naming the leader's endpoint replicates, and
+    // forwarding needs that endpoint.
     tokio::time::timeout(
         Duration::from_secs(10),
-        follower_metrics.wait_for(|metrics| metrics.current_leader == Some(elected)),
+        follower_metrics.wait_until(|metrics| {
+            metrics.current_leader == Some(elected) && metrics.membership_config.nodes().any(|(id, _)| *id == elected)
+        }),
     )
     .await
     .unwrap()
@@ -517,8 +523,8 @@ async fn test_the_rpc_handler_serves_install_snapshot_and_rejects_a_malformed_bo
     ));
 
     let request = InstallSnapshotRequest::<TypeConfig> {
-        vote: Vote::default(),
-        meta: SnapshotMeta::default(),
+        vote: crate::raft::Vote::new(1, 1),
+        meta: SnapshotMeta::new(crate::raft::SnapshotMeta::default(), "1-1".to_owned()),
         offset: 0,
         data: Vec::new(),
         done: true,

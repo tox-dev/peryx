@@ -12,6 +12,7 @@ use crate::raft::network::{PeerRaftNetworkFactory, raft_rpc_router};
 use crate::raft::persistence::RaftLogStore;
 use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
 use crate::{ControlPlane, DatacenterId, OwnershipEffect};
+use openraft::async_runtime::WatchReceiver as _;
 use peryx_core::Clock;
 use peryx_ha::{
     CommandOutcome, CommandReceipt, ControlCommand, ControlCommit, ControlError, MembershipControl,
@@ -63,7 +64,7 @@ async fn leader_over(store: RaftLogStore) -> RaftNode {
     let mut metrics = node.metrics();
     tokio::time::timeout(
         Duration::from_secs(5),
-        metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+        metrics.wait_until(|metrics| metrics.current_leader.is_some()),
     )
     .await
     .unwrap()
@@ -361,12 +362,17 @@ async fn live_group(dirs: &[TempDir]) -> (Vec<RaftNode>, Vec<Server>) {
     (nodes, servers)
 }
 
-/// Waits until `node` follows a leader that is not `excluded`, and names it.
+/// Waits until `node` follows a leader that is not `excluded` and holds the membership naming its
+/// endpoint, which replicates after the follower learns who leads, and names the leader.
 async fn leader_other_than(node: &RaftNode, excluded: Option<u64>) -> u64 {
     let mut metrics = node.metrics();
     tokio::time::timeout(
         Duration::from_secs(10),
-        metrics.wait_for(|metrics| matches!(metrics.current_leader, Some(leader) if Some(leader) != excluded)),
+        metrics.wait_until(|metrics| {
+            metrics.current_leader.is_some_and(|leader| {
+                Some(leader) != excluded && metrics.membership_config.nodes().any(|(id, _)| *id == leader)
+            })
+        }),
     )
     .await
     .unwrap()

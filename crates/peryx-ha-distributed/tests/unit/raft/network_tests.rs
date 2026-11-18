@@ -414,20 +414,18 @@ mod adapter {
     use std::time::Duration;
 
     use axum::body::Bytes;
-    use openraft::Vote;
-    use openraft::error::{Fatal, InstallSnapshotError, RPCError, RaftError, RemoteError, Timeout};
-    use openraft::network::{RPCOption, RPCTypes, RaftNetwork, RaftNetworkFactory};
-    use openraft::raft::{
-        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest,
-        VoteResponse,
+    use openraft::errors::{Fatal, RPCError, RaftError, RemoteError, Timeout};
+    use openraft::network::{RPCOption, RPCTypes, RaftNetworkFactory};
+    use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse};
+    use openraft_legacy::network_v1::{
+        InstallSnapshotError, InstallSnapshotRequest, InstallSnapshotResponse, RaftNetwork, SnapshotMeta,
     };
-    use openraft::storage::SnapshotMeta;
     use serde::Serialize;
 
     use super::{PEER_ARRIVAL, TOKEN, TestServer, await_request_headers};
     use crate::DatacenterId;
     use crate::raft::network::{PeerRaftNetwork, PeerRaftNetworkFactory, RaftRpc, RaftRpcHandler, RaftRpcRejection};
-    use crate::raft::{PeryxNode, TypeConfig};
+    use crate::raft::{PeryxNode, TypeConfig, Vote};
     use peryx_test_support::ControlledPeer;
     use std::sync::Arc;
 
@@ -443,7 +441,7 @@ mod adapter {
 
     /// Uses a serializable error type with the same wire representation.
     fn wire<Resp: Serialize>(remote_error: bool, ok: Resp) -> Vec<u8> {
-        let reply: Result<Resp, RaftError<NodeId, InstallSnapshotError>> = if remote_error {
+        let reply: Result<Resp, RaftError<TypeConfig, InstallSnapshotError>> = if remote_error {
             Err(RaftError::Fatal(Fatal::Panicked))
         } else {
             Ok(ok)
@@ -456,10 +454,10 @@ mod adapter {
         async fn handle(&self, rpc: RaftRpc, _body: Bytes) -> Result<Vec<u8>, RaftRpcRejection> {
             let vote = Vote::new(1, 1);
             let bytes = match rpc {
-                RaftRpc::AppendEntries => wire(self.remote_error, AppendEntriesResponse::<NodeId>::Success),
+                RaftRpc::AppendEntries => wire(self.remote_error, AppendEntriesResponse::<TypeConfig>::Success),
                 RaftRpc::ClientWrite => unreachable!("the OpenRaft adapter never sends client writes"),
-                RaftRpc::Vote => wire(self.remote_error, VoteResponse::new(vote, None, true)),
-                RaftRpc::InstallSnapshot => wire(self.remote_error, InstallSnapshotResponse { vote }),
+                RaftRpc::Vote => wire(self.remote_error, VoteResponse::<TypeConfig>::new(vote, None, true)),
+                RaftRpc::InstallSnapshot => wire(self.remote_error, InstallSnapshotResponse::<TypeConfig> { vote }),
             };
             Ok(bytes)
         }
@@ -476,6 +474,7 @@ mod adapter {
         PeerRaftNetworkFactory::new(LOCAL_VOTER, TOKEN, CONNECT_TIMEOUT)
             .new_client(TARGET, &node(endpoint))
             .await
+            .into_inner()
     }
 
     async fn stub_server(remote_error: bool) -> TestServer {
@@ -494,14 +493,14 @@ mod adapter {
         }
     }
 
-    fn vote_req() -> VoteRequest<NodeId> {
+    fn vote_req() -> VoteRequest<TypeConfig> {
         VoteRequest::new(Vote::new(1, 1), None)
     }
 
     fn snapshot_req() -> InstallSnapshotRequest<TypeConfig> {
         InstallSnapshotRequest {
             vote: Vote::new(1, 1),
-            meta: SnapshotMeta::default(),
+            meta: SnapshotMeta::new(crate::raft::SnapshotMeta::default(), "1-1".to_owned()),
             offset: 0,
             data: vec![],
             done: true,

@@ -1,11 +1,11 @@
-use std::error::Error as _;
+use std::io;
 
-use openraft::storage::{RaftLogReader, RaftLogStorage, RaftLogStorageExt};
-use openraft::testing::{StoreBuilder, Suite, log_id};
-use openraft::{Entry, EntryPayload, ErrorSubject, ErrorVerb, StorageError, Vote};
+use openraft::storage::{IOFlushed, RaftLogReader, RaftLogStorage};
+use openraft::testing::log::{StoreBuilder, Suite};
+use openraft::{EntryPayload, StorageError};
 use tempfile::TempDir;
 
-use super::{NodeId, RaftLogStoreAdapter, TypeConfig};
+use super::{Entry, LogId, LogStoreError, RaftLogStoreAdapter, TypeConfig, Vote};
 use crate::raft::OwnershipStateMachine;
 use crate::raft::persistence::RaftLogStore;
 
@@ -14,7 +14,7 @@ struct Builder;
 impl StoreBuilder<TypeConfig, RaftLogStoreAdapter, OwnershipStateMachine, TempDir> for Builder {
     fn build(
         &self,
-    ) -> impl Future<Output = Result<(TempDir, RaftLogStoreAdapter, OwnershipStateMachine), StorageError<NodeId>>> + Send
+    ) -> impl Future<Output = Result<(TempDir, RaftLogStoreAdapter, OwnershipStateMachine), StorageError<TypeConfig>>> + Send
     {
         let dir = tempfile::tempdir().unwrap();
         let store = RaftLogStore::open(dir.path().join("raft.redb")).unwrap();
@@ -26,9 +26,9 @@ impl StoreBuilder<TypeConfig, RaftLogStoreAdapter, OwnershipStateMachine, TempDi
     }
 }
 
-#[test]
-fn test_passes_the_openraft_storage_conformance_suite() {
-    Suite::test_all(Builder).unwrap();
+#[tokio::test]
+async fn test_passes_the_openraft_storage_conformance_suite() {
+    Suite::test_all(Builder).await.unwrap();
 }
 
 #[tokio::test]
@@ -54,7 +54,7 @@ async fn test_a_corrupt_persisted_value_remains_the_storage_error_source() {
 
     let error = adapter.read_vote().await.unwrap_err();
 
-    assert!(storage_source(error).contains("expected"));
+    assert!(error.to_string().contains("expected"), "{error}");
 }
 
 #[tokio::test]
@@ -66,33 +66,29 @@ async fn test_a_store_fault_remains_the_storage_error_source() {
 
     let error = adapter.read_vote().await.unwrap_err();
 
-    assert!(storage_source(error).contains("does not exist"));
+    assert!(error.to_string().contains("does not exist"), "{error}");
 }
 
 #[rstest::rstest]
-#[case::read_entries(StorageOperation::ReadEntries, ErrorSubject::Logs, ErrorVerb::Read)]
-#[case::read_state(StorageOperation::ReadState, ErrorSubject::Logs, ErrorVerb::Read)]
-#[case::save_vote(StorageOperation::SaveVote, ErrorSubject::Vote, ErrorVerb::Write)]
-#[case::read_vote(StorageOperation::ReadVote, ErrorSubject::Vote, ErrorVerb::Read)]
-#[case::append(StorageOperation::Append, ErrorSubject::Logs, ErrorVerb::Write)]
-#[case::truncate(StorageOperation::Truncate, ErrorSubject::Log(log_id(1, 0, 7)), ErrorVerb::Delete)]
-#[case::purge(StorageOperation::Purge, ErrorSubject::Log(log_id(1, 0, 7)), ErrorVerb::Delete)]
-#[case::save_committed(StorageOperation::SaveCommitted, ErrorSubject::Logs, ErrorVerb::Write)]
-#[case::read_committed(StorageOperation::ReadCommitted, ErrorSubject::Logs, ErrorVerb::Read)]
+#[case::read_entries(StorageOperation::ReadEntries)]
+#[case::read_state(StorageOperation::ReadState)]
+#[case::save_vote(StorageOperation::SaveVote)]
+#[case::read_vote(StorageOperation::ReadVote)]
+#[case::append(StorageOperation::Append)]
+#[case::truncate(StorageOperation::Truncate)]
+#[case::purge(StorageOperation::Purge)]
+#[case::save_committed(StorageOperation::SaveCommitted)]
+#[case::read_committed(StorageOperation::ReadCommitted)]
 #[tokio::test]
-async fn test_storage_errors_identify_the_operation(
-    #[case] operation: StorageOperation,
-    #[case] subject: ErrorSubject<NodeId>,
-    #[case] verb: ErrorVerb,
-) {
+async fn test_every_storage_operation_surfaces_the_store_fault(#[case] operation: StorageOperation) {
     let (_dir, mut adapter) = faulting_adapter();
 
     let error = operation.run(&mut adapter).await;
 
-    assert!(
-        error.to_string().starts_with(&format!("when {verb:?} {subject:?}:")),
-        "{error}"
-    );
+    let source = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<LogStoreError>());
+    assert!(matches!(source, Some(LogStoreError::Store(_))), "{error:?}");
 }
 
 #[derive(Clone, Copy)]
@@ -109,25 +105,32 @@ enum StorageOperation {
 }
 
 impl StorageOperation {
-    async fn run(self, adapter: &mut RaftLogStoreAdapter) -> StorageError<NodeId> {
+    async fn run(self, adapter: &mut RaftLogStoreAdapter) -> io::Error {
         match self {
             Self::ReadEntries => adapter.try_get_log_entries(..).await.unwrap_err(),
             Self::ReadState => adapter.get_log_state().await.unwrap_err(),
             Self::SaveVote => adapter.save_vote(&Vote::new(1, 0)).await.unwrap_err(),
             Self::ReadVote => adapter.read_vote().await.unwrap_err(),
             Self::Append => adapter
-                .blocking_append([Entry {
-                    log_id: log_id(1, 0, 7),
-                    payload: EntryPayload::Blank,
-                }])
+                .append(
+                    [Entry {
+                        log_id: log_id(1, 0, 7),
+                        payload: EntryPayload::Blank,
+                    }],
+                    IOFlushed::noop(),
+                )
                 .await
                 .unwrap_err(),
-            Self::Truncate => adapter.truncate(log_id(1, 0, 7)).await.unwrap_err(),
+            Self::Truncate => adapter.truncate_after(Some(log_id(1, 0, 7))).await.unwrap_err(),
             Self::Purge => adapter.purge(log_id(1, 0, 7)).await.unwrap_err(),
             Self::SaveCommitted => adapter.save_committed(Some(log_id(1, 0, 7))).await.unwrap_err(),
             Self::ReadCommitted => adapter.read_committed().await.unwrap_err(),
         }
     }
+}
+
+fn log_id(term: u64, node_id: u64, index: u64) -> LogId {
+    openraft::testing::log_id::<TypeConfig>(term, node_id, index)
 }
 
 fn faulting_adapter() -> (TempDir, RaftLogStoreAdapter) {
@@ -149,8 +152,4 @@ fn faulting_adapter() -> (TempDir, RaftLogStoreAdapter) {
         dir,
         RaftLogStoreAdapter::new(RaftLogStore::open_existing(path).unwrap()),
     )
-}
-
-fn storage_source(error: StorageError<NodeId>) -> String {
-    error.into_io().unwrap().source().unwrap().to_string()
 }

@@ -1,8 +1,6 @@
 //! Blank and membership entries carry no ownership command and return
 //! [`NonMutating`](OwnershipResponse::NonMutating). Durable instances persist built and installed
-//! snapshots, then reload state, membership, `last_applied`, and the build generation after restart.
-//! The generation names snapshots, so a replacement process never repeats an identifier a follower
-//! may still be assembling chunks under.
+//! snapshots, then reload state, membership, and `last_applied` after restart.
 //!
 //! Serialization, restore and the redb commit run on a blocking thread with the state lock dropped,
 //! so a slow disk delays neither ownership reads nor log application. Candidates carry a
@@ -10,19 +8,20 @@
 //! so a task that finishes late cannot replace a newer snapshot.
 
 use std::collections::BTreeSet;
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::sync::Arc;
 
-use openraft::storage::RaftStateMachine;
-use openraft::{
-    AnyError, Entry, EntryPayload, LogId, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
-    StorageIOError, StoredMembership,
-};
+use futures_util::{Stream, StreamExt as _};
+use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
+use openraft::{EntryPayload, OptionalSend};
+use openraft_legacy::network_v1::SnapshotReceiverFactory;
 use tokio::sync::Mutex;
 
 use crate::ownership::{AppliedMeta, DatacenterId, OwnershipError, OwnershipState};
 use crate::raft::persistence::{RaftLogError, RaftLogStore};
-use crate::raft::{OwnershipResponse, PeryxNode, TypeConfig};
+use crate::raft::{
+    Entry, LogId, OwnershipResponse, Snapshot, SnapshotData, SnapshotMeta, StoredMembership, TypeConfig,
+};
 use crate::{Admission, AuthorityEpoch, AuthorityFence, AuthorityKey};
 use peryx_ha::PendingTransferAudit;
 
@@ -30,8 +29,6 @@ use peryx_ha::PendingTransferAudit;
 #[cfg(test)]
 #[path = "../../tests/unit/raft/state_machine_tests.rs"]
 mod tests;
-
-type NodeId = u64;
 
 /// Clones share applied state with snapshot builders.
 #[derive(Debug, Clone, Default)]
@@ -46,29 +43,25 @@ pub struct OwnershipStateMachine {
 /// between two candidates taken at the same position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SnapshotRank {
-    last_log_id: Option<LogId<NodeId>>,
+    last_log_id: Option<LogId>,
     publication: u64,
 }
 
-/// One consistent state and the identity it was named under, taken while holding the state lock so
+/// One consistent state and the rank it was taken at, captured while holding the state lock so
 /// the work that follows needs neither.
 #[derive(Debug)]
 struct SnapshotCandidate {
     state: OwnershipState,
-    meta: SnapshotMeta<NodeId, PeryxNode>,
+    meta: SnapshotMeta,
     rank: SnapshotRank,
-    generation: u64,
     store: Option<RaftLogStore>,
 }
 
 #[derive(Debug, Default)]
 struct Inner {
     state: OwnershipState,
-    last_applied: Option<LogId<NodeId>>,
-    last_membership: StoredMembership<NodeId, PeryxNode>,
-    /// Builds this store has named. Durable, because a counter held only in the process restarts at
-    /// zero and re-issues an identifier a peer may still be streaming chunks under.
-    snapshot_generation: u64,
+    last_applied: Option<LogId>,
+    last_membership: StoredMembership,
     /// Numbers every candidate this process takes, so two in flight at the same log position still
     /// order against each other.
     publications: u64,
@@ -79,7 +72,7 @@ struct Inner {
 
 #[derive(Debug, Clone)]
 struct StoredSnapshot {
-    meta: SnapshotMeta<NodeId, PeryxNode>,
+    meta: SnapshotMeta,
     data: Vec<u8>,
 }
 
@@ -93,23 +86,12 @@ enum SnapshotStoreError {
     Restore(#[from] OwnershipError),
 }
 
-impl From<SnapshotStoreError> for StorageError<NodeId> {
-    fn from(error: SnapshotStoreError) -> Self {
-        // `OpenRaft` turns every `StorageError` into `Fatal` and shuts down the node. This conversion
-        // preserves the store, codec, or ownership failure for diagnostics.
-        StorageIOError::read_snapshot(None, AnyError::new(&error)).into()
-    }
-}
-
 impl Inner {
-    /// Reloads state, membership, `last_applied`, and the snapshot generation after log compaction.
+    /// Reloads state, membership, and `last_applied` after log compaction.
     fn load(store: RaftLogStore) -> Result<Self, SnapshotStoreError> {
-        let mut inner = Self {
-            snapshot_generation: store.read_snapshot_generation()?,
-            ..Self::default()
-        };
+        let mut inner = Self::default();
         if let Some(stored) = store.read_snapshot()? {
-            let meta: SnapshotMeta<NodeId, PeryxNode> = serde_json::from_slice(&stored.meta)?;
+            let meta: SnapshotMeta = serde_json::from_slice(&stored.meta)?;
             inner.state = OwnershipState::restore(&stored.data)?;
             inner.last_applied = meta.last_log_id;
             inner.last_membership = meta.last_membership.clone();
@@ -130,7 +112,7 @@ impl Inner {
 
     /// Numbers the next candidate. Callers hold the lock, so the numbers follow the order the
     /// candidates read the state in.
-    const fn next_rank(&mut self, last_log_id: Option<LogId<NodeId>>) -> SnapshotRank {
+    const fn next_rank(&mut self, last_log_id: Option<LogId>) -> SnapshotRank {
         self.publications += 1;
         SnapshotRank {
             last_log_id,
@@ -140,7 +122,7 @@ impl Inner {
 
     /// Keeps the highest-ranked snapshot, so a task that finishes after a newer one cannot replace
     /// it.
-    fn publish(&mut self, rank: SnapshotRank, meta: SnapshotMeta<NodeId, PeryxNode>, data: Vec<u8>) {
+    fn publish(&mut self, rank: SnapshotRank, meta: SnapshotMeta, data: Vec<u8>) {
         if self.published.is_some_and(|published| rank <= published) {
             return;
         }
@@ -153,10 +135,10 @@ impl OwnershipStateMachine {
     /// Opens durable state and reloads its latest snapshot.
     ///
     /// # Errors
-    /// Returns [`StorageError`] when store reads fail or snapshot restoration violates ownership
+    /// Returns an I/O error when store reads fail or snapshot restoration violates ownership
     /// invariants.
-    pub fn with_snapshot_store(store: RaftLogStore) -> Result<Self, Box<StorageError<NodeId>>> {
-        let inner = Inner::load(store).map_err(|error| Box::new(StorageError::from(error)))?;
+    pub fn with_snapshot_store(store: RaftLogStore) -> Result<Self, io::Error> {
+        let inner = Inner::load(store).map_err(io::Error::other)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             durable: Arc::new(Mutex::new(None)),
@@ -197,58 +179,68 @@ impl OwnershipStateMachine {
         fence.admit(authority, presented)
     }
 
-    /// Clones one consistent state and names it, so serialization and the commit run without the
+    /// Applies one committed entry under the state lock, so a reader never sees half of it.
+    async fn apply_entry(&self, entry: Entry) -> OwnershipResponse {
+        let mut inner = self.inner.lock().await;
+        inner.last_applied = Some(entry.log_id);
+        match entry.payload {
+            EntryPayload::Blank => OwnershipResponse::NonMutating,
+            EntryPayload::Normal(command) => OwnershipResponse::Applied(inner.state.apply(
+                &command,
+                AppliedMeta {
+                    term: entry.log_id.leader_id.term,
+                    index: entry.log_id.index,
+                },
+            )),
+            EntryPayload::Membership(membership) => {
+                inner.last_membership = StoredMembership::new(Some(entry.log_id), membership);
+                let projectors = audit_projectors(&inner.last_membership);
+                inner.state.set_audit_projectors(projectors);
+                OwnershipResponse::NonMutating
+            }
+        }
+    }
+
+    /// Clones one consistent state and ranks it, so serialization and the commit run without the
     /// state lock and later applies can proceed against the live state.
     async fn snapshot_candidate(&self) -> SnapshotCandidate {
         let mut inner = self.inner.lock().await;
-        inner.snapshot_generation += 1;
         let last_applied = inner.last_applied;
-        let last_index = last_applied.map_or(0, |log_id| log_id.index);
-        let snapshot_id = format!("{last_index}-{}", inner.snapshot_generation);
         let rank = inner.next_rank(last_applied);
         SnapshotCandidate {
             state: inner.state.clone(),
             meta: SnapshotMeta {
                 last_log_id: last_applied,
                 last_membership: inner.last_membership.clone(),
-                snapshot_id,
             },
             rank,
-            generation: inner.snapshot_generation,
             store: inner.snapshot_store.clone(),
         }
     }
 
     /// Serializes and commits a candidate, then publishes it unless a newer one already stands.
-    async fn store_candidate(
-        &self,
-        candidate: SnapshotCandidate,
-    ) -> Result<Snapshot<TypeConfig>, Box<StorageError<NodeId>>> {
+    async fn store_candidate(&self, candidate: SnapshotCandidate) -> Result<Snapshot, io::Error> {
         let SnapshotCandidate {
             state,
             meta,
             rank,
-            generation,
             store,
         } = candidate;
         let encoded = serde_json::to_vec(&meta).expect("a snapshot meta always serializes to JSON");
         let data = self
             .commit_snapshot(rank, move |superseded| {
                 let data = state.snapshot();
-                // The generation reaches the store before the identifier reaches `OpenRaft`, so a
-                // crash between the two loses the snapshot rather than leaking a name a restart
-                // could repeat.
                 if let Some(store) = store.filter(|_| !superseded) {
-                    store.save_snapshot(&encoded, &data, generation)?;
+                    store.save_snapshot(&encoded, &data)?;
                 }
                 Ok(data)
             })
             .await
-            .map_err(StorageError::from)?;
+            .map_err(io::Error::other)?;
         self.inner.lock().await.publish(rank, meta.clone(), data.clone());
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(Cursor::new(data)),
+            snapshot: Cursor::new(data),
         })
     }
 
@@ -278,76 +270,48 @@ impl OwnershipStateMachine {
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for OwnershipStateMachine {
-    async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
+    type SnapshotData = SnapshotData;
+
+    async fn build_snapshot(&mut self) -> Result<Snapshot, io::Error> {
         let candidate = self.snapshot_candidate().await;
-        self.store_candidate(candidate).await.map_err(|error| *error)
+        self.store_candidate(candidate).await
     }
 }
 
+// Every `io::Error` returned here is fatal to `OpenRaft`, which shuts the node down instead of retrying.
 impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
+    type SnapshotData = SnapshotData;
     type SnapshotBuilder = Self;
 
-    async fn applied_state(
-        &mut self,
-    ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, PeryxNode>), StorageError<NodeId>> {
+    async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), io::Error> {
         let inner = self.inner.lock().await;
         Ok((inner.last_applied, inner.last_membership.clone()))
     }
 
-    async fn apply<I>(&mut self, entries: I) -> Result<Vec<OwnershipResponse>, StorageError<NodeId>>
+    async fn apply<Strm>(&mut self, mut entries: Strm) -> Result<(), io::Error>
     where
-        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
-        I::IntoIter: OptionalSend,
+        Strm: Stream<Item = Result<EntryResponder<TypeConfig>, io::Error>> + Unpin + OptionalSend,
     {
-        let mut inner = self.inner.lock().await;
-        let mut responses = Vec::new();
-        for entry in entries {
-            inner.last_applied = Some(entry.log_id);
-            let response = match entry.payload {
-                EntryPayload::Blank => OwnershipResponse::NonMutating,
-                EntryPayload::Normal(command) => OwnershipResponse::Applied(inner.state.apply(
-                    &command,
-                    AppliedMeta {
-                        term: entry.log_id.leader_id.term,
-                        index: entry.log_id.index,
-                    },
-                )),
-                EntryPayload::Membership(membership) => {
-                    inner.last_membership = StoredMembership::new(Some(entry.log_id), membership);
-                    let projectors = audit_projectors(&inner.last_membership);
-                    inner.state.set_audit_projectors(projectors);
-                    OwnershipResponse::NonMutating
-                }
-            };
-            responses.push(response);
+        while let Some(next) = entries.next().await {
+            let (entry, responder) = next?;
+            let response = self.apply_entry(entry).await;
+            // Only the leader's own proposals carry a responder; replicated entries answer nobody.
+            if let Some(responder) = responder {
+                responder.send(response);
+            }
         }
-        drop(inner);
-        Ok(responses)
+        Ok(())
     }
 
     fn get_snapshot_builder(&mut self) -> impl Future<Output = Self::SnapshotBuilder> + Send {
         std::future::ready(self.clone())
     }
 
-    fn begin_receiving_snapshot(
-        &mut self,
-    ) -> impl Future<Output = Result<Box<Cursor<Vec<u8>>>, StorageError<NodeId>>> + Send {
-        std::future::ready(Ok(Box::new(Cursor::new(vec![]))))
-    }
-
-    async fn install_snapshot(
-        &mut self,
-        meta: &SnapshotMeta<NodeId, PeryxNode>,
-        snapshot: Box<Cursor<Vec<u8>>>,
-    ) -> Result<(), StorageError<NodeId>> {
+    async fn install_snapshot(&mut self, meta: &SnapshotMeta, snapshot: SnapshotData) -> Result<(), io::Error> {
         let data = snapshot.into_inner();
-        let (rank, generation, store) = {
+        let (rank, store) = {
             let mut inner = self.inner.lock().await;
-            (
-                inner.next_rank(meta.last_log_id),
-                inner.snapshot_generation,
-                inner.snapshot_store.clone(),
-            )
+            (inner.next_rank(meta.last_log_id), inner.snapshot_store.clone())
         };
         let projectors = audit_projectors(&meta.last_membership);
         let encoded = serde_json::to_vec(meta).expect("a snapshot meta always serializes to JSON");
@@ -357,17 +321,12 @@ impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
                 let mut state = OwnershipState::restore(&data)?;
                 state.set_audit_projectors(projectors);
                 if let Some(store) = store.filter(|_| !superseded) {
-                    store.save_snapshot(&encoded, &data, generation)?;
+                    store.save_snapshot(&encoded, &data)?;
                 }
                 Ok((state, data))
             })
             .await
-            .map_err(|error| match error {
-                SnapshotStoreError::Restore(error) => {
-                    StorageIOError::read_snapshot(Some(meta.signature()), AnyError::new(&error)).into()
-                }
-                error => StorageError::from(error),
-            })?;
+            .map_err(io::Error::other)?;
         // One critical section, so a reader sees the state it had before the install or the whole
         // restored state, never a partial one.
         let mut inner = self.inner.lock().await;
@@ -379,17 +338,26 @@ impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
         Ok(())
     }
 
-    async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
+    async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot>, io::Error> {
         let inner = self.inner.lock().await;
         Ok(inner.current_snapshot.as_ref().map(|stored| Snapshot {
             meta: stored.meta.clone(),
-            snapshot: Box::new(Cursor::new(stored.data.clone())),
+            snapshot: Cursor::new(stored.data.clone()),
         }))
     }
 }
 
-fn audit_projectors(membership: &StoredMembership<NodeId, PeryxNode>) -> BTreeSet<String> {
-    let voters: BTreeSet<NodeId> = membership.voter_ids().collect();
+/// Peers still send snapshots as v1 chunks, which `OpenRaft` assembles into this buffer.
+impl SnapshotReceiverFactory<TypeConfig> for OwnershipStateMachine {
+    type SnapshotReceiver = SnapshotData;
+
+    fn begin_receiving_snapshot(&mut self) -> impl Future<Output = Result<SnapshotData, io::Error>> + Send {
+        std::future::ready(Ok(Cursor::new(Vec::new())))
+    }
+}
+
+fn audit_projectors(membership: &StoredMembership) -> BTreeSet<String> {
+    let voters: BTreeSet<u64> = membership.voter_ids().collect();
     membership
         .nodes()
         .filter(|(id, _)| voters.contains(id))

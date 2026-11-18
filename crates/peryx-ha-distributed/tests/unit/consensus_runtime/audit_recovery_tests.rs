@@ -1,7 +1,10 @@
 use super::*;
 
-use openraft::RaftMetrics;
-use tokio::sync::{mpsc, watch};
+use openraft::alias::WatchOf;
+use openraft::async_runtime::Watch;
+use tokio::sync::mpsc;
+
+use crate::raft::RaftMetrics;
 use tokio::time::Instant;
 
 const LOCAL: VoterId = 7;
@@ -10,7 +13,7 @@ const LOCAL: VoterId = 7;
 async fn test_a_failed_audit_recovery_retries_after_the_retry_delay() {
     let mut leading = RaftMetrics::new_initial(LOCAL);
     leading.current_leader = Some(LOCAL);
-    let (_leadership, metrics) = watch::channel(leading);
+    let (_leadership, metrics) = <WatchOf<TypeConfig> as Watch>::channel(leading);
     let (attempts, mut attempted_at) = mpsc::unbounded_channel();
     let mut calls = 0;
     let watcher = tokio::spawn(watch_transfer_audits_on_leadership(LOCAL, metrics, move || {

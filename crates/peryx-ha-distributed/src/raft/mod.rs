@@ -2,6 +2,7 @@
 
 use std::io::Cursor;
 
+use openraft::alias;
 use serde::{Deserialize, Serialize};
 
 use crate::ownership::{DatacenterId, OwnershipCommand, OwnershipEffect};
@@ -33,6 +34,18 @@ openraft::declare_raft_types!(
         R = OwnershipResponse,
         Node = PeryxNode,
 );
+
+/// Snapshots travel as one in-memory buffer, sent in chunks over the v1 transport.
+pub type SnapshotData = Cursor<Vec<u8>>;
+pub type Raft = openraft::Raft<TypeConfig, OwnershipStateMachine>;
+pub type RaftMetrics = openraft::RaftMetrics<TypeConfig>;
+pub type MetricsReceiver = alias::WatchReceiverOf<TypeConfig, RaftMetrics>;
+pub type LogId = alias::LogIdOf<TypeConfig>;
+pub type Vote = alias::VoteOf<TypeConfig>;
+pub type Entry = alias::EntryOf<TypeConfig>;
+pub type StoredMembership = alias::StoredMembershipOf<TypeConfig>;
+pub type SnapshotMeta = alias::SnapshotMetaOf<TypeConfig>;
+pub type Snapshot = alias::SnapshotOf<TypeConfig, SnapshotData>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PeryxNode {

@@ -66,7 +66,8 @@ atomicwrites = "0.4.2"
 testcontainers = { version = "0.28", features = ["http_wait"] }
 mimalloc = "0.1.52"
 redb = "4.3"
-openraft = { version = "0.9.25", features = ["serde", "storage-v2"] }
+openraft = { version = "0.10.0", default-features = false, features = ["serde", "tokio-rt", "type-alias"] }
+openraft-legacy = { version = "0.10.0", features = ["serde"] }
 tokio = "1.53"
 reqwest = { version = "0.13.5", default-features = false }
 aws-lc-rs = "1.18"

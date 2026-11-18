@@ -7,15 +7,19 @@ use crate::lifecycle::Lifecycle;
 use crate::raft::log_store::RaftLogStoreAdapter;
 use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcClient};
 use crate::raft::persistence::RaftLogStore;
-use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode, TypeConfig};
+use crate::raft::{
+    LogId, MetricsReceiver, OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode,
+    StoredMembership, TypeConfig,
+};
 use crate::{
     Admission, AssignmentCause, AuthorityEpoch, AuthorityKey, ControlRejection, ControlResolution, DatacenterId,
     OwnershipCommand, OwnershipEffect, Rejection, control_outcome,
 };
 use anyhow::{Context as _, bail};
-use openraft::error::{CheckIsLeaderError, ClientWriteError, RaftError};
+use openraft::ReadPolicy;
+use openraft::async_runtime::{RecvError, WatchReceiver as _};
+use openraft::errors::{ClientWriteError, LinearizableReadError, RaftError};
 use openraft::raft::ClientWriteResponse;
-use openraft::{LogId, StoredMembership};
 use peryx_core::Clock;
 use peryx_ha::{
     AUTHORITY_WRITE_LEASE_SECS, AuthorityWriteLease, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand,
@@ -327,7 +331,7 @@ async fn recover_transfer_audits_on_leadership(
     home: DatacenterId,
     store: MetaStore,
     cancellation: tokio_util::sync::CancellationToken,
-) -> Result<(), tokio::sync::watch::error::RecvError> {
+) -> Result<(), RecvError> {
     let metrics = node.metrics();
     let recover = move || {
         let ownership: Arc<dyn OwnershipAuthority> = Arc::new(OwnershipGroup::new(node.clone(), home.clone()));
@@ -342,9 +346,9 @@ async fn recover_transfer_audits_on_leadership(
 
 async fn watch_transfer_audits_on_leadership<T, E: std::fmt::Display, F: Future<Output = Result<T, E>>>(
     local: VoterId,
-    mut metrics: tokio::sync::watch::Receiver<openraft::RaftMetrics<VoterId, PeryxNode>>,
+    mut metrics: MetricsReceiver,
     mut recover: impl FnMut() -> F,
-) -> Result<(), tokio::sync::watch::error::RecvError> {
+) -> Result<(), RecvError> {
     let mut recovery = AuditRecovery::Unattempted;
     loop {
         if metrics.borrow_and_update().current_leader != Some(local) {
@@ -374,13 +378,13 @@ async fn watch_transfer_audits_on_leadership<T, E: std::fmt::Display, F: Future<
 }
 
 pub async fn wait_for_membership_publication(
-    mut metrics: tokio::sync::watch::Receiver<openraft::RaftMetrics<VoterId, PeryxNode>>,
+    mut metrics: MetricsReceiver,
     expected_voters: usize,
     timeout: Duration,
 ) -> anyhow::Result<()> {
     tokio::time::timeout(
         timeout,
-        metrics.wait_for(|metrics| metrics.membership_config.voter_ids().count() == expected_voters),
+        metrics.wait_until(|metrics| metrics.membership_config.voter_ids().count() == expected_voters),
     )
     .await
     .context("time out waiting for ownership consensus membership publication")?
@@ -711,7 +715,7 @@ impl OwnershipAuthority for OwnershipGroup {
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
         let authority = AuthorityKey(authority.to_owned());
         if self.node.state_machine().home_of(&authority).await.is_some() {
-            match self.node.raft().ensure_linearizable().await {
+            match self.node.raft().ensure_linearizable(ReadPolicy::ReadIndex).await {
                 Ok(_) => {
                     if let Some((home, epoch)) = self.node.state_machine().home_claim(&authority).await {
                         return Ok(HomeClaim {
@@ -724,7 +728,7 @@ impl OwnershipAuthority for OwnershipGroup {
                 // `ForwardToLeader` one write later and already knows what a missing replication token
                 // means: nobody to forward to, so report the leader the raft named. Answering it here as
                 // well would be a second copy of that rule, and the two copies return the same error.
-                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(_))) => {}
+                Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(_))) => {}
                 Err(error) => return Err(OwnershipError::Unavailable(error.to_string())),
             }
         }
@@ -769,7 +773,7 @@ impl OwnershipAuthority for OwnershipGroup {
     async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
         self.node
             .raft()
-            .ensure_linearizable()
+            .ensure_linearizable(ReadPolicy::ReadIndex)
             .await
             .map_err(map_ownership_read_error)?;
         Ok(self.node.state_machine().pending_transfer_audits(&self.home.0).await)
@@ -786,7 +790,7 @@ impl OwnershipAuthority for OwnershipGroup {
     }
 
     fn cluster_status(&self) -> ClusterStatus {
-        let metrics = self.node.metrics().borrow().clone();
+        let metrics = self.node.metrics().borrow_watched().clone();
         let membership = &metrics.membership_config;
         let leader = metrics.current_leader.and_then(|leader| {
             membership
@@ -859,7 +863,12 @@ impl OwnershipGroup {
                 datacenter,
                 address,
             } => {
-                self.add_learner(&datacenter, address).await?;
+                // A configuration an earlier attempt left joint commits its final half on any
+                // membership edit, so re-adding a member it already holds would finish the voter change
+                // before `change_voters` records which change it was.
+                if !self.holds_member(&datacenter, &address)? {
+                    self.add_learner(&datacenter, address).await?;
+                }
                 self.change_voters(Some(&datacenter), Some(&remove)).await
             }
             ControlCommand::TransferAuthority {
@@ -893,7 +902,11 @@ impl OwnershipGroup {
         &self,
         command: OwnershipCommand,
     ) -> Result<ClientWriteResponse<TypeConfig>, OwnershipError> {
-        match self.node.raft().client_write(command.clone()).await {
+        match self
+            .node
+            .with_write_lease(|| self.node.raft().client_write(command.clone()))
+            .await
+        {
             Ok(response) => Ok(response),
             Err(error) => {
                 if !matches!(error, RaftError::APIError(ClientWriteError::ForwardToLeader(_))) {
@@ -909,7 +922,7 @@ impl OwnershipGroup {
                     .expect("the replication token and peer endpoint were validated at startup");
                 let response: Result<
                     ClientWriteResponse<TypeConfig>,
-                    RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>,
+                    RaftError<TypeConfig, ClientWriteError<TypeConfig>>,
                 > = client
                     .send(RaftRpc::ClientWrite, &command, CLIENT_WRITE_TIMEOUT)
                     .await
@@ -923,19 +936,16 @@ impl OwnershipGroup {
     /// membership would reject.
     async fn add_learner(&self, datacenter: &str, address: String) -> Result<CommandReceipt, ControlError> {
         let id = voter_id(datacenter);
-        let node = PeryxNode {
-            datacenter: DatacenterId(datacenter.to_owned()),
-            endpoint: MemberEndpoint::parse(&address)
-                .map_err(|error| ControlError::Invalid(error.to_string()))?
-                .into_string(),
-        };
-        // Learners do not change either side of the audited voter transition.
-        let metrics = self.node.metrics().borrow().clone();
+        let node = member_node(datacenter, &address)?;
+        // Learners do not change either side of the audited voter transition, except on a configuration
+        // an earlier attempt left joint, where the add also commits the final half unrecorded.
+        let metrics = self.node.metrics().borrow_watched().clone();
         admit_member_identity(&metrics.membership_config, id, &node)?;
         let voters: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
         let voters = voter_names(&metrics.membership_config, &voters);
         match commit_membership(
-            self.node.raft().add_learner(id, node, false),
+            self.node
+                .with_write_lease(|| self.node.raft().add_learner(id, node.clone(), false)),
             &format!("datacenter {datacenter:?} did not join"),
         )
         .await?
@@ -950,9 +960,21 @@ impl OwnershipGroup {
         }
     }
 
+    /// Refuses an identity that clashes with the roster, like [`add_learner`](Self::add_learner).
+    fn holds_member(&self, datacenter: &str, address: &str) -> Result<bool, ControlError> {
+        let id = voter_id(datacenter);
+        let node = member_node(datacenter, address)?;
+        let metrics = self.node.metrics().borrow_watched().clone();
+        admit_member_identity(&metrics.membership_config, id, &node)?;
+        Ok(metrics
+            .membership_config
+            .nodes()
+            .any(|(member, held)| *member == id && *held == node))
+    }
+
     /// Reports an unchanged voter roster as [`CommandOutcome::NoChange`].
     async fn change_voters(&self, add: Option<&str>, remove: Option<&str>) -> Result<CommandReceipt, ControlError> {
-        let metrics = self.node.metrics().borrow().clone();
+        let metrics = self.node.metrics().borrow_watched().clone();
         let current: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
         let planned = crate::control::plan_voter_roster(&current, add.map(voter_id), remove.map(voter_id));
         if let Some(datacenter) = add.filter(|datacenter| {
@@ -971,7 +993,8 @@ impl OwnershipGroup {
         let old_voters = voter_names(&metrics.membership_config, &current);
         let new_voters = voter_names(&metrics.membership_config, &planned);
         match commit_membership(
-            self.node.raft().change_membership(planned, false),
+            self.node
+                .with_write_lease(|| self.node.raft().change_membership(planned.clone(), false)),
             "the voter change did not commit",
         )
         .await?
@@ -985,7 +1008,7 @@ impl OwnershipGroup {
     async fn await_learner_catch_up(
         &self,
         datacenter: &str,
-        membership: &StoredMembership<VoterId, PeryxNode>,
+        membership: &StoredMembership,
     ) -> Result<(), ControlError> {
         let id = voter_id(datacenter);
         let node = membership
@@ -994,7 +1017,10 @@ impl OwnershipGroup {
             .ok_or_else(|| {
                 ControlError::Unavailable(format!("datacenter {datacenter:?} is not a registered learner"))
             })?;
-        match tokio::time::timeout(LEARNER_CATCH_UP_TIMEOUT, self.node.raft().add_learner(id, node, true)).await {
+        let catch_up = self
+            .node
+            .with_write_lease(|| self.node.raft().add_learner(id, node.clone(), true));
+        match tokio::time::timeout(LEARNER_CATCH_UP_TIMEOUT, catch_up).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(error)) => Err(map_write_error(&error)),
             Err(_) => Err(ControlError::Unavailable(format!(
@@ -1060,7 +1086,7 @@ fn unapplied(what: &str) -> ControlError {
     ControlError::Unavailable(format!("the {what} committed without applying"))
 }
 
-fn map_ownership_write_error(error: RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>) -> OwnershipError {
+fn map_ownership_write_error(error: RaftError<TypeConfig, ClientWriteError<TypeConfig>>) -> OwnershipError {
     match error {
         RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
             leader: forward.leader_node.map(|node| node.endpoint),
@@ -1069,9 +1095,9 @@ fn map_ownership_write_error(error: RaftError<VoterId, ClientWriteError<VoterId,
     }
 }
 
-fn map_ownership_read_error(error: RaftError<VoterId, CheckIsLeaderError<VoterId, PeryxNode>>) -> OwnershipError {
+fn map_ownership_read_error(error: RaftError<TypeConfig, LinearizableReadError<TypeConfig>>) -> OwnershipError {
     match error {
-        RaftError::APIError(CheckIsLeaderError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
+        RaftError::APIError(LinearizableReadError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
             leader: forward.leader_node.map(|node| node.endpoint),
         },
         error => OwnershipError::Unavailable(error.to_string()),
@@ -1095,11 +1121,16 @@ async fn commit_membership<T, E>(
         })
 }
 
-fn admit_member_identity(
-    membership: &StoredMembership<VoterId, PeryxNode>,
-    id: VoterId,
-    node: &PeryxNode,
-) -> Result<(), ControlError> {
+fn member_node(datacenter: &str, address: &str) -> Result<PeryxNode, ControlError> {
+    Ok(PeryxNode {
+        datacenter: DatacenterId(datacenter.to_owned()),
+        endpoint: MemberEndpoint::parse(address)
+            .map_err(|error| ControlError::Invalid(error.to_string()))?
+            .into_string(),
+    })
+}
+
+fn admit_member_identity(membership: &StoredMembership, id: VoterId, node: &PeryxNode) -> Result<(), ControlError> {
     for (member_id, member) in membership.nodes() {
         if *member_id == id && member != node {
             return Err(ControlError::Invalid(format!(
@@ -1118,7 +1149,7 @@ fn admit_member_identity(
 }
 
 const fn committed_receipt(
-    log_id: &LogId<u64>,
+    log_id: &LogId,
     outcome: CommandOutcome,
     old_voters: Vec<String>,
     new_voters: Vec<String>,
@@ -1133,7 +1164,7 @@ const fn committed_receipt(
     }
 }
 
-fn voter_names(membership: &StoredMembership<u64, PeryxNode>, voter_ids: &BTreeSet<u64>) -> Vec<String> {
+fn voter_names(membership: &StoredMembership, voter_ids: &BTreeSet<u64>) -> Vec<String> {
     membership
         .nodes()
         .filter(|(id, _)| voter_ids.contains(*id))
@@ -1144,7 +1175,7 @@ fn voter_names(membership: &StoredMembership<u64, PeryxNode>, voter_ids: &BTreeS
 }
 
 /// Preserves leader forwarding; maps other write failures to unavailable.
-pub fn map_write_error(error: &RaftError<u64, ClientWriteError<u64, PeryxNode>>) -> ControlError {
+pub fn map_write_error(error: &RaftError<TypeConfig, ClientWriteError<TypeConfig>>) -> ControlError {
     match error {
         RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) => ControlError::NotLeader {
             leader: forward.leader_node.as_ref().map(|node| node.endpoint.clone()),
