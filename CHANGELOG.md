@@ -3,6 +3,27 @@
 Each release lists user-facing changes merged since the previous one. Versions follow the calendar as `YYYY.MDD.N`: the
 year, the month and zero-padded day, and a counter for several releases on one day.
 
+<a name="release-2026-1118-0"></a>
+
+## 2026.1118.0 (2026-11-18)
+
+<a name="release-2026-1118-0-changes"></a>
+
+### Changes
+
+- Update ammonia past its published RustSec advisory ([#2421](https://github.com/tox-dev/peryx/pull/2421)) by
+  [@gaborbernat](https://github.com/gaborbernat)
+
+<a name="release-2026-1118-0-packaging"></a>
+
+### Packaging
+
+#### Ship a PEP 770 SBOM from python-sbom in every wheel ([#2411](https://github.com/tox-dev/peryx/pull/2411)) by [@gaborbernat](https://github.com/gaborbernat)
+
+Next to maturin's list of Rust crates, each wheel now carries a [PEP 770](https://peps.python.org/pep-0770/) CycloneDX
+SBOM written by [python-sbom](https://github.com/tox-dev/python-sbom): it records the Python package, its supplier and
+license, the build tools and the source revision, and links to maturin's file.
+
 <a name="release-2026-1105-0"></a>
 
 ## 2026.1105.0 (2026-11-05)
