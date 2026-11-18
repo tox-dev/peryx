@@ -3,6 +3,7 @@
 //! command sequence.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +121,13 @@ pub enum OwnershipCommand {
     },
     /// Marks one member's durable store as holding the audit sealed under `key`.
     CompleteTransferAudit { key: String, projector: String },
+}
+
+/// `OpenRaft` renders log payloads only in its diagnostics, where the derived form is the useful one.
+impl fmt::Display for OwnershipCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, formatter)
+    }
 }
 
 /// What the replicated idempotency window says about one keyed control attempt.

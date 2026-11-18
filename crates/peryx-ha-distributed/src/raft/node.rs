@@ -5,17 +5,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use openraft::error::{ClientWriteError, Fatal, InitializeError, RaftError};
-use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest, VoteRequest};
+use openraft::async_runtime::WatchReceiver as _;
+use openraft::errors::{ClientWriteError, Fatal, ForwardReason, InitializeError, RaftError};
+use openraft::network::{NetSnapshot, RaftNetworkFactory};
+use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 use openraft::storage::RaftLogStorage;
-use openraft::{ConfigError, Raft, RaftMetrics, RaftNetworkFactory};
+use openraft::{ConfigError, ReadPolicy};
+use openraft_legacy::network_v1::{ChunkedSnapshotReceiver as _, InstallSnapshotRequest};
 use serde::Serialize;
-use tokio::sync::watch;
 
 use crate::ownership::OwnershipCommand;
 use crate::raft::config::RaftConfig;
 use crate::raft::network::{RaftRpc, RaftRpcHandler, RaftRpcRejection};
-use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, TypeConfig};
+use crate::raft::{
+    MetricsReceiver, OwnershipResponse, OwnershipStateMachine, PeryxNode, Raft, SnapshotData, TypeConfig,
+};
 use peryx_core::Clock;
 use peryx_ha::{AUTHORITY_WRITE_LEASE_SECS, SINGLETON_LEASE_SECS};
 
@@ -26,13 +30,13 @@ pub enum StartError {
     #[error("invalid raft configuration: {0}")]
     Config(#[from] Box<ConfigError>),
     #[error("raft node failed to start: {0}")]
-    Fatal(Box<Fatal<NodeId>>),
+    Fatal(Box<Fatal<TypeConfig>>),
 }
 
 /// Keeps a shared state-machine handle for reads after a linearizable barrier.
 #[derive(Clone)]
 pub struct RaftNode {
-    raft: Raft<TypeConfig>,
+    raft: Raft,
     state_machine: OwnershipStateMachine,
 }
 
@@ -54,6 +58,7 @@ impl RaftNode {
     where
         LS: RaftLogStorage<TypeConfig>,
         N: RaftNetworkFactory<TypeConfig>,
+        N::Network: NetSnapshot<TypeConfig, SnapshotData = SnapshotData>,
     {
         let config = std::sync::Arc::new(config.into_openraft(cluster_name)?);
         let raft = Raft::new(id, config, network, log_store, state_machine.clone())
@@ -70,7 +75,7 @@ impl RaftNode {
     pub async fn bootstrap(
         &self,
         members: BTreeMap<NodeId, PeryxNode>,
-    ) -> Result<(), Box<RaftError<NodeId, InitializeError<NodeId, PeryxNode>>>> {
+    ) -> Result<(), Box<RaftError<TypeConfig, InitializeError<TypeConfig>>>> {
         match self.raft.initialize(members).await {
             Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
             Err(error) => Err(Box::new(error)),
@@ -84,9 +89,36 @@ impl RaftNode {
     pub async fn submit(
         &self,
         command: OwnershipCommand,
-    ) -> Result<OwnershipResponse, Box<RaftError<NodeId, ClientWriteError<NodeId, PeryxNode>>>> {
-        let response = self.raft.client_write(command).await?;
+    ) -> Result<OwnershipResponse, Box<RaftError<TypeConfig, ClientWriteError<TypeConfig>>>> {
+        let response = self
+            .with_write_lease(|| self.raft.client_write(command.clone()))
+            .await?;
         Ok(response.data)
+    }
+
+    /// A leader refuses writes and membership changes until a quorum has acknowledged it within its
+    /// lease, which a leader elected moments ago has not collected yet. A linearizable read collects
+    /// it, so `write` runs once more after one; a leader cut off from its quorum still refuses.
+    ///
+    /// # Errors
+    /// Returns what `write` returns, or the first refusal when the read cannot reach a quorum.
+    pub async fn with_write_lease<T, F>(
+        &self,
+        write: impl Fn() -> F,
+    ) -> Result<T, RaftError<TypeConfig, ClientWriteError<TypeConfig>>>
+    where
+        F: Future<Output = Result<T, RaftError<TypeConfig, ClientWriteError<TypeConfig>>>>,
+    {
+        let result = write().await;
+        let Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) = &result else {
+            return result;
+        };
+        if forward.reason != ForwardReason::LeaseExpired
+            || self.raft.ensure_linearizable(ReadPolicy::ReadIndex).await.is_err()
+        {
+            return result;
+        }
+        write().await
     }
 
     /// Prefers the leader captured in the write error because metrics may lag during an election. Falls
@@ -95,7 +127,7 @@ impl RaftNode {
     #[must_use]
     pub fn forward_target(
         &self,
-        error: &RaftError<NodeId, ClientWriteError<NodeId, PeryxNode>>,
+        error: &RaftError<TypeConfig, ClientWriteError<TypeConfig>>,
     ) -> Option<(NodeId, PeryxNode)> {
         if let RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) = error
             && let (Some(id), Some(node)) = (forward.leader_id, &forward.leader_node)
@@ -108,7 +140,7 @@ impl RaftNode {
     /// Returns `None` when metrics have no leader or membership lacks its node data.
     #[must_use]
     pub fn leader(&self) -> Option<(NodeId, PeryxNode)> {
-        let metrics = self.raft.metrics().borrow().clone();
+        let metrics = self.raft.metrics().borrow_watched().clone();
         let leader = metrics.current_leader?;
         metrics
             .membership_config
@@ -118,12 +150,12 @@ impl RaftNode {
     }
 
     #[must_use]
-    pub fn metrics(&self) -> watch::Receiver<RaftMetrics<NodeId, PeryxNode>> {
+    pub fn metrics(&self) -> MetricsReceiver {
         self.raft.metrics()
     }
 
     #[must_use]
-    pub const fn raft(&self) -> &Raft<TypeConfig> {
+    pub const fn raft(&self) -> &Raft {
         &self.raft
     }
 
@@ -143,14 +175,14 @@ impl RaftNode {
     #[must_use]
     pub fn rpc_handler_with_clock(&self, clock: Clock) -> Arc<dyn RaftRpcHandler> {
         Arc::new(OwnershipRpcHandler {
-            raft: self.raft.clone(),
+            node: self.clone(),
             clock,
         })
     }
 }
 
 struct OwnershipRpcHandler {
-    raft: Raft<TypeConfig>,
+    node: RaftNode,
     clock: Clock,
 }
 
@@ -160,19 +192,30 @@ impl RaftRpcHandler for OwnershipRpcHandler {
         match rpc {
             RaftRpc::AppendEntries => {
                 let request: AppendEntriesRequest<TypeConfig> = decode(&body)?;
-                Ok(encode(&self.raft.append_entries(request).await))
+                // Peers decode the v1 response shape, so the 0.10 result converts back to it.
+                Ok(encode(
+                    &self
+                        .node
+                        .raft
+                        .append_entries(request)
+                        .await
+                        .map(AppendEntriesResponse::from),
+                ))
             }
             RaftRpc::ClientWrite => {
                 let request = stamp_leader_time(decode(&body)?, (self.clock)());
-                Ok(encode(&self.raft.client_write(request).await))
+                let raft = &self.node.raft;
+                Ok(encode(
+                    &self.node.with_write_lease(|| raft.client_write(request.clone())).await,
+                ))
             }
             RaftRpc::Vote => {
-                let request: VoteRequest<NodeId> = decode(&body)?;
-                Ok(encode(&self.raft.vote(request).await))
+                let request: VoteRequest<TypeConfig> = decode(&body)?;
+                Ok(encode(&self.node.raft.vote(request).await))
             }
             RaftRpc::InstallSnapshot => {
                 let request: InstallSnapshotRequest<TypeConfig> = decode(&body)?;
-                Ok(encode(&self.raft.install_snapshot(request).await))
+                Ok(encode(&self.node.raft.install_snapshot(request).await))
             }
         }
     }

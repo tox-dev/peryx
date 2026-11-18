@@ -43,14 +43,12 @@ impl RaftConfig {
     /// ([`election_timeout_min`](Self::election_timeout_min) at or below
     /// [`heartbeat_interval`](Self::heartbeat_interval)).
     pub fn into_openraft(self, cluster_name: impl Into<String>) -> Result<Config, Box<ConfigError>> {
-        #[allow(deprecated)] // OpenRaft still requires its deprecated snapshot field in struct literals.
         Config {
             cluster_name: cluster_name.into(),
             heartbeat_interval: millis(self.heartbeat_interval),
             election_timeout_min: millis(self.election_timeout_min),
             election_timeout_max: millis(self.election_timeout_max),
             install_snapshot_timeout: millis(self.install_snapshot_timeout),
-            send_snapshot_timeout: 0,
             max_payload_entries: 300,
             replication_lag_threshold: PROMOTION_LAG_THRESHOLD,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(self.snapshot_logs_since_last),
@@ -60,6 +58,7 @@ impl RaftConfig {
             enable_tick: true,
             enable_heartbeat: true,
             enable_elect: true,
+            ..Config::default()
         }
         .validate()
         .map_err(Box::new)

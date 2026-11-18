@@ -479,7 +479,7 @@ fn membership(members: Vec<RuntimeMember>) -> RuntimeMembership {
 
 /// Addresses the voter `ha_config` gives this node; the router refuses an RPC aimed at another.
 async fn post_vote(router: &Router) -> StatusCode {
-    let request = openraft::raft::VoteRequest::new(openraft::Vote::new(1, 0), None);
+    let request = openraft::raft::VoteRequest::<crate::raft::TypeConfig>::new(crate::raft::Vote::new(1, 0), None);
     router
         .clone()
         .oneshot(

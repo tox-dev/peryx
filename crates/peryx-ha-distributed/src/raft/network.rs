@@ -17,14 +17,14 @@ use crate::client_transport::{
 };
 use crate::http::{authorized, unauthorized};
 
-use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable};
-use openraft::network::{RPCOption, RPCTypes, RaftNetwork, RaftNetworkFactory};
-use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest,
-    VoteResponse,
+use openraft::errors::{NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable};
+use openraft::network::{RPCOption, RPCTypes, RaftNetworkFactory};
+use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse};
+use openraft_legacy::network_v1::{
+    Adapter, InstallSnapshotError, InstallSnapshotRequest, InstallSnapshotResponse, RaftNetwork,
 };
 
-use crate::raft::{PeryxNode, TypeConfig};
+use crate::raft::{PeryxNode, SnapshotData, TypeConfig};
 
 type NodeId = u64;
 
@@ -71,15 +71,6 @@ impl RaftRpc {
             Self::ClientWrite => "client_write",
             Self::Vote => "vote",
             Self::InstallSnapshot => "install_snapshot",
-        }
-    }
-
-    /// Leader forwarding has no counterpart here: `OpenRaft` never issues it.
-    const fn for_action(action: RPCTypes) -> Self {
-        match action {
-            RPCTypes::Vote => Self::Vote,
-            RPCTypes::AppendEntries => Self::AppendEntries,
-            RPCTypes::InstallSnapshot => Self::InstallSnapshot,
         }
     }
 }
@@ -355,17 +346,19 @@ pub struct PeerRaftNetwork {
 }
 
 impl PeerRaftNetwork {
+    /// `action` names `rpc` in the timeout `OpenRaft` reports.
     async fn call<Req, Resp, E>(
         &self,
+        rpc: RaftRpc,
         action: RPCTypes,
         request: &Req,
         option: &RPCOption,
-    ) -> Result<Resp, Box<RPCError<NodeId, PeryxNode, RaftError<NodeId, E>>>>
+    ) -> Result<Resp, Box<RPCError<TypeConfig, RaftError<TypeConfig, E>>>>
     where
         Req: Serialize + Sync,
         Resp: DeserializeOwned,
         E: std::error::Error + 'static,
-        RaftError<NodeId, E>: DeserializeOwned,
+        RaftError<TypeConfig, E>: DeserializeOwned,
     {
         let client = self
             .client
@@ -377,8 +370,8 @@ impl PeerRaftNetwork {
         // the point `OpenRaft` reserves for the implementation to begin cancelling, so the transport
         // stops there and the hard TTL stays the abort boundary.
         let deadline = option.soft_ttl();
-        let wire: Result<Resp, RaftError<NodeId, E>> = client
-            .send(RaftRpc::for_action(action), request, deadline)
+        let wire: Result<Resp, RaftError<TypeConfig, E>> = client
+            .send(rpc, request, deadline)
             .await
             .map_err(|error| self.classify(action, deadline, &error))?;
         wire.map_err(|error| {
@@ -392,7 +385,7 @@ impl PeerRaftNetwork {
 
     /// A deadline reads as `Timeout` so `OpenRaft` retries on its own timer; `Unreachable` would instead
     /// back the peer off as though the process were gone. Protocol failures become `Network` errors.
-    fn classify<E>(&self, action: RPCTypes, deadline: Duration, error: &RaftRpcError) -> RPCError<NodeId, PeryxNode, E>
+    fn classify<E>(&self, action: RPCTypes, deadline: Duration, error: &RaftRpcError) -> RPCError<TypeConfig, E>
     where
         E: std::error::Error,
     {
@@ -418,27 +411,29 @@ impl RaftNetwork<TypeConfig> for PeerRaftNetwork {
         &mut self,
         rpc: AppendEntriesRequest<TypeConfig>,
         option: RPCOption,
-    ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId>>> {
-        self.call(RPCTypes::AppendEntries, &rpc, &option)
+    ) -> Result<AppendEntriesResponse<TypeConfig>, RPCError<TypeConfig, RaftError<TypeConfig>>> {
+        self.call(RaftRpc::AppendEntries, RPCTypes::AppendEntries, &rpc, &option)
             .await
             .map_err(|error| *error)
     }
 
     async fn vote(
         &mut self,
-        rpc: VoteRequest<NodeId>,
+        rpc: VoteRequest<TypeConfig>,
         option: RPCOption,
-    ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId>>> {
-        self.call(RPCTypes::Vote, &rpc, &option).await.map_err(|error| *error)
+    ) -> Result<VoteResponse<TypeConfig>, RPCError<TypeConfig, RaftError<TypeConfig>>> {
+        self.call(RaftRpc::Vote, RPCTypes::Vote, &rpc, &option)
+            .await
+            .map_err(|error| *error)
     }
 
     async fn install_snapshot(
         &mut self,
         rpc: InstallSnapshotRequest<TypeConfig>,
         option: RPCOption,
-    ) -> Result<InstallSnapshotResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId, InstallSnapshotError>>>
+    ) -> Result<InstallSnapshotResponse<TypeConfig>, RPCError<TypeConfig, RaftError<TypeConfig, InstallSnapshotError>>>
     {
-        self.call(RPCTypes::InstallSnapshot, &rpc, &option)
+        self.call(RaftRpc::InstallSnapshot, RPCTypes::InstallSnapshot, &rpc, &option)
             .await
             .map_err(|error| *error)
     }
@@ -461,18 +456,19 @@ impl PeerRaftNetworkFactory {
     }
 }
 
+/// Peers speak the v1 protocol, which ships snapshots in chunks; the adapter splits each snapshot.
 impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
-    type Network = PeerRaftNetwork;
+    type Network = Adapter<TypeConfig, PeerRaftNetwork, SnapshotData>;
 
     fn new_client(&mut self, target: NodeId, node: &PeryxNode) -> impl Future<Output = Self::Network> + Send {
         // OpenRaft creates clients inside replication tasks, and this trait cannot return an error. Store
         // invalid-address errors so calls return `Unreachable` without panicking the task.
-        std::future::ready(PeerRaftNetwork {
+        std::future::ready(Adapter::new(PeerRaftNetwork {
             local: self.local,
             target,
             target_node: node.clone(),
             client: RaftRpcClient::new(target, &node.endpoint, self.token.clone(), self.connect_timeout),
-        })
+        }))
     }
 }
 

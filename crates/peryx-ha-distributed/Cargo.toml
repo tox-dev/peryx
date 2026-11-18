@@ -15,6 +15,7 @@ base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 openraft.workspace = true
+openraft-legacy.workspace = true
 peryx-core.workspace = true
 peryx-driver.workspace = true
 peryx-events.workspace = true

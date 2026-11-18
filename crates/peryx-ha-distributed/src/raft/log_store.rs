@@ -1,19 +1,14 @@
 //! `OpenRaft` serialization and redb persistence share this distributed-availability boundary.
 
 use std::fmt::Debug;
+use std::io;
 use std::ops::RangeBounds;
 
-use openraft::storage::{LogFlushed, LogState, RaftLogReader, RaftLogStorage};
-use openraft::{
-    AnyError, ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftLogId, RaftTypeConfig, StorageError, StorageIOError,
-    Vote,
-};
+use openraft::OptionalSend;
+use openraft::storage::{IOFlushed, LogState, RaftLogReader, RaftLogStorage};
 
-use super::TypeConfig;
 use super::persistence::{RaftLogError, RaftLogStore, StoredEntry};
-
-type NodeId = <TypeConfig as RaftTypeConfig>::NodeId;
-type Entry = <TypeConfig as RaftTypeConfig>::Entry;
+use super::{Entry, LogId, TypeConfig, Vote};
 
 #[derive(Debug, thiserror::Error)]
 enum LogStoreError {
@@ -47,11 +42,11 @@ impl RaftLogStoreAdapter {
     /// `last_log_id >= last_purged_log_id` invariant after restart.
     fn log_state(&self) -> Result<LogState<TypeConfig>, LogStoreError> {
         let last_purged_log_id = match self.store.read_purged()? {
-            Some(bytes) => Some(serde_json::from_slice::<LogId<NodeId>>(&bytes)?),
+            Some(bytes) => Some(serde_json::from_slice::<LogId>(&bytes)?),
             None => None,
         };
         let last_log_id = match self.store.last_entry()? {
-            Some(entry) => Some(*serde_json::from_slice::<Entry>(&entry.payload)?.get_log_id()),
+            Some(entry) => Some(serde_json::from_slice::<Entry>(&entry.payload)?.log_id),
             None => last_purged_log_id,
         };
         Ok(LogState {
@@ -64,7 +59,7 @@ impl RaftLogStoreAdapter {
         let mut stored = Vec::new();
         for entry in entries {
             stored.push(StoredEntry {
-                index: entry.get_log_id().index,
+                index: entry.log_id.index,
                 payload: serde_json::to_vec(&entry)?,
             });
         }
@@ -72,32 +67,32 @@ impl RaftLogStoreAdapter {
         Ok(())
     }
 
-    /// `OpenRaft` truncation includes the conflicting entry at `index`.
-    fn truncate_from(&self, index: u64) -> Result<(), LogStoreError> {
-        self.store.truncate(index)?;
+    /// Keeps entries through `last_log_id` and drops the rest; `None` empties the log.
+    fn keep_through(&self, last_log_id: Option<LogId>) -> Result<(), LogStoreError> {
+        self.store.truncate(last_log_id.map_or(0, |log_id| log_id.index + 1))?;
         Ok(())
     }
 
     /// Persists the full [`LogId`] watermark and purges through its index in one transaction.
-    fn purge_upto(&self, log_id: LogId<NodeId>) -> Result<(), LogStoreError> {
+    fn purge_upto(&self, log_id: LogId) -> Result<(), LogStoreError> {
         let marker = serde_json::to_vec(&log_id)?;
         self.store.purge(log_id.index, &marker)?;
         Ok(())
     }
 
-    fn store_vote(&self, vote: &Vote<NodeId>) -> Result<(), LogStoreError> {
+    fn store_vote(&self, vote: &Vote) -> Result<(), LogStoreError> {
         self.store.save_vote(&serde_json::to_vec(vote)?)?;
         Ok(())
     }
 
-    fn load_vote(&self) -> Result<Option<Vote<NodeId>>, LogStoreError> {
+    fn load_vote(&self) -> Result<Option<Vote>, LogStoreError> {
         match self.store.read_vote()? {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
         }
     }
 
-    fn store_committed(&self, committed: Option<LogId<NodeId>>) -> Result<(), LogStoreError> {
+    fn store_committed(&self, committed: Option<LogId>) -> Result<(), LogStoreError> {
         let bytes = match committed {
             Some(log_id) => Some(serde_json::to_vec(&log_id)?),
             None => None,
@@ -106,7 +101,7 @@ impl RaftLogStoreAdapter {
         Ok(())
     }
 
-    fn load_committed(&self) -> Result<Option<LogId<NodeId>>, LogStoreError> {
+    fn load_committed(&self) -> Result<Option<LogId>, LogStoreError> {
         match self.store.read_committed()? {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
@@ -118,94 +113,63 @@ impl RaftLogReader<TypeConfig> for RaftLogStoreAdapter {
     fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
         range: RB,
-    ) -> impl Future<Output = Result<Vec<Entry>, StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.entries_in_range(range)
-                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read)),
-        )
+    ) -> impl Future<Output = Result<Vec<Entry>, io::Error>> + Send {
+        std::future::ready(self.entries_in_range(range).map_err(io::Error::other))
+    }
+
+    fn read_vote(&mut self) -> impl Future<Output = Result<Option<Vote>, io::Error>> + Send {
+        std::future::ready(self.load_vote().map_err(io::Error::other))
     }
 }
 
+// Every `io::Error` returned here is fatal to `OpenRaft`, which shuts the node down instead of retrying.
 impl RaftLogStorage<TypeConfig> for RaftLogStoreAdapter {
     type LogReader = Self;
 
-    fn get_log_state(&mut self) -> impl Future<Output = Result<LogState<TypeConfig>, StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.log_state()
-                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read)),
-        )
+    fn get_log_state(&mut self) -> impl Future<Output = Result<LogState<TypeConfig>, io::Error>> + Send {
+        std::future::ready(self.log_state().map_err(io::Error::other))
     }
 
     fn get_log_reader(&mut self) -> impl Future<Output = Self::LogReader> + Send {
         std::future::ready(self.clone())
     }
 
-    fn save_vote(&mut self, vote: &Vote<NodeId>) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.store_vote(vote)
-                .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Write)),
-        )
-    }
-
-    fn read_vote(&mut self) -> impl Future<Output = Result<Option<Vote<NodeId>>, StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.load_vote()
-                .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Read)),
-        )
+    fn save_vote(&mut self, vote: &Vote) -> impl Future<Output = Result<(), io::Error>> + Send {
+        std::future::ready(self.store_vote(vote).map_err(io::Error::other))
     }
 
     fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<TypeConfig>,
-    ) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send
+        callback: IOFlushed<TypeConfig>,
+    ) -> impl Future<Output = Result<(), io::Error>> + Send
     where
         I: IntoIterator<Item = Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
         std::future::ready(
             self.append_entries(entries)
-                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write))
+                .map_err(io::Error::other)
                 // redb committed the batch before this callback, satisfying OpenRaft's durability contract.
-                .map(|()| callback.log_io_completed(Ok(()))),
+                .map(|()| callback.io_completed(Ok(()))),
         )
     }
 
-    fn truncate(&mut self, log_id: LogId<NodeId>) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.truncate_from(log_id.index)
-                .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete)),
-        )
+    fn truncate_after(&mut self, last_log_id: Option<LogId>) -> impl Future<Output = Result<(), io::Error>> + Send {
+        std::future::ready(self.keep_through(last_log_id).map_err(io::Error::other))
     }
 
-    fn purge(&mut self, log_id: LogId<NodeId>) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.purge_upto(log_id)
-                .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete)),
-        )
+    fn purge(&mut self, log_id: LogId) -> impl Future<Output = Result<(), io::Error>> + Send {
+        std::future::ready(self.purge_upto(log_id).map_err(io::Error::other))
     }
 
-    fn save_committed(
-        &mut self,
-        committed: Option<LogId<NodeId>>,
-    ) -> impl Future<Output = Result<(), StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.store_committed(committed)
-                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write)),
-        )
+    fn save_committed(&mut self, committed: Option<LogId>) -> impl Future<Output = Result<(), io::Error>> + Send {
+        std::future::ready(self.store_committed(committed).map_err(io::Error::other))
     }
 
-    fn read_committed(&mut self) -> impl Future<Output = Result<Option<LogId<NodeId>>, StorageError<NodeId>>> + Send {
-        std::future::ready(
-            self.load_committed()
-                .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read)),
-        )
+    fn read_committed(&mut self) -> impl Future<Output = Result<Option<LogId>, io::Error>> + Send {
+        std::future::ready(self.load_committed().map_err(io::Error::other))
     }
-}
-
-fn storage_error(error: &LogStoreError, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> StorageError<NodeId> {
-    // Storage failures remain fatal in OpenRaft; subject and verb only affect diagnostics.
-    StorageIOError::new(subject, verb, AnyError::new(error)).into()
 }
 
 #[cfg(test)]
