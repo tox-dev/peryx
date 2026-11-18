@@ -3,6 +3,10 @@
 Each release lists user-facing changes merged since the previous one. Versions follow the calendar as `YYYY.MDD.N`: the
 year, the month and zero-padded day, and a counter for several releases on one day.
 
+<a name="release-2026-1118-1"></a>
+
+## 2026.1118.1 (2026-11-18)
+
 <a name="release-2026-1118-0"></a>
 
 ## 2026.1118.0 (2026-11-18)
