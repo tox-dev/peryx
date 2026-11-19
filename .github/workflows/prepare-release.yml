@@ -36,7 +36,7 @@ jobs:
           python-version: "3.15"
           enable-cache: false
       - name: 📦 Install locked release tools
-        uses: tox-dev/github-workflows/install-locked-tools@6.8.3
+        uses: tox-dev/github-workflows/install-locked-tools@6.8.5
         with:
           groups: release-prepare
           venv: ${{ runner.temp }}/release-tools
@@ -139,7 +139,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
       - name: 🏷️ Commit and tag release
-        uses: tox-dev/github-workflows/commit-and-tag@6.8.3
+        uses: tox-dev/github-workflows/commit-and-tag@6.8.5
         with:
           version: v${{ needs.assemble.outputs.version }}
           token: ${{ steps.token.outputs.token }}
