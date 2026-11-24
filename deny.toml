@@ -6,8 +6,6 @@ ignore = [
   { id = "RUSTSEC-2024-0436", reason = "Leptos 0.8 and Simba 0.9 depend on paste." },
   { id = "RUSTSEC-2026-0440", reason = "testcontainers 0.28 depends on astral-tokio-tar." },
   { id = "RUSTSEC-2026-0543", reason = "OpenRaft 0.10 and rustls-acme 0.15 depend on chrono." },
-  { id = "RUSTSEC-2026-0555", reason = "OpenRaft 0.10 depends on chrono-tz through display-more 0.2." },
-  { id = "RUSTSEC-2026-0559", reason = "chrono-tz 0.8 requires chrono-tz-build 0.2." },
 ]
 unused-ignored-advisory = "deny"
 
