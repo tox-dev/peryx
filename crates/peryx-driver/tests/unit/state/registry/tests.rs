@@ -657,7 +657,7 @@ async fn test_registry_runtime_settings_replace_defaults() {
 
     state.set_openapi("{\"openapi\":\"3.1.0\"}");
     state
-        .set_token_realm(peryx_identity::Signer::new(b"signing-key", "peryx"), 41)
+        .set_token_realm(peryx_identity::Signer::new(b"signing-key", "peryx").unwrap(), 41)
         .unwrap();
     state.register_plugin_service(Arc::new("plugin-service")).unwrap();
     state
@@ -827,7 +827,7 @@ fn test_index_summaries_report_failures(
 fn test_auth_install_context_exposes_the_configured_signer() {
     let (_dir, mut state) = state();
     state
-        .set_token_realm(peryx_identity::Signer::new(b"signing-key", "peryx"), 300)
+        .set_token_realm(peryx_identity::Signer::new(b"signing-key", "peryx").unwrap(), 300)
         .unwrap();
 
     assert!(state.auth_install_context().unwrap().signer().is_some());

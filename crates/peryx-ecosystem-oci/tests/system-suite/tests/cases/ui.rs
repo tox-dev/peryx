@@ -355,17 +355,19 @@ async fn test_ui_private_oci_project_list_rejects_bearer_for_another_index(
         .unwrap()
         .as_secs()
         .cast_signed();
-    let token = Signer::new(TOKEN_SIGNING_KEY.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE).mint(
-        &Principal::Named {
-            subject: "reader".to_owned(),
-        },
-        &[Grant {
-            resources: vec![Glob::new("other/app")],
-            actions: BTreeSet::from([Action::Read]),
-        }],
-        now,
-        300,
-    );
+    let token = Signer::new(TOKEN_SIGNING_KEY.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE)
+        .unwrap()
+        .mint(
+            &Principal::Named {
+                subject: "reader".to_owned(),
+            },
+            &[Grant {
+                resources: vec![Glob::new("other/app")],
+                actions: BTreeSet::from([Action::Read]),
+            }],
+            now,
+            300,
+        );
 
     let (status, _) = get_authorized(&router, "/+ui/projects?index=images", &format!("Bearer {token}")).await;
 

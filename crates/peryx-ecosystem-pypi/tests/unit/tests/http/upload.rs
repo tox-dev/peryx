@@ -2736,7 +2736,7 @@ pub(super) fn trusted_publishing() -> (tempfile::TempDir, Arc<AppState>, Signer)
 
 fn state_with_trusted_publishing(enabled: bool) -> (tempfile::TempDir, Arc<AppState>, Signer) {
     let dir = tempfile::tempdir().unwrap();
-    let signer = Signer::new(b"realm-key", "peryx");
+    let signer = Signer::new(b"realm-key", "peryx").unwrap();
     let mut state = AppState::new(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
         BlobStorage::filesystem(dir.path().join("blobs")),

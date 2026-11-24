@@ -96,7 +96,7 @@ base64 = "0.23.1"
 caseless = "0.2.2"
 hex = "0.4.3"
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash"] }
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 url = "2.5.8"
 wiremock = "0.6"
 rstest = "0.28"
@@ -137,7 +137,7 @@ shlex = "2.0.1"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 tar = { version = "0.4.46", default-features = false }
 flate2 = "1.1"
-gloo-net = "0.7"
+gloo-net = "0.8"
 console_error_panic_hook = "0.1"
 send_wrapper = "0.6"
 web-sys = { version = "0.3.106", features = ["Window", "Document", "Element", "HtmlElement", "DomStringMap", "Navigator", "Clipboard", "MediaQueryList", "Storage"] }

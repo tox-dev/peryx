@@ -554,7 +554,7 @@ fn realm_app_with_clock_and_limits(
     install_oci(&mut state, HashMap::new(), false);
     state
         .set_token_realm(
-            Signer::new(b"realm-test-signing-key", crate::TOKEN_SERVICE),
+            Signer::new(b"realm-test-signing-key", crate::TOKEN_SERVICE).unwrap(),
             token_ttl_secs,
         )
         .unwrap();
@@ -992,7 +992,7 @@ async fn test_oci_routes_are_not_found_without_an_oci_index(#[case] path: &str) 
         false,
         |state| {
             state
-                .set_token_realm(Signer::new(b"signing-key", crate::TOKEN_SERVICE), 1)
+                .set_token_realm(Signer::new(b"signing-key", crate::TOKEN_SERVICE).unwrap(), 1)
                 .unwrap();
         },
     );

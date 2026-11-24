@@ -74,7 +74,7 @@ fn identity() -> VerifiedOidcIdentity {
 }
 
 fn runtime(bindings: Vec<PublisherBinding>, replay_capacity: usize) -> (Signer, OidcRuntime) {
-    let signer = Signer::new(b"local-key", "peryx");
+    let signer = Signer::new(b"local-key", "peryx").unwrap();
     let runtime = OidcRuntime::build(
         bindings,
         Arc::new(Verifier {
@@ -92,7 +92,7 @@ fn runtime(bindings: Vec<PublisherBinding>, replay_capacity: usize) -> (Signer, 
 
 #[tokio::test]
 async fn test_exchange_caps_the_minted_ttl_at_the_identitys_remaining_lifetime() {
-    let signer = Signer::new(b"local-key", "peryx");
+    let signer = Signer::new(b"local-key", "peryx").unwrap();
     let runtime = OidcRuntime::build(
         vec![binding()],
         Arc::new(Verifier {
@@ -158,7 +158,7 @@ fn test_attestation_context_requires_a_named_configured_publisher(
             identity: identity(),
             error: None,
         }),
-        Signer::new(b"local-key", "peryx"),
+        Signer::new(b"local-key", "peryx").unwrap(),
         300,
         MAX_REPLAY_ENTRIES,
         Some(Arc::new(SigstoreVerifier::new(&root).unwrap())),
@@ -388,7 +388,7 @@ async fn test_verification_error_is_preserved() {
             identity: identity(),
             error: Some(OidcVerificationError::IssuerUnavailable),
         }),
-        Signer::new(b"local-key", "peryx"),
+        Signer::new(b"local-key", "peryx").unwrap(),
         300,
         MAX_REPLAY_ENTRIES,
         None,
@@ -425,7 +425,7 @@ fn test_build_rejects_invalid_configuration(
                 identity: identity(),
                 error: None,
             }),
-            Signer::new(b"local-key", "peryx"),
+            Signer::new(b"local-key", "peryx").unwrap(),
             ttl_secs,
             replay_capacity,
             None,

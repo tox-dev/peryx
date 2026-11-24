@@ -36,19 +36,21 @@ pub struct Signer {
 
 impl Signer {
     /// This signer restricts minted tokens to `audience`.
-    #[must_use]
-    pub fn new(key: &[u8], audience: impl Into<String>) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the signing key is invalid.
+    pub fn new(key: &[u8], audience: impl Into<String>) -> Result<Self, jsonwebtoken::errors::Error> {
         let audience = audience.into();
         let mut validation = Validation::new(Algorithm::HS256);
         validation.leeway = 0;
         validation.required_spec_claims.insert("aud".to_owned());
         validation.set_audience(&[&audience]);
-        Self {
+        Ok(Self {
             audience,
-            encoding: EncodingKey::from_secret(key),
-            decoding: DecodingKey::from_secret(key),
+            encoding: EncodingKey::from_secret(key)?,
+            decoding: DecodingKey::from_secret(key)?,
             validation,
-        }
+        })
     }
 
     #[must_use]

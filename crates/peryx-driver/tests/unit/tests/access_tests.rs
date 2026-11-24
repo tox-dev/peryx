@@ -231,7 +231,7 @@ fn app_with_grants(route: &str, acl: IndexAcl, grants: &[Grant]) -> (tempfile::T
             acl,
         }],
     );
-    let signer = Signer::new(b"signing-secret", "peryx");
+    let signer = Signer::new(b"signing-secret", "peryx").unwrap();
     let token = signer.mint(
         &Principal::Named {
             subject: "reader".to_owned(),
@@ -484,7 +484,7 @@ fn test_session_read_access_denies_when_metadata_cannot_be_read(#[case] table: &
 fn test_a_rejected_bearer_credential_does_not_fall_back_to_the_session() {
     let (_dir, mut state) = browser_app(Sealer::Configured);
     state
-        .set_token_realm(Signer::new(b"signing-secret", "peryx"), 300)
+        .set_token_realm(Signer::new(b"signing-secret", "peryx").unwrap(), 300)
         .unwrap();
     let user = state.serving.users.create("Alice").unwrap();
     state
