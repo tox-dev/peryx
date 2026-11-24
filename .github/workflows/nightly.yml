@@ -224,6 +224,8 @@ jobs:
           sudo choom -n -1000 -p "$$"
           just mutation-observed "$SHARD/$SHARD_COUNT" true 1 skip 500 round-robin
         env:
+          # The same shard recompiles each crate under successive mutations.
+          CARGO_INCREMENTAL: "1"
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: choom -n 1000 --
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.mutation-baseline-build.outputs.shard_count }}
