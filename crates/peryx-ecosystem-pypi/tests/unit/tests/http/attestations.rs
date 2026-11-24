@@ -100,7 +100,7 @@ async fn upload_signed_attestation_response(state: &Arc<AppState>, route: &str, 
         _ => "release",
     };
     let token = super::upload::trusted_publisher_token(
-        &peryx_identity::Signer::new(b"realm-key", "peryx"),
+        &peryx_identity::Signer::new(b"realm-key", "peryx").unwrap(),
         &resource,
         publisher,
     );

@@ -401,7 +401,7 @@ fn configure_state(
     if let Some(key) = signing_key {
         state
             .set_token_realm(
-                Signer::new(key.as_bytes(), peryx_identity::TOKEN_AUDIENCE),
+                Signer::new(key.as_bytes(), peryx_identity::TOKEN_AUDIENCE).context("initialize the token signer")?,
                 config.auth.token_ttl_secs,
             )
             .map_err(anyhow::Error::msg)

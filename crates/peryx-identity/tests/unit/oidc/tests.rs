@@ -676,7 +676,7 @@ async fn test_token_algorithm_is_enforced() {
     let token = jsonwebtoken::encode(
         &Header::new(Algorithm::HS256),
         &claims(&server.uri(), "repo:org/app:x", "wrong-algorithm", ""),
-        &EncodingKey::from_secret(b"secret"),
+        &EncodingKey::from_secret(b"secret").unwrap(),
     )
     .unwrap();
     assert_eq!(

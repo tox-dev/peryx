@@ -21,7 +21,7 @@ fn signed_exp(token: &str) -> i64 {
 }
 
 fn signer() -> Signer {
-    Signer::new(b"signing-key", "peryx")
+    Signer::new(b"signing-key", "peryx").unwrap()
 }
 
 fn grants() -> Vec<Grant> {
@@ -52,7 +52,7 @@ fn encoded_with_purpose(purpose: Option<&str>) -> String {
     jsonwebtoken::encode(
         &Header::new(Algorithm::HS256),
         &claims,
-        &EncodingKey::from_secret(b"signing-key"),
+        &EncodingKey::from_secret(b"signing-key").unwrap(),
     )
     .unwrap()
 }
@@ -126,14 +126,18 @@ fn test_verify_rejects_a_payload_swapped_under_a_valid_signature() {
 
 #[test]
 fn test_verify_rejects_a_token_another_key_signed() {
-    let token = Signer::new(b"other-key", "peryx").mint(&Principal::Anonymous, &[], VALID_ISSUED_AT, HOUR);
+    let token = Signer::new(b"other-key", "peryx")
+        .unwrap()
+        .mint(&Principal::Anonymous, &[], VALID_ISSUED_AT, HOUR);
 
     assert!(signer().verify(&token).is_err());
 }
 
 #[test]
 fn test_verify_rejects_a_token_for_another_audience() {
-    let token = Signer::new(b"signing-key", "other").mint(&Principal::Anonymous, &[], VALID_ISSUED_AT, HOUR);
+    let token = Signer::new(b"signing-key", "other")
+        .unwrap()
+        .mint(&Principal::Anonymous, &[], VALID_ISSUED_AT, HOUR);
 
     assert_eq!(
         signer().verify(&token).unwrap_err().to_string(),

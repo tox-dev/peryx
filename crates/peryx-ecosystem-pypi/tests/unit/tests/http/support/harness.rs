@@ -542,7 +542,9 @@ async fn promotion_harness_with(distributed: bool, target_policy: Policy) -> Har
 }
 
 fn install_attestation_auth(state: &mut AppState, publishers: &[(&str, &str)]) {
-    state.set_token_realm(Signer::new(b"realm-key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"realm-key", "peryx").unwrap(), 300)
+        .unwrap();
     let claims = toml::Table::from_iter([(
         "1.3.6.1.4.1.57264.1.12".to_owned(),
         toml::Value::String("github.com/CircleCI-Public/sign-and-publish-examples".to_owned()),

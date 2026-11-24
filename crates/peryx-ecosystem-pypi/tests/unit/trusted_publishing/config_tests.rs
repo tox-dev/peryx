@@ -200,7 +200,9 @@ trusted_publisher = []
 #[test]
 fn test_install_accepts_approved_trusted_endpoint_hosts() {
     let (_dir, mut state) = state("private");
-    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"key", "peryx").unwrap(), 300)
+        .unwrap();
     let mut values = publisher();
     values.insert(
         "oidc_trusted_endpoint_hosts".to_owned(),
@@ -217,7 +219,9 @@ fn test_install_accepts_approved_trusted_endpoint_hosts() {
 #[test]
 fn test_install_rejects_an_issuer_without_a_host() {
     let (_dir, mut state) = state("private");
-    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"key", "peryx").unwrap(), 300)
+        .unwrap();
     let mut values = publisher();
     let publishers = values.get_mut("trusted_publisher").unwrap().as_array_mut().unwrap();
     publishers[0].as_table_mut().unwrap()["issuer"] = toml::Value::String("issuer.example".to_owned());
@@ -383,7 +387,9 @@ fn test_install_requires_the_validated_signing_key() {
 #[test]
 fn test_install_registers_runtime_and_routes() {
     let (_dir, mut state) = state("private");
-    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"key", "peryx").unwrap(), 300)
+        .unwrap();
 
     install_auth(&mut state, &publisher()).unwrap();
 
@@ -394,7 +400,9 @@ fn test_install_registers_runtime_and_routes() {
 #[test]
 fn test_install_accepts_a_virtual_write_route() {
     let (_dir, mut state) = state("private");
-    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"key", "peryx").unwrap(), 300)
+        .unwrap();
     let mut values = publisher();
     values["trusted_publisher"].as_array_mut().unwrap()[0]["repository"] = toml::Value::String("root-pypi".to_owned());
 
@@ -408,7 +416,9 @@ fn test_install_accepts_a_virtual_write_route() {
 #[case::read_only("read-only")]
 fn test_install_rejects_an_unwritable_repository(#[case] repository: &str) {
     let (_dir, mut state) = state("private");
-    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"key", "peryx").unwrap(), 300)
+        .unwrap();
     let mut values = publisher();
     values["trusted_publisher"].as_array_mut().unwrap()[0]["repository"] = toml::Value::String(repository.to_owned());
 
@@ -424,7 +434,9 @@ fn test_install_rejects_an_unwritable_repository(#[case] repository: &str) {
 #[test]
 fn test_install_reports_invalid_runtime_configuration() {
     let (_dir, mut state) = state("../private");
-    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    state
+        .set_token_realm(Signer::new(b"key", "peryx").unwrap(), 300)
+        .unwrap();
 
     assert_eq!(
         install_auth(&mut state, &publisher()),

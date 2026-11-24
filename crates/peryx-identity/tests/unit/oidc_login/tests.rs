@@ -342,7 +342,7 @@ async fn test_non_rs256_algorithm_is_rejected() {
     let token = jsonwebtoken::encode(
         &Header::new(Algorithm::HS256),
         &base_claims(&server),
-        &EncodingKey::from_secret(b"secret"),
+        &EncodingKey::from_secret(b"secret").unwrap(),
     )
     .unwrap();
     mount_token(&server, json!({"id_token": token, "token_type": "Bearer"})).await;
@@ -1378,7 +1378,7 @@ fn entry_with(fresh_until: i64, present_keys: &[&str]) -> Entry {
         },
         keys: present_keys
             .iter()
-            .map(|kid| ((*kid).to_owned(), DecodingKey::from_secret(b"k")))
+            .map(|kid| ((*kid).to_owned(), DecodingKey::from_secret(b"k").unwrap()))
             .collect(),
         window: CacheWindow {
             fresh_until,
