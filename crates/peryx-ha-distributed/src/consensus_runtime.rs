@@ -966,10 +966,7 @@ impl OwnershipGroup {
         let node = member_node(datacenter, address)?;
         let metrics = self.node.metrics().borrow_watched().clone();
         admit_member_identity(&metrics.membership_config, id, &node)?;
-        Ok(metrics
-            .membership_config
-            .nodes()
-            .any(|(member, held)| *member == id && *held == node))
+        Ok(metrics.membership_config.get_node(&id).is_some())
     }
 
     /// Reports an unchanged voter roster as [`CommandOutcome::NoChange`].
