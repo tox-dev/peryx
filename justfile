@@ -264,7 +264,7 @@ _mutation-scope-contract:
 
 _mutation-profile-contract:
     just --dry-run mutation 0/1 true 2 skip 500 round-robin 2>&1 \
-      | grep -F 'CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 PATH='
+      | grep -F 'CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" CARGO_PROFILE_TEST_DEBUG=0 PATH='
 
 # Check that a shard's telemetry can name the resource it ran out of.
 _mutation-telemetry-contract:
@@ -702,7 +702,7 @@ fuzz package target seconds="60": _project-temp
 
 # Mutate one workspace shard.
 mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500" sharding="slice": test-deps
-    CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 PATH="{{ tools_root }}/bin:$PATH" \
+    CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" CARGO_PROFILE_TEST_DEBUG=0 PATH="{{ tools_root }}/bin:$PATH" \
       cargo mutants --workspace --all-features --test-tool nextest \
       --no-shuffle --shard "{{ shard }}" --sharding "{{ sharding }}" --output .tox/mutants \
       {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
