@@ -49,15 +49,10 @@ impl RaftConfig {
             election_timeout_min: millis(self.election_timeout_min),
             election_timeout_max: millis(self.election_timeout_max),
             install_snapshot_timeout: millis(self.install_snapshot_timeout),
-            max_payload_entries: 300,
             replication_lag_threshold: PROMOTION_LAG_THRESHOLD,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(self.snapshot_logs_since_last),
-            snapshot_max_chunk_size: 3 * 1024 * 1024,
             max_in_snapshot_log_to_keep: self.max_in_snapshot_log_to_keep,
             purge_batch_size: 1,
-            enable_tick: true,
-            enable_heartbeat: true,
-            enable_elect: true,
             ..Config::default()
         }
         .validate()
